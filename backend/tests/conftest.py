@@ -69,3 +69,22 @@ async def session_factory(pg_url: str) -> AsyncIterator[async_sessionmaker[Async
         yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     finally:
         await engine.dispose()
+
+
+@pytest.fixture
+async def tenant_engine(pg_url: str) -> AsyncIterator[None]:
+    """Rebind the app-global async engine/session factory to the test container so the REAL
+    ``tenant_session(org_id)`` helper (which opens from ``app.platform.db.sessionmaker``,
+    created at import against the dev URL) runs against the ephemeral Postgres. Restored
+    after the test."""
+    from app.platform import db as db_mod
+
+    engine = create_async_engine(pg_url)
+    orig_engine, orig_maker = db_mod.engine, db_mod.sessionmaker
+    db_mod.engine = engine
+    db_mod.sessionmaker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        yield
+    finally:
+        db_mod.engine, db_mod.sessionmaker = orig_engine, orig_maker
+        await engine.dispose()

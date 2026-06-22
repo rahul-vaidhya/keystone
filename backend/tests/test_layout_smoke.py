@@ -18,3 +18,8 @@ def test_health_returns_200() -> None:
 def test_worker_has_redis_settings() -> None:
     assert WorkerSettings.functions == []
     assert WorkerSettings.redis_settings is not None
+
+
+def test_worker_configures_logging_on_startup() -> None:
+    # F02: workers emit the same JSON logs as the HTTP edge via this lifecycle hook.
+    assert callable(WorkerSettings.on_startup)

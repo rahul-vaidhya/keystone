@@ -14,8 +14,11 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-# app.identity.models is imported for its side effect: registering the module's tables
-# on Base.metadata so target_metadata sees the whole schema.
+# Import every module's models here or autogenerate will miss their tables. Each import is
+# for its side effect only: registering that module's tables on Base.metadata so
+# target_metadata / autogenerate sees the whole schema. Uncomment each as its feature
+# lands — app.documents.models (F11/F12), app.knowledge.models (F30), app.chat.models
+# (F40–F42: conversations/messages/message_traces).
 import app.identity.models  # noqa: F401
 from app.platform.config import settings
 from app.platform.db import Base

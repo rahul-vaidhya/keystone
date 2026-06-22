@@ -10,8 +10,16 @@ from __future__ import annotations
 from arq.connections import RedisSettings
 
 from app.platform.config import settings
+from app.platform.logging import configure_logging
+
+
+async def startup(ctx: dict) -> None:
+    """arq lifecycle hook — configure structlog so worker jobs emit the same JSON logs as
+    the HTTP edge (which calls configure_logging() in main.py)."""
+    configure_logging()
 
 
 class WorkerSettings:
     functions: list = []
     redis_settings = RedisSettings.from_dsn(settings.REDIS_URL)
+    on_startup = startup
