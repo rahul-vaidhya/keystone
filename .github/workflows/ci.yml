@@ -1,0 +1,38 @@
+name: CI
+
+# F04 — run the full backend suite against an ephemeral Testcontainers Postgres+pgvector
+# on every push and PR. GitHub's ubuntu runners ship Docker, so the DB-backed integration
+# tests (which apply the real Alembic migration to a real pgvector container) actually run
+# here rather than skipping. Seams stay on the fakes (SEAMS_MODE=fake) — no API keys needed.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      # The Ryuk reaper sidecar flakes on some hosts; each fixture stops its own container.
+      # Carried from tests/conftest.py per the F02 gotcha.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend (dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Test (pytest, real pgvector via Testcontainers)
+        run: pytest -q

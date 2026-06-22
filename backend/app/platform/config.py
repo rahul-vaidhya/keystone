@@ -32,9 +32,16 @@ class Settings(BaseSettings):
     RLS_ENABLED: bool = False
 
     # --- Seams ---
-    # fake | real. Real adapters (vendor TBD) land in F03. The whole app + test suite
-    # runs on fakes with no API keys.
+    # fake | real. Fakes are the default everywhere (no API keys, deterministic). Real
+    # adapters land per seam: Embedder/LLM here (F03), Parser/OCR vendor in Phase 2 (F20).
     SEAMS_MODE: str = "fake"
+    # Real Embedder/LLM target an OpenAI-compatible API (used only when SEAMS_MODE=real);
+    # the models live behind the seam, so they stay swappable. text-embedding-3-small is
+    # 1536-d → matches the vector(1536) column; LLM_MODEL is a mini-class default.
+    OPENAI_API_KEY: str | None = None
+    OPENAI_BASE_URL: str | None = None
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    LLM_MODEL: str = "gpt-4o-mini"
 
     # --- Cloudflare R2 (S3-compatible object store) ---
     R2_ENDPOINT_URL: str | None = None
