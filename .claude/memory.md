@@ -5,8 +5,9 @@
 > Keep it short and high-signal. Delete stale entries.
 
 ## Current phase
-**Phase 0 in progress.** F00 (repo+layout) + F01 (DB+migrations) built & green (2026-06-22, uncommitted —
-repo not yet under git for app code). Next: **F02 Tenant isolation**. See `buildplan.md`/`progresstracker.md`.
+**Phase 0 in progress.** F00 (repo+layout) + F01 (DB+migrations) + F02 (tenant isolation) built &
+green (F02 committed 0c8bd12, 2026-06-22; 15 tests). Next: **F03 Seams + fakes**. See
+`buildplan.md`/`progresstracker.md`.
 
 ## Phase 0 build decisions (F00/F01, 2026-06-22)
 - **Baseline migration = minimum**: `vector`+`citext` extensions + `organizations`+`users` only.
@@ -16,7 +17,8 @@ repo not yet under git for app code). Next: **F02 Tenant isolation**. See `build
 - **Async stack**: `postgresql+asyncpg` DSN; async Alembic env (`async_engine_from_config` +
   `connection.run_sync`). UUID PKs default `gen_random_uuid()` (core in pg16, no pgcrypto needed).
 - **Seam adapters NOT built yet** (deferred to F03 per "stop after F01"); `SEAMS_MODE=fake` config
-  field exists. `tenant_session` NOT built yet (F02). `frontend/` is a README-only stub until F50.
+  field exists. `tenant_session` + base-repo scoping built in F02 (0c8bd12). `frontend/` is a
+  README-only stub until F50.
 - **Tests**: pure smoke tests run anywhere; DB smoke uses a Testcontainers pgvector container +
   the REAL migration (no mocked DB). Layout: `backend/` (pyproject, hatchling pkg=`app`, pytest
   `pythonpath=["."]`), entrypoints `backend/main.py` + `backend/worker.py`.
@@ -27,7 +29,8 @@ repo not yet under git for app code). Next: **F02 Tenant isolation**. See `build
   scoping is ALWAYS on.* Resolves C2/C3.
   - Every tenant-scoped table carries `org_id` — incl. join/child tables (`document_tags`,
     `knowledge_base_documents`, `messages`, `message_traces`). No scope-via-parent. (C1)
-  - One `tenant_session(org_id)` helper, `SET LOCAL` (no pooled-connection leak), used by BOTH
+  - One `tenant_session(org_id)` helper, `set_config('app.org_id', :org, true)` (transaction-local,
+    no pooled-connection leak — see gotcha below re: why NOT `SET LOCAL`), used by BOTH
     requests AND arq workers (worker reads org_id from the job payload). (C3)
   - RLS predicate: `organizations` keys on `id`; others on `org_id`; both use `current_setting(
     'app.org_id', true)` (missing_ok → unset GUC = no rows). `app_user` vs `migrator` role split,
@@ -93,3 +96,9 @@ fixed-width vector column cannot hold mixed dimensions. (M2)
   in `finally`. Carry this env var into the F04 CI config too.
 - Docker Desktop daemon must be running before DB-backed tests; the daemon needs ~30–60s after
   launch before it serves (early calls fail fast → tests skip). Poll `docker info` before running.
+- **`SET LOCAL app.org_id = :org` is INVALID** — Postgres `SET`/`SET LOCAL` takes a literal token
+  and rejects bind parameters, so the parameterised statement fails to parse. `tenant_session` MUST
+  use `SELECT set_config('app.org_id', :org, true)` (the third arg `is_local => true` makes it
+  transaction-scoped, the function equivalent of `SET LOCAL`, and accepts a bound value safely).
+  Found in F02 (2026-06-22). Context docs (`architecture.md` + `librarydocs.md`) corrected — do NOT
+  revert the snippet back to `SET LOCAL`.

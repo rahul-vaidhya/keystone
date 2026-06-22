@@ -62,11 +62,17 @@ Each backend module has the SAME shape:
   async def tenant_session(org_id):
       async with sessionmaker() as s, s.begin():
           if settings.RLS_ENABLED:                       # OFF in MVP dev/test
-              await s.execute(text("SET LOCAL app.org_id = :org"), {"org": str(org_id)})
+              await s.execute(
+                  text("SELECT set_config('app.org_id', :org, true)"), {"org": str(org_id)}
+              )
           yield s
   ```
-  - `SET LOCAL` (not `SET`) → the GUC resets at transaction end, so a pooled connection cannot leak
-    one request's `org_id` into the next.
+  - Use `set_config('app.org_id', :org, true)`, **not** `SET LOCAL app.org_id = :org` — Postgres
+    `SET`/`SET LOCAL` does not accept bind parameters (it takes a literal token), so the parameterised
+    form fails to parse. `set_config(..., is_local => true)` is the function equivalent of `SET LOCAL`
+    and accepts a bound value safely.
+  - The `is_local => true` (third arg) → the GUC resets at transaction end, so a pooled connection
+    cannot leak one request's `org_id` into the next.
   - The **arq worker calls the SAME helper** with `org_id` from the job payload — closing the
     background-job tenancy gap (workers have no HTTP request, but they have this helper).
 - **Repositories ALWAYS apply `WHERE org_id = :org`** regardless of `RLS_ENABLED` (functional

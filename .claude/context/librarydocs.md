@@ -22,11 +22,16 @@ web-search the current official docs (versions move). Focus here is "the way we 
   async def tenant_session(org_id):
       async with sessionmaker() as s, s.begin():
           if settings.RLS_ENABLED:                       # default FALSE in dev/test (MVP)
-              await s.execute(text("SET LOCAL app.org_id = :org"), {"org": str(org_id)})
+              await s.execute(
+                  text("SELECT set_config('app.org_id', :org, true)"), {"org": str(org_id)}
+              )
           yield s
   ```
-  - Use **`SET LOCAL`** (transaction-scoped), never plain `SET` — plain `SET` persists on a pooled
-    connection and leaks `org_id` into the next checkout.
+  - Use **`set_config('app.org_id', :org, true)`**, never `SET LOCAL app.org_id = :org`: Postgres
+    `SET`/`SET LOCAL` rejects bind parameters (the value must be a literal token), so the bound form
+    will not parse. `set_config(..., is_local => true)` is the transaction-scoped function equivalent
+    and takes a bound value. Being transaction-scoped, it never leaks `org_id` into the next pooled
+    checkout (plain `set_config(..., false)` / plain `SET` would).
   - Repositories **always** apply `WHERE org_id = :org` regardless of `RLS_ENABLED`. RLS is the
     backstop, the app filter is the guarantee.
 - **RLS — DESIGNED NOW, ENABLED IN PHASE 6 (Security Hardening). Do not turn on in MVP.** The
