@@ -23,6 +23,24 @@ green (F02 committed 0c8bd12, 2026-06-22; 15 tests). Next: **F03 Seams + fakes**
   the REAL migration (no mocked DB). Layout: `backend/` (pyproject, hatchling pkg=`app`, pytest
   `pythonpath=["."]`), entrypoints `backend/main.py` + `backend/worker.py`.
 
+## Phase 0 build decisions (F02, 2026-06-22, 0c8bd12)
+- **`tenant_session(org_id)`** in `platform/db.py` (request + worker); base-repo `org_id` filter in
+  `platform/repository.py` (`BaseRepository[ModelT]._scoped()`, PEP-695 generic); `TenantContext` in
+  `platform/context.py`; first concrete scoped repo = `identity/repository.py:UserRepository` (F10 extends).
+- **Migration 0002 is flag-gated at apply time**: `upgrade()`/`downgrade()` read `settings.RLS_ENABLED`
+  and **return early when OFF** (MVP default) → the tenant_isolation policies + app_user/migrator role
+  split + FORCE RLS are WRITTEN but inert. F60 flips the flag and ships the real enabling migration.
+  Pattern: each future tenant table adds its policy here, keyed on `org_id` (on `id` for `organizations`).
+- **NO feature tables created in F02** (document_tags/knowledge_base_documents/messages/message_traces
+  don't exist yet — they land with their features, locked decision). The org_id-everywhere rule is
+  honored via a metadata-guard test (`test_metadata_smoke.py`) + the 0002 RLS pattern, not by building
+  Phase 1/2/4 tables now.
+- **Testing tenant_session against the container**: db.py builds its engine/sessionmaker at import
+  against the dev URL, so a conftest `tenant_engine` fixture **rebinds `app.platform.db.engine` +
+  `.sessionmaker`** to the Testcontainers URL (restored after) so the REAL helper is exercised. DoD
+  isolation test seeds both orgs unscoped, reads via the scoped repo, and a control unscoped `select`
+  proves both orgs' rows coexist (so it's the filter isolating, not absent data). 15 tests green.
+
 ## Foundation-review resolutions (2026-06-21 — applied to context docs, no code)
 - **Tenancy split (the key call):** *Schema + plumbing done NOW; enforced RLS + restricted DB role
   DEFERRED to Phase 6 hardening, gated by `RLS_ENABLED` (default OFF in dev/test). App-level `org_id`
