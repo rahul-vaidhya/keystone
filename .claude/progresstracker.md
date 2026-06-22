@@ -19,8 +19,17 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       written but flag-OFF). DoD met: app-level two-org isolation test proves zero cross-read on a real
       pgvector container. Also cleared 3 F00–F01 review minors (env.py model imports, worker on_startup
       logging, db.py shadow comment). 15 tests green, ruff clean.
-- [ ] F03 Seams + fakes
-- [ ] F04 CI against Testcontainers Postgres
+- [x] F03 Seams + fakes (c35ee11) — `platform/seams.py`: `Parser`/`Embedder`/`LLM` runtime_checkable
+      Protocols + shared types (`ParsedDoc`/`OutlineNode`/`Message`). Fakes default everywhere
+      (`FakeEmbedder` deterministic unit vector from sha256; `FakeLLM` templated cited answer;
+      `FakeParser` fixed text + 2-node outline). Real adapters behind the seam: `RealEmbedder`/`RealLLM`
+      OpenAI-compatible (lazy SDK import, config-gated, `SeamNotConfigured`); `RealParser` = Phase-2 (F20)
+      stub (OCR vendor deferred). `get_parser/get_embedder/get_llm` factory on `SEAMS_MODE`. DoD met:
+      12 unit tests, no DB/keys; whole suite runs on fakes.
+- [x] F04 CI against Testcontainers Postgres (c35ee11) — `.github/workflows/ci.yml`: ruff (check+format)
+      + pytest on a real pgvector Testcontainers container, push/PR, `TESTCONTAINERS_RYUK_DISABLED=true`,
+      seams on fakes. DoD: pipeline runs the full suite (verified green locally — 27 tests, ruff clean;
+      GH Actions green on first push pending).
 
 ## Phase 1 — Identity + Documents
 - [ ] F10 Auth + org creation + invites
@@ -53,6 +62,7 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
 **Demoable milestone reached:** [ ] end of Phase 4
 
 ## Current status
-Phase: **0 — in progress.** F00 + F01 + F02 done (0c8bd12; 15 tests green, ruff clean). Next action:
-**F03 Seams + fakes** — `Parser`/`Embedder`/`LLM` Protocols in `platform/`, one real + one fake each
-(`SEAMS_MODE` already in config); the whole suite must run on fakes with no API keys.
+Phase: **0 COMPLETE.** F00–F04 done (F03+F04 = c35ee11; 27 tests green on real pgvector, ruff clean).
+Next action: **Phase 1 — F10 Auth + org creation + invites** (roles `owner|admin|member`; short-lived
+JWT access + httpOnly refresh cookie; `current_user` → `TenantContext`; `get_ctx` dependency from
+librarydocs.md). First real consumer of the seams arrives in Phase 2 (ingestion).

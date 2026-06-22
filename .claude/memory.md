@@ -5,9 +5,42 @@
 > Keep it short and high-signal. Delete stale entries.
 
 ## Current phase
-**Phase 0 in progress.** F00 (repo+layout) + F01 (DB+migrations) + F02 (tenant isolation) built &
-green (F02 committed 0c8bd12, 2026-06-22; 15 tests). Next: **F03 Seams + fakes**. See
+**Phase 0 COMPLETE.** F00–F04 built & green (F03+F04 committed c35ee11, 2026-06-22; 27 tests, ruff
+clean on a real pgvector container). Next: **Phase 1 — F10 Auth + org creation + invites**. See
 `buildplan.md`/`progresstracker.md`.
+
+## Phase 0 build decisions (F03 seams + F04 CI, 2026-06-22, c35ee11)
+- **All 3 seams live in ONE flat module `platform/seams.py`** (matches the flat platform/ layout —
+  config.py, db.py, etc.), not a package. Holds: `Parser`/`Embedder`/`LLM` `@runtime_checkable`
+  Protocols; shared frozen-dataclass types `ParsedDoc`/`OutlineNode`/`Message`; fakes; real adapters;
+  the factory; `SeamNotConfigured`.
+- **Fakes are the product default everywhere** (`SEAMS_MODE=fake`): `FakeEmbedder` = deterministic
+  unit-norm vector seeded from `int(sha256(text))` → reproducible retrieval asserts; `FakeLLM` streams
+  a templated grounded answer citing `[1]`; `FakeParser` returns fixed text + a 2-node outline with
+  real char offsets (so F21 structuring can run with no PDF).
+- **`Embedder` Protocol exposes `model` + `dim` properties** (not just `embed`) — `model` is stamped
+  onto `embeddings.model`, the retrieval filter that stops duplicate hits after a re-embed. `EMBED_DIM
+  = 1536` constant ties fake + real to the `vector(1536)` column. `LLM.stream` is declared as a plain
+  `def -> AsyncIterator[str]` (async-generator-compatible), matching `async def ... yield` impls.
+- **Real adapters are behind the seam and config-gated, NOT prematurely committing vendors:**
+  `RealEmbedder`/`RealLLM` target an OpenAI-compatible API (defaults `text-embedding-3-small` /
+  `gpt-4o-mini`, both in config, swappable), **lazy-import `openai`** inside a `_openai_client()` helper
+  and raise `SeamNotConfigured` if key/SDK missing → the fake-only suite needs neither. `openai` is an
+  **optional `[real]` extra** in pyproject (NOT in `[dev]`/default), so CI/tests install nothing extra.
+  `RealParser` is a **Phase-2 (F20) stub** that raises `SeamNotConfigured` — the OCR vendor is a locked
+  deferral, so building a "real" parser now would violate that decision (noted as the one Minor).
+- **Factory** `get_parser/get_embedder/get_llm()` switches on `settings.SEAMS_MODE` (`fake`|`real`),
+  rejects unknown modes with `SeamNotConfigured`. Features inject the returned object (DI) so tests pass
+  a fake. No seam is wired into a feature yet — first consumer is ingestion (Phase 2).
+- **F04 CI** = `.github/workflows/ci.yml` (first workflow in the repo): on push + PR, ubuntu-latest
+  (ships Docker so Testcontainers actually runs, no skip), `working-directory: backend`, `pip install
+  -e .[dev]`, `ruff check . && ruff format --check .`, then `pytest -q`. `TESTCONTAINERS_RYUK_DISABLED=
+  true` set as a job env (carried from the F02 gotcha). Seams stay on fakes → no API keys in CI.
+- **F03 tests are pure unit** (`tests/test_seams.py`, 12 tests): determinism, vector width == dim,
+  protocol conformance (incl. real adapters), factory switching, unknown-mode rejection, and
+  real-adapter-fails-loudly (`RealEmbedder.embed` w/o key, `RealParser.extract`). No DB, no keys.
+- **Pre-existing Minor (not introduced here):** a `StarletteDeprecationWarning` (httpx vs testclient)
+  surfaces in the suite — unrelated to F03/F04, left for a deps-hygiene pass.
 
 ## Phase 0 build decisions (F00/F01, 2026-06-22)
 - **Baseline migration = minimum**: `vector`+`citext` extensions + `organizations`+`users` only.
