@@ -44,8 +44,9 @@ class User(Base):
         index=True,
     )
     email: Mapped[str] = mapped_column(CITEXT, nullable=False)
-    # enum: 'owner' | 'admin' | 'member' (enforced in Phase 1)
+    # enum: 'owner' | 'admin' | 'member' (DB check constraint in migration 0003)
     role: Mapped[str] = mapped_column(Text, nullable=False, server_default="member")
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

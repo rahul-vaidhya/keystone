@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     # --- App ---
     ENV: str = "dev"
     LOG_LEVEL: str = "INFO"
+    # Comma-separated origins for the Vite dev server / SPA.
+    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+
+    # --- Auth (F10) ---
+    JWT_SECRET: str = "dev-only-change-me-use-32-chars-min!!"
+    JWT_ACCESS_TTL_MINUTES: int = 15
+    JWT_REFRESH_TTL_DAYS: int = 7
+    REFRESH_COOKIE_NAME: str = "veratas_refresh"
 
     # --- Postgres (async driver) ---
     DATABASE_URL: str = "postgresql+asyncpg://veratas:veratas@localhost:5432/veratas"
