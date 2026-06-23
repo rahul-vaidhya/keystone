@@ -165,6 +165,35 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       green, ruff clean. Independent code-review pass: zero violations against the 7 hard
       rules.
 
+## Maintenance — Package-layout refactor (no new feature work)
+- [x] **Structural refactor, F00–F31 → package-per-module convention** (4 commits:
+      `65845e1` platform/seams, `8a72e41` ingestion/service, `fadbb07` documents/repository,
+      `f50bee4` documents/service) — promoted the 4 layer files that crossed the
+      >200-lines-AND-2+-independent-responsibilities trigger from flat files to subpackages:
+      `platform/seams.py` → `platform/seams/` (types/protocols/fakes/real_parser/real_llm/
+      factory), `ingestion/service.py` → `ingestion/service/` (parsing/structuring/
+      embedding/search), `documents/repository.py` → `documents/repository/` (folders/tags/
+      documents), `documents/service.py` → `documents/service/` (folders/tags/documents, via
+      free-function delegation — same convention as ingestion, no mixins). ZERO logic/
+      behavior/schema/API change. All public + test-facing import paths preserved via
+      `__init__.py` re-exports (including the two private `RealParser` helpers
+      `tests/test_seams.py` imports directly). One pre-existing private import
+      (`scripts/inspect_document.py` → `_build_sections_and_chunks`) was updated to its new
+      path rather than re-exported, per direct instruction (don't promote a deliberately-
+      private helper to a package's public API for one debug script). Deliberately did NOT
+      touch `documents/models.py`/`ingestion/models.py` (multiple ORM classes but zero
+      logic — not a violation), `documents/router.py`, `ingestion/repository.py`,
+      `identity/*`, `knowledge/*`, `retrieval/*` (all under threshold or already correct —
+      `retrieval/` has no `models.py`/`repository.py` since it owns no table, by design).
+      Verified: each of the 4 commits individually green (83/83 suite, ruff clean) before
+      committing; after all 4, ran the full migration chain against a **fresh** Postgres
+      container (not just unit-test green) and confirmed all 11 expected tables + the 5
+      module model imports in `migrations/env.py` still register correctly — unaffected
+      since no `models.py` moved. **Convention now locked** in `architecture.md`
+      ("Package-layout convention") + `orchestrator.md` (hard rule #8 + Implement/Review
+      steps) + the `review` skill — applies to F40 onward. Reference module: `knowledge/`
+      and `retrieval/` (small modules, no padding, already correct).
+
 ## Phase 4 — Chat
 - [ ] F40 Grounded generation (SSE, refuses outside sources)
 - [ ] F41 Citations (offset mapping + persisted)
@@ -201,6 +230,9 @@ empirical validation run and confirmed this session — real 36-page PDF reached
 (no migration — reads existing F21/F22 tables via `ingestion.service.search_chunks`).
 83/83 suite green, ruff clean — see memory.md "F30 Notebooks" / "F31 Flat retrieval" for
 full detail.
+**Maintenance (this session): structural package-layout refactor complete** (4 commits,
+zero behavior change, convention now locked in architecture.md/orchestrator.md/review skill
+— see "Maintenance" section above). No feature progress; Phase 0–3 status unchanged.
 Next action: **F40 Grounded generation (Phase 4), or resume the rest of F51 (folders/tags/
 upload UI)** — ask the user which.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,

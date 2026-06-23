@@ -4,6 +4,88 @@
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
 
+## Maintenance: package-layout refactor (2026-06-24, this session, 4 commits)
+- **Pure structural refactor of F00–F31, zero behavior/logic/schema/API/test-behavior
+  change** — not a feature, requested by the reviewer to move from "flat files per module"
+  to "package-per-module, split along real responsibilities." Ran as Phase 1 (inventory +
+  propose, stopped for approval) → Phase 2 (execute, one module per commit) → Phase 3 (lock
+  the convention for F40+).
+- **Trigger rule (now locked in architecture.md):** promote a layer file to a subpackage
+  only when it exceeds ~200 lines **AND** mixes 2+ genuinely independent responsibility
+  groups (different tables/stages/vendor adapters). A long-but-cohesive file or a short
+  file with several small ORM classes is NOT promoted — over-splitting to satisfy "one
+  folder per module" is itself a violation, not a stricter reading of the convention.
+- **4 modules promoted, in this order/commits:**
+  1. `platform/seams.py` (444 lines) → `platform/seams/` — `types.py` (shared
+     dataclasses + `SeamNotConfigured`), `protocols.py` (3 Protocols + `EMBED_DIM`),
+     `fakes.py`, `real_parser.py` (RealParser + its 4 helpers — kept separate from
+     `real_llm.py` per architecture.md's own language calling it "a SEPARATE adapter/vendor
+     call"), `real_llm.py` (RealEmbedder/RealLLM + shared `_openai_client`), `factory.py`.
+     `65845e1`.
+  2. `ingestion/service.py` (404 lines) → `ingestion/service/` — `parsing.py`,
+     `structuring.py` (incl. the tree-building/chunking algorithm helpers), `embedding.py`,
+     `search.py` (the F31 retrieval entry point). `IngestionService` stays one class; each
+     method delegates to its stage's free function — zero logic change, just relocated.
+     `8a72e41`.
+  3. `documents/repository.py` (225 lines, 4 independent classes/tables) →
+     `documents/repository/` — `folders.py`, `tags.py` (TagRepository +
+     DocumentTagRepository — the join table lives with tags, not split further),
+     `documents.py`. `fadbb07`.
+  4. `documents/service.py` (258 lines) → `documents/service/` — `folders.py`, `tags.py`,
+     `documents.py` (upload/dedupe + the F20-F22 status-pipeline transitions +
+     cross-module accessors). `f50bee4`.
+- **Composition decision, explicit and deliberate (direct instruction):** `documents/
+  service/` uses the SAME free-function-delegation pattern as `ingestion/service/` — NOT
+  mixins. `DocumentsService` had zero instance state to begin with, so converting each
+  method to a free function taking `ctx` explicitly needed no extra self-like plumbing —
+  confirmation the split was clean, not forced. **One composition convention across the
+  codebase, not two.** If a future split's free functions would need many self-like args
+  threaded through every call, that's a signal the responsibilities aren't cleanly
+  separable — the instruction was to leave that file flat rather than force a bad split
+  (mixins are explicitly never the fallback).
+- **Call-site audit, done by grepping every `from app.*` import in `backend/` before
+  moving anything** — not just the call sites the user enumerated. Found one EXTRA real
+  call site not in the original list: `scripts/inspect_document.py` (a non-production
+  debugging script) imported the private `_build_sections_and_chunks` helper directly from
+  `app.ingestion.service`. Per direct instruction, this was NOT re-exported from the new
+  `ingestion/service/__init__.py` (don't promote a deliberately-private helper to a
+  package's public API to serve one debug script) — instead the script's one import line
+  was updated to `app.ingestion.service.structuring`. **If this script's import ever needs
+  fixing again, that's the pattern: fix the script, don't widen the package's public
+  surface.** Also found `tests/test_seams.py` imports two private `RealParser` helpers
+  (`_is_negligible_text`, `_parse_markdown_outline`) directly — these WERE re-exported from
+  `platform/seams/__init__.py` (added to `__all__`, since ruff F401 flagged them as unused
+  otherwise) because they're an existing test call site, not something newly promoted.
+- **Verification, every commit:** full suite (83 passed, 1 skipped) + `ruff check` + `ruff
+  format --check` green before each commit, in that order, one module per commit (never
+  batched). **After all 4 modules**, additionally span up a throwaway fresh Postgres
+  container (`docker run`, not the dev-compose named volume) and ran `alembic upgrade head`
+  against it from empty — confirmed all 8 migrations apply clean and all 11 expected tables
+  (`organizations, users, folders, tags, documents, document_tags, sections, chunks,
+  embeddings, knowledge_bases, knowledge_base_documents`) register. This was a deliberate
+  check beyond "tests are green" because `migrations/env.py` imports each module's
+  `models.py` for ORM-metadata side effects — confirmed unaffected since no `models.py` was
+  moved this round (all stayed flat, correctly, since they're multiple small ORM classes
+  with zero logic — not a trigger-rule match).
+- **No circular imports introduced** by either service split (`ingestion/service/__init__.py`
+  importing its own stage submodules; `documents/service/__init__.py` likewise) — confirmed
+  by the suite passing, since any cycle would fail at import time.
+- **Deliberately NOT touched** (recorded so it isn't relitigated as "missed"):
+  `documents/models.py` (121 lines, 4 ORM classes, zero logic), `ingestion/models.py` (131
+  lines, 3 ORM classes, zero logic), `documents/router.py` (108 lines, one cohesive
+  `APIRouter`), `ingestion/repository.py` (130 lines, 3 cohesive repo classes, under
+  threshold), `identity/*`, `knowledge/*`, `retrieval/*` (all already correct/small —
+  `retrieval/` has no `models.py`/`repository.py` since it owns no table, which is the
+  reference pattern, not a gap), `chat/` (empty — Phase 4 not started, convention applies
+  prospectively when it's built).
+- **Convention locked for F40+** in three places: `architecture.md` ("Package-layout
+  convention" section, incl. the ORM metadata-registration rule — if a `models.py` is ever
+  promoted, its `__init__.py` must import every model class or Alembic silently drops the
+  table from autogenerate), `orchestrator.md` (hard rule #8 + the Implement/Review skill
+  bullets), and `.claude/skills/review/SKILL.md` (a new Layer-2 check for both
+  under-splitting and over-splitting). Reference module for "already correctly structured":
+  `knowledge/` and `retrieval/`.
+
 ## Current phase
 **Phase 0 COMPLETE** (F00–F04, F03+F04 = c35ee11, 27 tests, ruff clean). **Phase 1 (Identity +
 Documents) COMPLETE**: F10 (`8940dd1`), F11 (`c58a5e7`), F12 (`0b44b9c`). **F50 + a slice of F51
@@ -11,7 +93,10 @@ Documents) COMPLETE**: F10 (`8940dd1`), F11 (`c58a5e7`), F12 (`0b44b9c`). **F50 
 F20 parsing (`0277cfe`), F21 structuring (`5eecac5`), F22 embedding (`4598698`). **Phase 2.5
 COMPLETE: F23 Real parser integration, code+docs committed `9e7f319`/`90285c2`; empirical
 validation against a real PDF run and confirmed this session.** **Phase 3 COMPLETE: F30
-Notebooks (`a85138e`), F31 Flat retrieval (`c194b2b`)** (see entry below).
+Notebooks (`a85138e`), F31 Flat retrieval (`c194b2b`)** (see entry below). **Maintenance:
+package-layout refactor complete this session** (4 commits — `65845e1`/`8a72e41`/`fadbb07`/
+`f50bee4` — zero behavior change; convention locked for F40+, see entry below). No feature
+progress from the refactor itself.
 Next: **F40 Grounded generation (Phase 4), or resume the rest of F51 (folders/tags/upload UI)
 against the real F11/F12 backend — ask the user which.**
 

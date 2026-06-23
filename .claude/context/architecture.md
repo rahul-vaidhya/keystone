@@ -41,6 +41,57 @@ Each backend module has the SAME shape:
 `router.py` (HTTP only) · `service.py` (use cases / logic) · `repository.py` (ALL SQL) ·
 `schemas.py` (Pydantic + domain types) · `tasks.py` (its background work).
 
+### Package-layout convention (locked, F00–F31 structural refactor)
+
+Each of those files starts flat. A flat file is **promoted to a subpackage of the same
+name** (e.g. `service.py` → `service/__init__.py` + submodules) only when **both** hold:
+
+1. It exceeds roughly **200 lines**, **and**
+2. It contains **2+ genuinely independent responsibility groups** — different tables,
+   different pipeline stages, different vendor adapters — not just "many small methods on
+   one cohesive concern."
+
+A file that's long but is one class/one concern with many small methods is **not**
+promoted. A file with multiple small classes but no real logic (e.g. several plain ORM
+declarations in one `models.py`) is **not** promoted either — declaring data classes
+together is normal, not drift. **Do not pad**: a module that legitimately owns no table
+keeps no empty `models.py`/`repository.py` (`retrieval/` is correct as-is). Over-splitting
+to satisfy "one folder per module" is itself a violation of this convention, not a
+stricter reading of it.
+
+When a `service.py`/`repository.py` is split, the original public surface (the module-level
+class/singleton/function names other modules and tests import) **must resolve at the exact
+same import path afterward**, via the subpackage's `__init__.py` re-exporting everything a
+real call site uses today — including any private (underscore-prefixed) names a test file
+imports directly (debug-only scripts are not load-bearing the same way: fix their one-line
+import instead of promoting a deliberately-private helper to the package's public API).
+Composition inside a split `service.py` is **always delegation to free functions taking
+explicit arguments** (the same shape `ingestion/service/` and `documents/service/` use) —
+**never mixins**. If a clean free-function split would need many self-like positional args
+threaded through every call, that's evidence the responsibilities aren't actually
+separable; leave the file flat rather than force a bad split.
+
+**The ORM registration rule:** every ORM model class must still be imported, by name, at
+metadata-assembly time (today: `migrations/env.py`'s side-effect imports of each module's
+`models.py`). If a `models.py` is ever promoted to a `models/` package, its
+`models/__init__.py` **must import every model class** (not just re-export the ones other
+modules happen to use) — Alembic only sees a table if its class has been imported
+somewhere on the path to `Base.metadata`; a model class that's merely defined in an
+unimported submodule silently vanishes from autogenerate/migrations with no error. No
+`models.py` has been promoted yet (none crossed the 200-line/independent-responsibility
+threshold as of F31) — this rule is recorded now, before it's needed, so the first module
+that does cross it doesn't relearn this the hard way.
+
+**Reference module:** `knowledge/` and `retrieval/` — every file is one cohesive concern at
+a sane size, and `retrieval/` correctly has no `models.py`/`repository.py` since it owns no
+table. Hold new modules to this, not to "more files is more structured."
+
+This convention was applied retroactively to F00–F31 as a pure structural refactor (zero
+logic/behavior/schema/API change): `platform/seams.py` → `platform/seams/`,
+`ingestion/service.py` → `ingestion/service/`, `documents/repository.py` →
+`documents/repository/`, `documents/service.py` → `documents/service/`. See memory.md for
+the file-by-file map. Applies to every feature from F40 onward.
+
 ## Boundaries (HARD RULES)
 1. A module calls another module **only through its `service`** — never its repository or tables.
    Example: `chat` asks `retrieval.service` for context; it never touches `chunks` directly.

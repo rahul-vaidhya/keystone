@@ -48,10 +48,15 @@ These are procedures, not code. They are language-agnostic.
   (files to touch, module boundaries respected, tests to add, Definition of Done).
   **Do not write code in this step.**
 - **Implement**: build exactly the planned feature. Obey `.claude/context/codestandards.md` and the
-  module-boundary rule (cross-module calls go through `service` only). Land tests with the code.
+  module-boundary rule (cross-module calls go through `service` only). Follow the package-layout
+  convention (`architecture.md` "Package-layout convention"): start each layer file flat; promote to
+  a subpackage only when it exceeds ~200 lines AND mixes 2+ genuinely independent responsibilities —
+  never pad a module that doesn't need the split. Land tests with the code.
 - **review** (`/review`, after implementing): verify — no SQL outside `repository.py`; no business logic
   in `router.py`; every query scoped by `org_id`; external calls go through a seam; the feature's
-  Definition of Done is met. Report violations, **do not auto-fix** without confirmation.
+  Definition of Done is met; **any layer file that has crossed the package-layout trigger (>200 lines
+  AND 2+ independent responsibilities) has been promoted to a subpackage, and no module has been
+  padded with files it doesn't need.** Report violations, **do not auto-fix** without confirmation.
 - **recover** (`/recover`, when the agent spirals or tests fail mysteriously): stop adding code. Diagnose
   against `.claude/context/architecture.md`'s hard rules and the staged-pipeline status model. Propose the
   smallest targeted fix.
@@ -75,3 +80,9 @@ boxes in `.claude/progresstracker.md` with the commit ref. Never end a session w
    designed-for now but populated later behind a flag.** Never break this split.
 7. MVP retrieval is flat vector search. Hierarchical (V2) and graph (V3) are additive,
    behind flags, with **no schema rewrite**.
+8. **Package-layout convention (locked F31 refactor):** a layer file (`service.py`/
+   `repository.py`/etc.) is promoted to a subpackage only when it exceeds ~200 lines AND
+   mixes 2+ independent responsibilities — never speculatively, never to pad a module that
+   doesn't need it (`retrieval/` having no `models.py`/`repository.py` is correct, not a
+   gap). Full rule + the ORM metadata-registration caveat: `architecture.md` "Package-layout
+   convention".
