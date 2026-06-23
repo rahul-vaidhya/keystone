@@ -76,7 +76,26 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       `DocumentRepository.begin_parsing` (UPLOADED/PARSING/FAILED-at-PARSING are eligible;
       STRUCTURING+ is a no-op). DoD met: `tests/test_ingestion.py` (successful parse,
       parser failure, idempotent re-run, tenant isolation). 49/49 suite green, ruff clean.
-- [ ] F21 structuring stage (sections tree + chunks + offsets, idempotent)
+- [x] F21 structuring stage (`5eecac5`) — new `app/ingestion/models.py` (`Section`/`Chunk`,
+      owned by ingestion since it's the producing stage) + `app/ingestion/repository.py`
+      (`SectionRepository`/`ChunkRepository`: `delete_for_document`/`bulk_create` only —
+      idempotency is delete+rebuild in one transaction, not row-level upsert). Migration
+      `0006_sections_chunks.py`. `IngestionService.run_structuring_stage` consumes the F20
+      parsing artifact, builds the sections tree from the flat outline via a level-keyed
+      stack (document order preserved), implements the degenerate-outline contract (no
+      headings → one root section spanning the full char range), and chunks only LEAF
+      sections (~1000-char windows, break on whitespace, `token_count` heuristic
+      `len(content)//4` — no tokenizer dependency) so every chunk has exactly one
+      `section_id` by construction. `chunk_id` stays a deterministic
+      `sha256(document_id|ordinal|content)` hash per codestandards even though delete+
+      rebuild doesn't rely on it for upsert-matching. New `documents.repository`
+      `begin_structuring`/`complete_structuring` + `documents.service` wrappers (mirrors
+      F20's `begin_parsing`/`complete_parsing` exactly) plus a narrow
+      `get_parse_artifact_key` accessor (keeps `metadata` off the public `DocumentOut`
+      shape). `POST /ingestion/documents/{id}/structure`. STRUCTURING → EMBEDDING; failures
+      set FAILED+failed_stage=STRUCTURING. DoD met: `tests/test_ingestion.py` (sections
+      reflect the outline, chunks carry valid offsets, degenerate-outline one-root case,
+      idempotent re-run, failure path, tenant isolation). 55/55 suite green, ruff clean.
 - [ ] F22 embedding stage (chunk embeddings, idempotent, status→ready)
 
 ## Phase 3 — Knowledge + Retrieval
@@ -109,9 +128,10 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
 Phase: **0 COMPLETE** (F00–F04, F03+F04 = c35ee11). **Phase 1 (Identity + Documents) COMPLETE**
 (F10 `8940dd1`, F11 `c58a5e7`, F12 `0b44b9c`). **F50 + a slice of F51 (Phase 5 frontend) DONE
 and committed (`054aa36`)**, pulled forward out of sequence per direct senior instruction.
-**F20 (Phase 2 parsing stage) DONE and committed this session (`0277cfe`).**
-Next action: F21 structuring stage (build `sections` tree + `chunks` from the F20 parsing
-artifact), **or** resume the rest of F51 (folders/tags/upload UI) against the real F11/F12
-backend — both are unblocked; ask the user which to pick up first.
+**F20 (Phase 2 parsing stage) DONE (`0277cfe`). F21 (Phase 2 structuring stage) DONE and
+committed this session (`5eecac5`).**
+Next action: F22 embedding stage (embed chunks, upsert `embeddings(owner_type='chunk')`,
+status→ready), **or** resume the rest of F51 (folders/tags/upload UI) against the real
+F11/F12 backend — both are unblocked; ask the user which to pick up first.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

@@ -7,10 +7,67 @@
 ## Current phase
 **Phase 0 COMPLETE** (F00–F04, F03+F04 = c35ee11, 27 tests, ruff clean). **Phase 1 (Identity +
 Documents) COMPLETE**: F10 (`8940dd1`), F11 (`c58a5e7`), F12 (`0b44b9c`). **F50 + a slice of F51
-(Phase 5 frontend) DONE and committed** (`054aa36`). **Phase 2 started: F20 parsing stage DONE**
-(`0277cfe`, this session). Next: F21 structuring stage (sections tree + chunks from the F20
-parsing artifact), or resume the rest of F51 (folders/tags/upload UI) against the real F11/F12
-backend — ask the user which.
+(Phase 5 frontend) DONE and committed** (`054aa36`). **Phase 2: F20 parsing stage DONE** (`0277cfe`)
+**and F21 structuring stage DONE** (`5eecac5`, this session). Next: F22 embedding stage (embed
+chunks, upsert `embeddings(owner_type='chunk')`, status→ready), or resume the rest of F51
+(folders/tags/upload UI) against the real F11/F12 backend — ask the user which.
+
+## F21 Structuring stage (2026-06-25, this session, 5eecac5)
+- **New tables owned by `ingestion`, not a new module**: `app/ingestion/models.py`
+  (`Section`, `Chunk`) + `app/ingestion/repository.py` (`SectionRepository`/
+  `ChunkRepository`, each just `delete_for_document` + `bulk_create`). Migration
+  `0006_sections_chunks.py`. Decision: ingestion produces this structural data and no
+  other module exists yet that needs to own it; a future retrieval module (F31) can import
+  these ORM classes directly for joins (same pattern `document_tags` already uses against
+  `documents`) without violating the module-boundary rule, since that's not calling
+  ingestion's service/repository methods.
+- **Idempotency = delete-then-rebuild in one transaction, not row-level upsert.** On a
+  (re)run, `run_structuring_stage` deletes the document's existing sections+chunks then
+  inserts freshly-built ones, inside one `ingestion`-owned transaction — simpler than
+  upserting a parent/child tree with stable IDs across reruns, and equally duplicate-free.
+  `chunk_id` is still a deterministic `sha256(document_id|ordinal|content)` hash per
+  codestandards ("Ingestion correctness") even though this code path doesn't rely on it for
+  upsert-matching — it's there so a future move to true upserts needs no migration.
+  Section ids are plain `uuid.uuid4()` (no determinism needed since the whole subtree is
+  rebuilt together every time).
+- **Tree-building algorithm**: `_build_section_nodes` in `app/ingestion/service.py` turns
+  the parser's flat outline (`heading`, `level`, offsets — document order) into a nested
+  tree via a stack keyed on `level`: deeper level → child of stack top; shallower/equal →
+  pop until a lower-level parent is found. **Degenerate-outline contract** (architecture.md):
+  empty outline → ONE root section (`heading=None`, `char_start=0`, `char_end=len(text)`),
+  itself a leaf, so it still gets chunked — the invariant "every chunk has a `section_id`"
+  holds by construction in both the headed and headingless case.
+  - **Gotcha if this is ever revisited**: the algorithm doesn't validate that children's
+    char ranges actually cover their parent's full range — it just trusts the outline.
+    Chunking happens only on LEAF sections precisely to dodge the double-coverage problem
+    this would otherwise cause; if a future parser ever emits a heading tree with real gaps
+    between a parent's range and its children's, that gap's text is silently never chunked.
+    Not handled — no real parser exists yet to produce that shape (FakeParser/F20 are both
+    flat two-heading outlines).
+- **Chunking**: leaf sections only, ~1000-char windows breaking on the nearest preceding
+  space (`_split_into_windows`), `token_count = len(content) // 4` (a rough heuristic — no
+  tokenizer dependency added; revisit if real chunk-size accuracy ever matters for cost/
+  context-window tuning). `ordinal` is document-wide (not reset per section), increasing in
+  document order, for stable future citation ordering.
+- **`documents.service.get_parse_artifact_key(ctx, document_id) -> str`**: a narrow accessor
+  added so `ingestion.service` can read the F20-written `metadata_["parse_artifact_key"]`
+  without exposing the internal `metadata` column on the public `DocumentOut` HTTP response
+  shape. Single caller today (ingestion's structuring stage) — deliberate, not a leftover.
+- **`begin_structuring`/`complete_structuring`** added to `DocumentRepository` +
+  `DocumentsService`, exactly mirroring F20's `begin_parsing`/`complete_parsing` shape:
+  eligible to (re)start structuring only if status is `STRUCTURING` (the state F20 leaves a
+  doc in, or a crashed-and-resumed run) or `FAILED` with `failed_stage == STRUCTURING`;
+  anything `EMBEDDING`+ returns unchanged (idempotent no-op).
+- **Audited for unused code**: removed `SectionRepository.list_for_document` and
+  `ChunkRepository.list_for_document` before committing — written speculatively, ended up
+  with zero callers (tests query `Section`/`Chunk` via a raw `select(...)` instead). Same
+  audit habit as F20's removed speculative `DocumentsService.get_document`.
+- 6 new integration tests in `tests/test_ingestion.py`: successful structuring (status →
+  EMBEDDING), idempotent re-run (no duplicates, identical response), failure path (artifact
+  missing/corrupt → FAILED + failed_stage=STRUCTURING), tenant isolation, sections/chunks
+  shape assertions (every chunk's `section_id` in the document's section set, valid
+  `char_start < char_end`), and the degenerate-outline case (one root section, all chunks
+  attached to it). Full suite: 55/55 green, ruff clean.
 
 ## F20 Parsing stage (2026-06-24, this session, 0277cfe)
 - **New `app/ingestion` module**: `service.py` + `router.py` only — deliberately **no**
