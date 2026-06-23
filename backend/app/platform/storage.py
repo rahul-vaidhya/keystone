@@ -21,6 +21,7 @@ from app.platform.config import settings
 
 class ObjectStore(Protocol):
     async def put(self, key: str, data: bytes, content_type: str) -> None: ...
+    async def get(self, key: str) -> bytes: ...
 
 
 class R2ObjectStore:
@@ -47,6 +48,10 @@ class R2ObjectStore:
             ContentType=content_type,
         )
 
+    async def get(self, key: str) -> bytes:
+        response = await asyncio.to_thread(self._client.get_object, Bucket=self._bucket, Key=key)
+        return await asyncio.to_thread(response["Body"].read)
+
 
 def get_object_store() -> ObjectStore:
     """FastAPI dependency factory. Tests override this via ``app.dependency_overrides``
@@ -57,3 +62,9 @@ def get_object_store() -> ObjectStore:
 def build_storage_key(org_id: uuid.UUID, document_id: uuid.UUID, filename: str) -> str:
     ext = Path(filename).suffix
     return f"org/{org_id}/doc/{document_id}/source{ext}"
+
+
+def build_artifact_key(org_id: uuid.UUID, document_id: uuid.UUID, stage: str) -> str:
+    """Persisted ingestion-stage artifact key (librarydocs.md "Object storage":
+    ``.../artifacts/{stage}.json``)."""
+    return f"org/{org_id}/doc/{document_id}/artifacts/{stage}.json"

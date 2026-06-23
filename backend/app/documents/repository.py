@@ -8,6 +8,7 @@ import uuid
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.documents.models import Document, DocumentTag, Folder, Tag
+from app.documents.status import DocumentStatus
 from app.platform.repository import BaseRepository
 
 
@@ -102,6 +103,44 @@ class DocumentRepository(BaseRepository[Document]):
         document.checksum = checksum
         document.mime_type = mime_type
         document.byte_size = byte_size
+        await self._db.flush()
+
+    async def begin_parsing(self, document_id: uuid.UUID) -> Document | None:
+        """Transition to PARSING if eligible; otherwise return the document unchanged so the
+        caller can treat it as an idempotent no-op (F20: "parsing must be idempotent and
+        resumable"). Eligible: a fresh ``UPLOADED`` doc, a doc stuck in ``PARSING`` (crashed
+        before the artifact was persisted, so there's nothing to resume from but a re-parse),
+        or a doc that previously ``FAILED`` at the parsing stage (retry). A doc already past
+        parsing (``STRUCTURING``/``EMBEDDING``/``READY``) is left as-is."""
+        document = await self.get_by_id(document_id)
+        if document is None:
+            return None
+        eligible = document.status in (DocumentStatus.UPLOADED, DocumentStatus.PARSING) or (
+            document.status == DocumentStatus.FAILED
+            and document.failed_stage == DocumentStatus.PARSING
+        )
+        if eligible:
+            document.status = DocumentStatus.PARSING
+            document.failed_stage = None
+            document.error_detail = None
+            await self._db.flush()
+        return document
+
+    async def complete_parsing(
+        self, document: Document, *, language: str, page_count: int, artifact_key: str
+    ) -> None:
+        document.language = language
+        document.page_count = page_count
+        document.metadata_ = {**document.metadata_, "parse_artifact_key": artifact_key}
+        document.status = DocumentStatus.STRUCTURING
+        await self._db.flush()
+
+    async def mark_failed(
+        self, document: Document, *, failed_stage: str, error_detail: str
+    ) -> None:
+        document.status = DocumentStatus.FAILED
+        document.failed_stage = failed_stage
+        document.error_detail = error_detail
         await self._db.flush()
 
 

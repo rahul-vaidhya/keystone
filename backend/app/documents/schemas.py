@@ -46,7 +46,11 @@ class DocumentOut(BaseModel):
     mime_type: str | None
     byte_size: int | None
     checksum: str | None
+    page_count: int | None
+    language: str | None
     status: str
+    failed_stage: str | None
+    error_detail: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True}

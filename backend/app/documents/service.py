@@ -134,5 +134,49 @@ class DocumentsService:
             out = DocumentOut.model_validate(document)
         return out, True
 
+    async def begin_parsing(self, ctx: TenantContext, document_id: uuid.UUID) -> DocumentOut:
+        """Called by ``ingestion.service`` (never the repository directly — module boundary
+        rule) to claim a document for the parsing stage. Returns the document unchanged, with
+        whatever status it already had, when parsing isn't eligible to (re)start — the caller
+        checks the returned status to decide whether to proceed."""
+        async with db_mod.sessionmaker() as session, session.begin():
+            document = await DocumentRepository(session, ctx).begin_parsing(document_id)
+            if document is None:
+                raise DocumentNotFound("Document not found")
+            out = DocumentOut.model_validate(document)
+        return out
+
+    async def complete_parsing(
+        self,
+        ctx: TenantContext,
+        document_id: uuid.UUID,
+        *,
+        language: str,
+        page_count: int,
+        artifact_key: str,
+    ) -> DocumentOut:
+        async with db_mod.sessionmaker() as session, session.begin():
+            repo = DocumentRepository(session, ctx)
+            document = await repo.get_by_id(document_id)
+            if document is None:
+                raise DocumentNotFound("Document not found")
+            await repo.complete_parsing(
+                document, language=language, page_count=page_count, artifact_key=artifact_key
+            )
+            out = DocumentOut.model_validate(document)
+        return out
+
+    async def fail_stage(
+        self, ctx: TenantContext, document_id: uuid.UUID, *, failed_stage: str, error_detail: str
+    ) -> DocumentOut:
+        async with db_mod.sessionmaker() as session, session.begin():
+            repo = DocumentRepository(session, ctx)
+            document = await repo.get_by_id(document_id)
+            if document is None:
+                raise DocumentNotFound("Document not found")
+            await repo.mark_failed(document, failed_stage=failed_stage, error_detail=error_detail)
+            out = DocumentOut.model_validate(document)
+        return out
+
 
 documents_service = DocumentsService()

@@ -22,10 +22,17 @@ class _InMemoryObjectStore:
     async def put(self, key: str, data: bytes, content_type: str) -> None:
         self.puts[key] = data
 
+    async def get(self, key: str) -> bytes:
+        return self.puts[key]
+
 
 @pytest.fixture
 async def client(session_factory, tenant_engine) -> AsyncClient:
-    app.dependency_overrides[get_object_store] = lambda: _InMemoryObjectStore()
+    # One shared store instance for the whole test: FastAPI calls the override fresh on
+    # every request, so a `lambda: _InMemoryObjectStore()` would give each request its own
+    # empty store and a later GET could never see an earlier PUT.
+    store = _InMemoryObjectStore()
+    app.dependency_overrides[get_object_store] = lambda: store
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.pop(get_object_store, None)
