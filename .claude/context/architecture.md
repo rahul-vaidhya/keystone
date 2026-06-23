@@ -99,6 +99,53 @@ Fakes: hash-based deterministic embedder; echo-context LLM; fixed-output parser.
 app and test suite with no API keys, no cost, reproducible. pgvector, object store, and the queue
 are called directly (we are not swapping Postgres). A `Reranker` seam is added in V2, not now.
 
+**Seam mode is PER-SEAM, not one global switch (decided F23):** the original single
+`SEAMS_MODE=fake|real` flag is refined into three independent switches — parser, embedder, and
+llm each resolve `fake`/`real` on their own (e.g. `PARSER_MODE`/`EMBEDDER_MODE`/`LLM_MODE`).
+This lets the real parser be validated against real documents while the embedder and LLM stay
+on fakes (no API cost/keys needed for that validation). **Default for every seam, in every
+environment, remains `fake`** — real is opt-in per seam, never the app default, and the
+offline Testcontainers CI suite always runs fully fake regardless of what's configured locally.
+The 3-seam rule itself (Parser/Embedder/LLM, nothing else) is unchanged — this only changes how
+each seam's mode is selected, not how many seams exist or their Protocol shapes.
+
+**Real Parser vendor — resolved F23 (OpenRouter file-parser plugin):**
+- `RealParser` calls OpenRouter's `/chat/completions` file-parser plugin directly over HTTP
+  (lazy-imported `httpx`) — a **separate adapter/vendor call** from `RealEmbedder`/`RealLLM`,
+  even though both happen to be OpenRouter-compatible endpoints. Two seams, two adapters, never
+  collapsed into one client.
+- **Engine routing** (minimizes OCR cost): try the free `cloudflare-ai` text engine first
+  (the current name — `pdf-text` is **deprecated and redirects to `cloudflare-ai`**, confirmed
+  against OpenRouter's docs during F23; target the current name directly). If the result is
+  negligible (< `PARSER_OCR_FALLBACK_MIN_CHARS_PER_PAGE`, default 20, chars per page), retry
+  once with billed `mistral-ocr`. If both are negligible, raise — never persist garbage.
+- **PDF only.** Non-PDF mime is rejected with a `ValueError`. DOCX is a deliberately deferred
+  future adapter branch, not built in F23.
+- **Heading structure is recovered from the provider's markdown output, never fabricated.**
+  Both engines return markdown; `#`/`##`/`###` lines are parsed into the `OutlineNode` tree
+  (`_parse_markdown_outline` in `seams.py`), with each heading's range extended to the next
+  heading at the same-or-shallower level (not just the next heading in the flat list), so a
+  parent's range still covers its children. If a document's output has no markdown headings,
+  the outline is `[]` and F21's degenerate-outline contract (one root section) takes over —
+  this is a valid, expected per-document finding, not a bug.
+- **Two known, accepted F23 findings, not bugs to fix:**
+  1. `language` is hardcoded `"en"` — the provider doesn't return detected language. A future
+     language-detection pass (if ever needed) is a separate, additive concern.
+  2. Page-level provenance does NOT survive parsing — markdown has no page-boundary markers, so
+     every recovered heading gets `page_start=1, page_end=page_count` (document-level, not a
+     real per-heading span). The F23 integration harness prints whether this held per document.
+- **Idempotent retry without re-paying OCR**, realized at the **ingestion-stage level**, not by
+  threading OpenRouter's own annotation/hash-reuse objects through the generic `ParsedDoc` seam
+  type (that mechanism is for multi-turn chat reuse and doesn't fit a stateless one-shot
+  `extract()` call, and would have broken the "same shape for fake and real" seam contract).
+  Instead, `run_parsing_stage` checks whether the parsing artifact already exists in the object
+  store before calling `parser.extract` — if a prior attempt crashed after persisting the
+  artifact but before the status write, the retry reuses it and skips the parser call entirely.
+  This benefits the fake parser too (closed a latent gap, not F23-only).
+- PDF page count is read **locally** via lazy-imported `pypdf`, never trusted from the API
+  response — this is also where an encrypted PDF is detected and rejected, before any network
+  call is made.
+
 ---
 
 ## Ingestion pipeline (staged, idempotent, resumable)

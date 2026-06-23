@@ -105,7 +105,25 @@ web-search the current official docs (versions move). Focus here is "the way we 
      in the DB — so a crash between (1) and (2) self-heals. (There is no "same DB tx" for blobs.)
 
 ## Parser / OCR vendor
-- Decided in Phase 2. Whatever it is, it stays behind the `Parser` seam. **Do not hand-roll OCR.**
+- **Resolved F23: OpenRouter's file-parser plugin**, called directly over HTTP from inside
+  `RealParser` (`platform/seams.py`) — never hand-rolled OCR, never leaks outside the seam.
+- Send the PDF as a base64 `file` content part on a `/chat/completions` call, with
+  `plugins: [{"id": "file-parser", "pdf": {"engine": ...}}]`. The model/generated text is
+  incidental (`max_tokens=1`) — only `choices[0].message.annotations[].file.content[]`
+  (a list of `{type, text}` blocks) is read; concatenate the text blocks in order to build
+  the canonical extracted text, and compute all char offsets against THAT text, never the
+  source PDF bytes.
+- **Engine routing**: try `cloudflare-ai` (free; `pdf-text` is deprecated and redirects here —
+  use the current name) first; fall back to `mistral-ocr` (billed) only if the result is
+  negligible (`PARSER_OCR_FALLBACK_MIN_CHARS_PER_PAGE`, default 20 chars/page) — minimizes
+  OCR spend, only pays for OCR on actually-scanned PDFs.
+- **Heading structure**: both engines return markdown; parse `#`/`##`/`###` lines into the
+  outline. Pass through flat (`outline=[]`) when a document has none — never fabricate
+  structure. See architecture.md's "Real Parser vendor — resolved F23" for the accepted
+  language/page-provenance limitations.
+- Page count is read locally via `pypdf` (also where encrypted PDFs are detected), never
+  trusted from the API response.
+- DOCX is out of scope — a future adapter branch, not built.
 
 ## When unsure about a library's current API
 - Check the seam/wrapper first (we may already encapsulate it). Then web-search the official docs for

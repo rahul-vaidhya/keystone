@@ -46,6 +46,31 @@ one's DoD is met. Keep features small enough for one focused session.
 - **F22 embedding stage:** embed chunks, upsert `embeddings(owner_type='chunk')`, status→`ready`.
   - *DoD:* re-running embedding does not duplicate rows; a `ready` doc is queryable.
 
+## Phase 2.5 — Real-parser validation
+F00–F22 ran the entire pipeline against `FakeParser` only. Before building Phase 3+ (retrieval,
+notebooks, chat) on top of the structuring/chunking/embedding contract, validate that a REAL
+parser slots into the same `Parser` seam with zero changes downstream. Cheap to find a contract
+mismatch now; expensive after Phase 3+ depends on it.
+- **F23 Real parser integration:**
+  - *DoD:*
+    - Real parser adapter implements the EXISTING `Parser` port — same output shape as the fake:
+      extracted text, structural blocks (heading depth + section boundaries), provenance
+      (page/offset signal the structuring stage turns into char offsets).
+    - Seam mode becomes PER-SEAM (`SEAMS_MODE` split into `PARSER_MODE`/`EMBEDDER_MODE`/`LLM_MODE`
+      or equivalent): parser can be `real` while embedder + llm stay `fake`; the full test suite
+      stays fully fake and deterministic. Real is opt-in, never the app default.
+    - An opt-in integration path (script or env-gated pytest marker) runs
+      upload→parse→structure→chunk→embed on one real file and dumps the section tree + chunks +
+      offsets for manual inspection. It MUST NOT run in the offline Testcontainers CI suite
+      (network + cost).
+    - Real failures (timeout, unsupported format, scanned-no-OCR, encrypted, oversized) map onto
+      the existing stage failure model (`status=FAILED` + `failed_stage` + `error_detail`) — no
+      uncaught exceptions.
+    - **Acceptance gate:** swapping fake→real requires ZERO changes to structuring/chunking/
+      embedding. If it does, that mismatch IS the finding — stop and fix the contract before F30.
+    - One real document reaches `READY` on real-parser output; CI stays fake-only and green.
+  - *Defer (do NOT build here):* semantic enrichment (V2), OCR tuning, multi-provider fallback.
+
 ## Phase 3 — Knowledge + Retrieval
 - **F30 Notebooks:** create notebook; add/remove documents by reference (join table).
   - *DoD:* a document in two notebooks has exactly one set of chunks/embeddings.

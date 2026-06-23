@@ -8,9 +8,110 @@
 **Phase 0 COMPLETE** (F00–F04, F03+F04 = c35ee11, 27 tests, ruff clean). **Phase 1 (Identity +
 Documents) COMPLETE**: F10 (`8940dd1`), F11 (`c58a5e7`), F12 (`0b44b9c`). **F50 + a slice of F51
 (Phase 5 frontend) DONE and committed** (`054aa36`). **Phase 2 (Ingestion core path) COMPLETE**:
-F20 parsing (`0277cfe`), F21 structuring (`5eecac5`), F22 embedding (`4598698`).
-Next: F30 Notebooks (Phase 3), or resume the rest of F51 (folders/tags/upload UI) against the
-real F11/F12 backend — ask the user which.
+F20 parsing (`0277cfe`), F21 structuring (`5eecac5`), F22 embedding (`4598698`). **Phase 2.5
+COMPLETE: F23 Real parser integration built and committed this session** (code + docs as
+separate commits — see entry below for refs).
+Next: **one real PDF should be run through the opt-in `real_parser` integration test** (needs
+an `OPENROUTER_API_KEY` + a sample PDF — not yet done, no real document has exercised this
+path) to confirm the empirical findings (heading recovery, page provenance) on an actual file
+before leaning on it for Phase 3+. After that: F30 Notebooks (Phase 3), or resume the rest of
+F51 (folders/tags/upload UI) against the real F11/F12 backend — ask the user which.
+
+## F23 Real parser integration — built (2026-06-23, this session)
+- **Provider, resolved**: OpenRouter's file-parser plugin, called directly over HTTP from
+  `RealParser` in `app/platform/seams.py` (lazy-imported `httpx`) — a separate adapter/vendor
+  call from `RealEmbedder`/`RealLLM`, never collapsed into one client even though both are
+  OpenRouter-compatible endpoints. PDF only; DOCX explicitly deferred (future adapter branch).
+- **Research correction during Architect**: the brief said `pdf-text` engine; confirmed against
+  current OpenRouter docs that `pdf-text` is **deprecated and redirects to `cloudflare-ai`** —
+  targeted `cloudflare-ai` directly instead of the deprecated alias. `mistral-ocr` is the
+  billed OCR fallback, tried only if `cloudflare-ai`'s output is negligible
+  (`PARSER_OCR_FALLBACK_MIN_CHARS_PER_PAGE`, default 20 chars/page) — keeps OCR cost paid only
+  on actually-scanned PDFs. Response shape: `choices[0].message.annotations[].file.content[]`
+  is a list of `{type, text}` blocks (not a flat string); concatenated in order to build the
+  canonical text that all char offsets are computed against (never the source PDF bytes).
+- **Markdown-structure decision (this session's plan amendment, not the original brief)**: both
+  engines return markdown, so heading structure is RECOVERED from `#`/`##`/`###` lines
+  (`_parse_markdown_outline`), not hardcoded to flat. Each heading's range is extended to the
+  next heading at the SAME-OR-SHALLOWER level (not just the next heading in the flat list) so
+  a parent's range still covers its children — this matters because F21's tree-builder
+  (`_build_section_nodes`) trusts whatever ranges the outline gives it; it does not recompute
+  them. If a document's output has no markdown headings, outline is `[]` and F21's existing
+  degenerate-outline contract (one root section) takes over — a valid per-document finding,
+  not a bug. **Markdown level is always ≥1 by construction (regex is `#{1,6}`)**, so F21's
+  stack-pop condition (`stack[-1][0] >= level`) stays well-defined — checked explicitly in
+  review, no fix needed.
+- **Two accepted F23 findings (empirical, to be measured against a real document, not yet
+  run)**: (1) `language` is hardcoded `"en"` — OpenRouter's parser doesn't return detected
+  language; (2) page-level provenance does NOT survive — markdown has no page-boundary
+  markers, so every heading gets `page_start=1, page_end=page_count` (document-level, not a
+  real per-heading span). The opt-in integration test prints both flags
+  (`headings recovered: yes/no`, `page-level provenance survived: yes/no`) for whatever real
+  PDF it's run against — **no real PDF has been run through it yet**, so these are documented
+  expectations from the code, not confirmed findings from real data. Don't treat them as
+  confirmed until the integration test has actually been run once.
+- **Annotation-reuse deviation (approved by user, deliberate)**: did NOT thread OpenRouter's
+  own hash-based annotation-reuse mechanism through the generic `ParsedDoc` seam type — that
+  mechanism is for multi-turn chat reuse and doesn't fit a stateless one-shot `extract()` call,
+  and would have broken the "same shape for fake and real" seam contract. Instead, the
+  idempotency goal ("a retry doesn't re-pay OCR") is realized at the ingestion-stage level:
+  `run_parsing_stage` now checks whether the parsing artifact already exists in the object
+  store BEFORE calling `parser.extract`; if a prior attempt crashed after persisting the
+  artifact but before the status write, the retry reuses it and skips the parser call
+  entirely. This is the ONLY change to `ingestion/service.py` — structuring/chunking/embedding
+  are byte-identical to F22 (verified via `git diff` in review). Also closes a latent gap for
+  the FAKE parser (a crash-after-persist previously always re-parsed from scratch too).
+- **Per-seam mode, implemented** (architecture.md already had this recorded as a decision from
+  the docs-only insertion last session; this session is where the code actually changed):
+  `SEAMS_MODE` replaced by independent `PARSER_MODE`/`EMBEDDER_MODE`/`LLM_MODE` (each
+  `fake`|`real`, default `fake`) via `_resolve_mode()` in `seams.py`. All call sites
+  (`.env.example`, `test_config_smoke.py`, `test_seams.py`) updated — grepped the whole repo
+  for stray `SEAMS_MODE` references before finishing.
+- **PDF page count read locally** via lazy-imported `pypdf` (added to the `[real]` pyproject
+  extra, not core) — never trusted from the API response; also where an encrypted PDF is
+  detected and rejected (`reader.is_encrypted`) before any network call is made.
+- **Opt-in integration test, not a script**: `tests/test_real_parser_integration.py`, marked
+  `real_parser` (registered in `pyproject.toml`) and `skipif`'d unless both
+  `OPENROUTER_API_KEY` and `REAL_PDF_PATH` env vars are set — reuses the existing
+  Testcontainers fixtures rather than building separate bootstrap script infra. CI explicitly
+  excludes it (`pytest -q -m "not real_parser"` in `ci.yml`), belt-and-suspenders on top of the
+  self-skip.
+- **Verified manually (no real PDF, no API key)**: hand-built fake `httpx`/`pypdf` modules via
+  `sys.modules` injection to exercise the full `RealParser.extract` flow end-to-end three ways
+  — cloudflare-ai succeeds first try (1 call), cloudflare-ai negligible → mistral-ocr fallback
+  succeeds (2 calls), and (in review) all failure modes confirmed to map onto the existing
+  FAILED/failed_stage mechanism with nothing escaping `run_parsing_stage` uncaught.
+- 63/63 fake-only suite green, ruff clean, independent code-reviewer pass found zero
+  violations against the 7 hard rules and the F23 DoD (seam confinement, org_id scoping
+  preserved, idempotency correctness, zero structuring/chunking/embedding changes, full
+  failure-mode mapping, CI stays fake-only).
+
+## F23 inserted between F22 and F30 (2026-06-23, this session, docs only — no code)
+- **Why inserted:** the original buildplan jumped F22 → F30 with no real-parser validation step.
+  Every stage built so far (F20 parsing → F21 structuring → F22 embedding) ran exclusively against
+  `FakeParser`. Before building Phase 3+ (notebooks, retrieval, chat) on top of the structuring/
+  chunking/embedding contract, the real parser's actual output shape needs to be checked against
+  that contract — cheap to find a mismatch now, expensive once Phase 3+ depends on it. This ties
+  directly to the project's **#1 design risk: ingestion quality on real documents** (everything
+  downstream assumes the parser's outline/offsets are trustworthy; that assumption has never been
+  tested against anything but a 2-node fixed fake outline).
+- **Acceptance gate, not just a feature:** F23's DoD requires that swapping fake→real costs ZERO
+  changes to structuring/chunking/embedding. If it doesn't hold, that mismatch is itself the
+  finding to fix before F30 — F23 is a validation gate on the existing seam contract, not new
+  pipeline functionality.
+- **Seam mode resolution:** `SEAMS_MODE` (one global fake/real switch) is refined to per-seam
+  switching (parser/embedder/llm independently `fake`/`real`) so the real parser can be exercised
+  without needing embedder/LLM API keys too. Default stays `fake` everywhere; real is opt-in.
+  Recorded as a decision in `architecture.md`'s seams section — the 3-seam rule itself is
+  untouched, only how each seam's mode is chosen.
+- **Open decision still pending, not resolved by this insertion**: which real parser/OCR provider
+  to integrate. Whatever is chosen MUST return layout/heading structure (not just flat text) —
+  F21's structuring stage depends on a real outline (heading + level + offsets), not just
+  extracted text, to build a non-degenerate section tree. This was already an open question
+  (see "Open questions / to decide later" below); F23 is the feature that will actually answer it,
+  by testing a candidate provider's output against the contract.
+- **Scope explicitly deferred out of F23** (do not build during F23): semantic enrichment (V2
+  summaries/topics), OCR quality tuning, multi-provider fallback. F23 is contract validation only.
 
 ## F22 Embedding stage (2026-06-26, this session)
 - **`Embedding` model lives in `app/ingestion/models.py`** alongside `Section`/`Chunk` — same

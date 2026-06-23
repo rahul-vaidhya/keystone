@@ -110,6 +110,23 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       vector-length provenance, embedder failure path, idempotent re-run, tenant isolation).
       59/59 suite green, ruff clean.
 
+## Phase 2.5 — Real-parser validation
+- [~] F23 Real parser integration — CODE + REVIEW COMPLETE, this session (commit ref: see
+      memory.md). `RealParser` in `app/platform/seams.py` calls OpenRouter's file-parser
+      plugin (`cloudflare-ai` first, `mistral-ocr` fallback on negligible text), recovers
+      markdown heading structure into the outline (not fabricated), zero changes to
+      structuring/chunking/embedding (verified via diff in review). Per-seam mode
+      (`PARSER_MODE`/`EMBEDDER_MODE`/`LLM_MODE`) implemented, replacing the single
+      `SEAMS_MODE`. Opt-in integration test (`real_parser` marker, excluded from CI) added.
+      All failure modes (API error, encrypted PDF, both engines negligible) map onto the
+      existing FAILED/failed_stage model — confirmed by independent code review (zero
+      violations against the 7 hard rules). 63/63 fake-only suite green, ruff clean.
+      **PARTIAL only because the DoD's "one real document reaches READY on real-parser
+      output" has NOT been exercised yet** — no `OPENROUTER_API_KEY`/sample PDF was
+      available this session. Tick to [x] once the opt-in test has actually been run once
+      against a real PDF and the heading-recovery/page-provenance findings are confirmed
+      empirically (see memory.md "Next").
+
 ## Phase 3 — Knowledge + Retrieval
 - [ ] F30 Notebooks (reference join)
 - [ ] F31 Flat retrieval (scoped, isolation test passing)
@@ -142,7 +159,13 @@ Phase: **0 COMPLETE** (F00–F04, F03+F04 = c35ee11). **Phase 1 (Identity + Docu
 and committed (`054aa36`)**, pulled forward out of sequence per direct senior instruction.
 **Phase 2 (Ingestion core path) COMPLETE: F20 parsing (`0277cfe`), F21 structuring (`5eecac5`),
 F22 embedding (`4598698`).**
-Next action: F30 Notebooks (Phase 3), **or** resume the rest of F51 (folders/tags/upload UI)
-against the real F11/F12 backend — both are unblocked; ask the user which to pick up first.
+**Phase 2.5: F23 Real parser integration — CODE + REVIEW COMPLETE this session**, committed
+separately from docs (see memory.md for refs). Marked PARTIAL in the checklist above only
+because no real PDF has been run through the opt-in integration test yet (no API key/sample
+available this session).
+Next action: **run the opt-in `real_parser` integration test against one real PDF** (needs
+`OPENROUTER_API_KEY` + a sample PDF) to empirically confirm the heading-recovery and
+page-provenance findings before leaning on the real parser for Phase 3+. After that: F30
+Notebooks (Phase 3), or resume the rest of F51 (folders/tags/upload UI) — ask the user which.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".
