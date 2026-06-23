@@ -3,8 +3,8 @@ parser + structuring logic actually produce for a given PDF: the raw outline, th
 recovered section tree, the generated chunks, and their char offsets.
 
 Reuses the real production code paths directly (``RealParser.extract`` and
-``app.ingestion.service._build_sections_and_chunks``) so the output is exactly what the
-pipeline would build — nothing here is reimplemented or approximated. Writes nothing to
+``app.ingestion.service.structuring._build_sections_and_chunks``) so the output is exactly
+what the pipeline would build — nothing here is reimplemented or approximated. Writes nothing to
 the database; everything stays in memory and is printed/dumped to a JSON file for manual
 review.
 
@@ -28,7 +28,7 @@ import structlog
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from app.ingestion.service import _build_sections_and_chunks
+from app.ingestion.service.structuring import _build_sections_and_chunks
 from app.platform.seams import RealParser
 
 
