@@ -7,7 +7,10 @@ from app.platform.config import Settings, settings
 
 def test_defaults() -> None:
     assert settings.RLS_ENABLED is False  # enforced RLS is OFF until Phase 6
-    assert settings.SEAMS_MODE == "fake"  # no vendor keys needed in dev/test
+    # no vendor keys needed in dev/test — each seam defaults to fake independently (F23)
+    assert settings.PARSER_MODE == "fake"
+    assert settings.EMBEDDER_MODE == "fake"
+    assert settings.LLM_MODE == "fake"
     assert settings.DATABASE_URL.startswith("postgresql+asyncpg://")  # async driver
 
 

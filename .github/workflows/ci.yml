@@ -3,7 +3,9 @@ name: CI
 # F04 — run the full backend suite against an ephemeral Testcontainers Postgres+pgvector
 # on every push and PR. GitHub's ubuntu runners ship Docker, so the DB-backed integration
 # tests (which apply the real Alembic migration to a real pgvector container) actually run
-# here rather than skipping. Seams stay on the fakes (SEAMS_MODE=fake) — no API keys needed.
+# here rather than skipping. Seams stay on the fakes (PARSER_MODE/EMBEDDER_MODE/LLM_MODE
+# all default to fake) — no API keys needed. The opt-in F23 `real_parser`-marked test is
+# excluded explicitly (it would also self-skip from missing OPENROUTER_API_KEY/REAL_PDF_PATH).
 on:
   push:
   pull_request:
@@ -35,4 +37,4 @@ jobs:
           ruff format --check .
 
       - name: Test (pytest, real pgvector via Testcontainers)
-        run: pytest -q
+        run: pytest -q -m "not real_parser"

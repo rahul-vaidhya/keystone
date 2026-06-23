@@ -231,11 +231,28 @@ class IngestionService:
         if document.status != DocumentStatus.PARSING:
             return document
 
+        artifact_key = build_artifact_key(ctx.org_id, document.id, "parsing")
         try:
-            blob = await object_store.get(document.storage_key)
-            parsed = await parser.extract(blob, document.mime_type or "application/octet-stream")
-            artifact_key = build_artifact_key(ctx.org_id, document.id, "parsing")
-            await object_store.put(artifact_key, _serialize_artifact(parsed), "application/json")
+            # Idempotent re-run: a prior attempt may have already persisted the artifact
+            # (e.g. crashed after `put` but before the status write) — reuse it instead of
+            # re-calling the parser, which would re-pay any OCR cost on a real parser.
+            try:
+                existing = await object_store.get(artifact_key)
+            except Exception:
+                existing = None
+
+            if existing is not None:
+                artifact = json.loads(existing)
+                language, page_count = artifact["language"], artifact["page_count"]
+            else:
+                blob = await object_store.get(document.storage_key)
+                parsed = await parser.extract(
+                    blob, document.mime_type or "application/octet-stream"
+                )
+                await object_store.put(
+                    artifact_key, _serialize_artifact(parsed), "application/json"
+                )
+                language, page_count = parsed.language, parsed.page_count
         except Exception as exc:  # the only seam/IO call here — record, never swallow
             logger.warning(
                 "ingestion.parsing_failed",
@@ -253,8 +270,8 @@ class IngestionService:
         return await documents_service.complete_parsing(
             ctx,
             document_id,
-            language=parsed.language,
-            page_count=parsed.page_count,
+            language=language,
+            page_count=page_count,
             artifact_key=artifact_key,
         )
 

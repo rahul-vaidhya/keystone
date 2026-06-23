@@ -40,16 +40,32 @@ class Settings(BaseSettings):
     RLS_ENABLED: bool = False
 
     # --- Seams ---
-    # fake | real. Fakes are the default everywhere (no API keys, deterministic). Real
-    # adapters land per seam: Embedder/LLM here (F03), Parser/OCR vendor in Phase 2 (F20).
-    SEAMS_MODE: str = "fake"
-    # Real Embedder/LLM target an OpenAI-compatible API (used only when SEAMS_MODE=real);
-    # the models live behind the seam, so they stay swappable. text-embedding-3-small is
-    # 1536-d → matches the vector(1536) column; LLM_MODEL is a mini-class default.
+    # fake | real, ONE SWITCH PER SEAM (decided F23 — was a single SEAMS_MODE before).
+    # Fakes are the default everywhere (no API keys, deterministic); each seam opts into
+    # real independently, e.g. PARSER_MODE=real with EMBEDDER_MODE/LLM_MODE left on fake.
+    PARSER_MODE: str = "fake"
+    EMBEDDER_MODE: str = "fake"
+    LLM_MODE: str = "fake"
+    # Real Embedder/LLM target an OpenAI-compatible API (used only when EMBEDDER_MODE/
+    # LLM_MODE=real); the models live behind the seam, so they stay swappable.
+    # text-embedding-3-small is 1536-d → matches the vector(1536) column; LLM_MODEL is a
+    # mini-class default.
     OPENAI_API_KEY: str | None = None
     OPENAI_BASE_URL: str | None = None
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     LLM_MODEL: str = "gpt-4o-mini"
+    # Real Parser (F23) targets OpenRouter's file-parser plugin — a SEPARATE adapter/vendor
+    # from the OpenAI-compatible Embedder/LLM above, even though both ultimately go through
+    # an OpenRouter-compatible endpoint. PARSER_MODEL is incidental: the chat/completions
+    # call's generated text is discarded — only the plugin's file annotations are read — so
+    # any cheap model slug works. PARSER_OCR_FALLBACK_MIN_CHARS_PER_PAGE is the routing
+    # threshold: try the free `cloudflare-ai` text engine first, fall back to billed
+    # `mistral-ocr` only if the text engine returns fewer than this many chars per page
+    # (i.e. the PDF is scanned/image-only).
+    OPENROUTER_API_KEY: str | None = None
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    PARSER_MODEL: str = "openai/gpt-4o-mini"
+    PARSER_OCR_FALLBACK_MIN_CHARS_PER_PAGE: int = 20
 
     # --- Cloudflare R2 (S3-compatible object store) ---
     R2_ENDPOINT_URL: str | None = None
