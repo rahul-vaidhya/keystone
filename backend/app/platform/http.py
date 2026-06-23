@@ -15,6 +15,7 @@ from app.identity.exceptions import (
     TargetUserNotFound,
 )
 from app.identity.schemas import LoginAmbiguousResponse, OrgChoice
+from app.knowledge.exceptions import KnowledgeError, NotebookNotFound
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -44,6 +45,20 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"detail": str(exc) or "Documents error"},
+        )
+
+    @app.exception_handler(NotebookNotFound)
+    async def _notebook_not_found(_request: Request, exc: NotebookNotFound) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": str(exc) or "Notebook not found"},
+        )
+
+    @app.exception_handler(KnowledgeError)
+    async def _knowledge_error(_request: Request, exc: KnowledgeError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": str(exc) or "Knowledge error"},
         )
 
     @app.exception_handler(InvalidCredentials)

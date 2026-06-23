@@ -69,6 +69,15 @@ class DocumentRepository(BaseRepository[Document]):
         stmt = self._scoped().where(Document.checksum == checksum)
         return await self._db.scalar(stmt)
 
+    async def list_by_ids(self, document_ids: list[uuid.UUID]) -> list[Document]:
+        """Org-scoped batch lookup. First caller: ``knowledge.service`` resolving the document
+        rows for a notebook's attached document ids (knowledge owns the join table, not
+        ``documents`` itself, so it asks this service rather than reading the table directly)."""
+        if not document_ids:
+            return []
+        stmt = self._scoped().where(Document.id.in_(document_ids))
+        return list(await self._db.scalars(stmt))
+
     async def list(
         self, *, folder_id: uuid.UUID | None = None, tag_id: uuid.UUID | None = None
     ) -> list[Document]:

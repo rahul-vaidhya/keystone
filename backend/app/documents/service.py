@@ -220,6 +220,29 @@ class DocumentsService:
             out = DocumentOut.model_validate(document)
         return out
 
+    async def get_document(self, ctx: TenantContext, document_id: uuid.UUID) -> DocumentOut:
+        """Org-scoped existence lookup for OTHER modules (module-boundary rule: cross-module
+        calls go through a service, never a repository). First caller: ``knowledge.service``
+        validates a document belongs to the attaching org before joining it into a notebook —
+        a plain FK can't express that, since it only proves the document exists somewhere, not
+        that it's in the same org as the notebook."""
+        async with db_mod.sessionmaker() as session:
+            document = await DocumentRepository(session, ctx).get_by_id(document_id)
+        if document is None:
+            raise DocumentNotFound("Document not found")
+        return DocumentOut.model_validate(document)
+
+    async def list_by_ids(
+        self, ctx: TenantContext, document_ids: list[uuid.UUID]
+    ) -> list[DocumentOut]:
+        """Org-scoped batch lookup for OTHER modules (module-boundary rule). First caller:
+        ``knowledge.service`` resolving the document rows attached to a notebook — knowledge
+        owns the join table, not ``documents`` itself, so it asks this service rather than
+        reading the ``documents`` table directly."""
+        async with db_mod.sessionmaker() as session:
+            documents = await DocumentRepository(session, ctx).list_by_ids(document_ids)
+        return [DocumentOut.model_validate(d) for d in documents]
+
     async def get_parse_artifact_key(self, ctx: TenantContext, document_id: uuid.UUID) -> str:
         """Narrow accessor for ``ingestion.service`` (structuring stage): the F20 parsing
         artifact key, written into ``metadata_`` by ``complete_parsing``. A dedicated method
