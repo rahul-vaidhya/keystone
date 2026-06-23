@@ -9,8 +9,8 @@
 Documents) COMPLETE**: F10 (`8940dd1`), F11 (`c58a5e7`), F12 (`0b44b9c`). **F50 + a slice of F51
 (Phase 5 frontend) DONE and committed** (`054aa36`). **Phase 2 (Ingestion core path) COMPLETE**:
 F20 parsing (`0277cfe`), F21 structuring (`5eecac5`), F22 embedding (`4598698`). **Phase 2.5
-COMPLETE: F23 Real parser integration built and committed this session** (code + docs as
-separate commits — see entry below for refs).
+COMPLETE: F23 Real parser integration built and committed this session** (code `9e7f319`,
+docs `90285c2`).
 Next: **one real PDF should be run through the opt-in `real_parser` integration test** (needs
 an `OPENROUTER_API_KEY` + a sample PDF — not yet done, no real document has exercised this
 path) to confirm the empirical findings (heading recovery, page provenance) on an actual file

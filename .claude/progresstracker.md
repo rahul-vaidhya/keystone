@@ -111,8 +111,8 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       59/59 suite green, ruff clean.
 
 ## Phase 2.5 — Real-parser validation
-- [~] F23 Real parser integration — CODE + REVIEW COMPLETE, this session (commit ref: see
-      memory.md). `RealParser` in `app/platform/seams.py` calls OpenRouter's file-parser
+- [~] F23 Real parser integration — CODE + REVIEW COMPLETE, this session (code `9e7f319`,
+      docs `90285c2`). `RealParser` in `app/platform/seams.py` calls OpenRouter's file-parser
       plugin (`cloudflare-ai` first, `mistral-ocr` fallback on negligible text), recovers
       markdown heading structure into the outline (not fabricated), zero changes to
       structuring/chunking/embedding (verified via diff in review). Per-seam mode
@@ -159,10 +159,10 @@ Phase: **0 COMPLETE** (F00–F04, F03+F04 = c35ee11). **Phase 1 (Identity + Docu
 and committed (`054aa36`)**, pulled forward out of sequence per direct senior instruction.
 **Phase 2 (Ingestion core path) COMPLETE: F20 parsing (`0277cfe`), F21 structuring (`5eecac5`),
 F22 embedding (`4598698`).**
-**Phase 2.5: F23 Real parser integration — CODE + REVIEW COMPLETE this session**, committed
-separately from docs (see memory.md for refs). Marked PARTIAL in the checklist above only
-because no real PDF has been run through the opt-in integration test yet (no API key/sample
-available this session).
+**Phase 2.5: F23 Real parser integration — CODE + REVIEW COMPLETE this session** (code
+`9e7f319`, docs `90285c2`). Marked PARTIAL in the checklist above only because no real PDF
+has been run through the opt-in integration test yet (no API key/sample available this
+session).
 Next action: **run the opt-in `real_parser` integration test against one real PDF** (needs
 `OPENROUTER_API_KEY` + a sample PDF) to empirically confirm the heading-recovery and
 page-provenance findings before leaning on the real parser for Phase 3+. After that: F30
