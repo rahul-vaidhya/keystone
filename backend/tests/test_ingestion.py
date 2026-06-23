@@ -9,8 +9,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from app.ingestion.models import Chunk, Section
-from app.platform.seams import ParsedDoc, get_parser
+from app.ingestion.models import Chunk, Embedding, Section
+from app.platform.seams import ParsedDoc, get_embedder, get_parser
 from app.platform.storage import build_artifact_key, get_object_store
 from main import app
 
@@ -39,6 +39,7 @@ async def client(session_factory, tenant_engine) -> AsyncClient:
         yield ac
     app.dependency_overrides.pop(get_object_store, None)
     app.dependency_overrides.pop(get_parser, None)
+    app.dependency_overrides.pop(get_embedder, None)
 
 
 async def _signup(client: AsyncClient, email: str, org_name: str) -> dict:
@@ -238,3 +239,102 @@ async def test_structure_document_degenerate_outline_one_root_section(
     assert root.char_end > 0
     assert len(chunks) >= 1
     assert all(c.section_id == root.id for c in chunks)
+
+
+class _FailingEmbedder:
+    model = "failing-embed"
+    dim = 8
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("embeddings API unreachable")
+
+
+async def _upload_parse_and_structure(client: AsyncClient, headers: dict) -> dict:
+    doc = await _upload_and_parse(client, headers)
+    resp = await client.post(f"/ingestion/documents/{doc['id']}/structure", headers=headers)
+    assert resp.json()["status"] == "EMBEDDING"
+    return doc
+
+
+async def test_embed_document_moves_to_ready(client: AsyncClient, session_factory) -> None:
+    tokens = await _signup(client, "ing-em1@test.com", "IngEm1")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    doc = await _upload_parse_and_structure(client, headers)
+    doc_id = uuid.UUID(doc["id"])
+
+    resp = await client.post(f"/ingestion/documents/{doc['id']}/embed", headers=headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "READY"
+    assert body["failed_stage"] is None
+    assert body["error_detail"] is None
+
+    async with session_factory() as session:
+        chunks = list(await session.scalars(select(Chunk).where(Chunk.document_id == doc_id)))
+        embeddings = list(
+            await session.scalars(select(Embedding).where(Embedding.document_id == doc_id))
+        )
+
+    assert len(embeddings) == len(chunks)
+    chunk_ids = {c.id for c in chunks}
+    for emb in embeddings:
+        assert emb.owner_type == "chunk"
+        assert emb.owner_id in chunk_ids
+        assert emb.model == "fake-embed-1536"
+        assert emb.dim == 1536
+        assert len(emb.embedding) == 1536
+
+
+async def test_embed_document_failure_sets_failed_status(client: AsyncClient) -> None:
+    tokens = await _signup(client, "ing-em2@test.com", "IngEm2")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    doc = await _upload_parse_and_structure(client, headers)
+
+    app.dependency_overrides[get_embedder] = lambda: _FailingEmbedder()
+    resp = await client.post(f"/ingestion/documents/{doc['id']}/embed", headers=headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "FAILED"
+    assert body["failed_stage"] == "EMBEDDING"
+    assert "embeddings API unreachable" in body["error_detail"]
+
+
+async def test_embed_document_idempotent_rerun_no_duplicates(
+    client: AsyncClient, session_factory
+) -> None:
+    tokens = await _signup(client, "ing-em3@test.com", "IngEm3")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    doc = await _upload_parse_and_structure(client, headers)
+    doc_id = uuid.UUID(doc["id"])
+
+    first = await client.post(f"/ingestion/documents/{doc['id']}/embed", headers=headers)
+    assert first.json()["status"] == "READY"
+
+    async with session_factory() as session:
+        first_ids = {
+            e.id
+            for e in await session.scalars(select(Embedding).where(Embedding.document_id == doc_id))
+        }
+
+    second = await client.post(f"/ingestion/documents/{doc['id']}/embed", headers=headers)
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+    async with session_factory() as session:
+        second_rows = list(
+            await session.scalars(select(Embedding).where(Embedding.document_id == doc_id))
+        )
+
+    assert {e.id for e in second_rows} == first_ids
+    assert len(second_rows) == len(first_ids)
+
+
+async def test_embed_document_tenant_isolation(client: AsyncClient) -> None:
+    tokens_a = await _signup(client, "ing-isoe@test.com", "IngIsoE")
+    tokens_b = await _signup(client, "ing-isof@test.com", "IngIsoF")
+    headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}
+    headers_b = {"Authorization": f"Bearer {tokens_b['access_token']}"}
+    doc = await _upload_parse_and_structure(client, headers_a)
+
+    resp = await client.post(f"/ingestion/documents/{doc['id']}/embed", headers=headers_b)
+    assert resp.status_code == 404

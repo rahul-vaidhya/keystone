@@ -168,6 +168,31 @@ class DocumentRepository(BaseRepository[Document]):
         document.status = DocumentStatus.EMBEDDING
         await self._db.flush()
 
+    async def begin_embedding(self, document_id: uuid.UUID) -> Document | None:
+        """Transition to (or remain in) ``EMBEDDING`` if eligible; otherwise return the
+        document unchanged so the caller treats it as an idempotent no-op (F22: "re-running
+        embedding must not create duplicate rows"). Eligible: a doc already in ``EMBEDDING``
+        (the state F21 leaves it in, or a crashed-and-resumed embedding run), or a doc that
+        previously ``FAILED`` at the embedding stage (retry). A doc already past embedding
+        (``READY``) is left as-is."""
+        document = await self.get_by_id(document_id)
+        if document is None:
+            return None
+        eligible = document.status == DocumentStatus.EMBEDDING or (
+            document.status == DocumentStatus.FAILED
+            and document.failed_stage == DocumentStatus.EMBEDDING
+        )
+        if eligible:
+            document.status = DocumentStatus.EMBEDDING
+            document.failed_stage = None
+            document.error_detail = None
+            await self._db.flush()
+        return document
+
+    async def complete_embedding(self, document: Document) -> None:
+        document.status = DocumentStatus.READY
+        await self._db.flush()
+
 
 class DocumentTagRepository(BaseRepository[DocumentTag]):
     model = DocumentTag

@@ -1,8 +1,10 @@
-"""Ingestion domain models: sections + chunks (architecture.md "sections tree —
-the key future-proofing"). Owned by ``ingestion`` because the structuring stage is
-what produces them; nothing else exists yet that needs to own them. Structural
-fields only — ``summary``/``topics`` on ``Section`` are [later] V2 enrichment columns,
-populated by a backfill job behind a flag, never by F21.
+"""Ingestion domain models: sections, chunks, and embeddings (architecture.md "sections
+tree — the key future-proofing" / "embeddings — polymorphic, multi-granularity index").
+Owned by ``ingestion`` because its stages (structuring, embedding) are what produce them;
+no ``retrieval`` module exists yet to own them — a future one can import these ORM classes
+directly for read-side joins (same precedent as F21), without going through ingestion's
+service/repository. Structural fields only — ``summary``/``topics`` on ``Section`` are
+[later] V2 enrichment columns, populated by a backfill job behind a flag, never by F21.
 """
 
 from __future__ import annotations
@@ -10,11 +12,13 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, func
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import DateTime, ForeignKey, Integer, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.platform.db import Base
+from app.platform.seams import EMBED_DIM
 
 
 class Section(Base):
@@ -80,6 +84,46 @@ class Chunk(Base):
     metadata_: Mapped[dict] = mapped_column(
         "metadata", JSONB, nullable=False, default=dict, server_default="{}"
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class Embedding(Base):
+    """Polymorphic, multi-granularity vector index (architecture.md "embeddings"). F22
+    inserts only ``owner_type='chunk'`` rows (``owner_id`` = ``chunks.id``); V2 enrichment
+    later inserts ``'section'``/``'document'`` rows into this SAME table — no migration.
+    ``model``/``dim`` are provenance, not display fields: retrieval filters
+    ``model = :active_model`` so a re-embed under a new model name never returns duplicate
+    hits per chunk. ``unique(owner_type, owner_id, model)`` is the idempotent-re-embed
+    constraint — F22 upserts on it rather than delete-then-rebuild."""
+
+    __tablename__ = "embeddings"
+    __table_args__ = (
+        UniqueConstraint("owner_type", "owner_id", "model", name="uq_embeddings_owner_model"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )  # denormalized: scope filter needs no join, dies with the document
+    # [now] 'chunk' | [later] 'section'/'document'
+    owner_type: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)  # which model produced this vector
+    dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBED_DIM), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

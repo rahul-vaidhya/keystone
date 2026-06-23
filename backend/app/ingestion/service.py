@@ -16,11 +16,11 @@ from app.documents.schemas import DocumentOut
 from app.documents.service import documents_service
 from app.documents.status import DocumentStatus
 from app.ingestion.models import Chunk, Section
-from app.ingestion.repository import ChunkRepository, SectionRepository
+from app.ingestion.repository import ChunkRepository, EmbeddingRepository, SectionRepository
 from app.platform import db as db_mod
 from app.platform.context import TenantContext
 from app.platform.logging import get_logger
-from app.platform.seams import ParsedDoc, Parser
+from app.platform.seams import Embedder, ParsedDoc, Parser
 from app.platform.storage import ObjectStore, build_artifact_key
 
 logger = get_logger(__name__)
@@ -311,6 +311,58 @@ class IngestionService:
             await chunk_repo.bulk_create(chunks)
 
         return await documents_service.complete_structuring(ctx, document_id)
+
+    async def run_embedding_stage(
+        self,
+        ctx: TenantContext,
+        document_id: uuid.UUID,
+        *,
+        embedder: Embedder,
+    ) -> DocumentOut:
+        """EMBEDDING -> READY, or -> FAILED with failed_stage=EMBEDDING.
+
+        Idempotent and resumable, same shape as the earlier stages: a document already past
+        embedding (READY) is returned unchanged; a document stuck in EMBEDDING or previously
+        FAILED at this stage is re-embedded from scratch. Unlike structuring, re-running this
+        stage does NOT delete-then-rebuild — it upserts on the embeddings table's
+        ``unique(owner_type, owner_id, model)`` constraint, so a re-embed of an unchanged
+        chunk under the same model updates the same row instead of inserting a duplicate.
+        """
+        document = await documents_service.begin_embedding(ctx, document_id)
+        if document.status != DocumentStatus.EMBEDDING:
+            return document
+
+        try:
+            async with db_mod.sessionmaker() as session:
+                chunks = await ChunkRepository(session, ctx).list_for_document(document_id)
+            vectors = await embedder.embed([chunk.content for chunk in chunks])
+        except Exception as exc:  # the only seam call here — record, never swallow
+            logger.warning(
+                "ingestion.embedding_failed",
+                document_id=str(document_id),
+                org_id=str(ctx.org_id),
+                error=str(exc),
+            )
+            return await documents_service.fail_stage(
+                ctx,
+                document_id,
+                failed_stage=DocumentStatus.EMBEDDING.value,
+                error_detail=str(exc),
+            )
+
+        rows = [
+            {
+                "owner_id": chunk.id,
+                "model": embedder.model,
+                "dim": embedder.dim,
+                "embedding": vector,
+            }
+            for chunk, vector in zip(chunks, vectors, strict=True)
+        ]
+        async with db_mod.sessionmaker() as session, session.begin():
+            await EmbeddingRepository(session, ctx).upsert_chunk_embeddings(document_id, rows)
+
+        return await documents_service.complete_embedding(ctx, document_id)
 
 
 ingestion_service = IngestionService()
