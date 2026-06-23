@@ -18,3 +18,11 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Dev server logs (ad hoc background runs)
+*.log
+*.err.log
+
+# Node
+node_modules/
+*.tsbuildinfo
