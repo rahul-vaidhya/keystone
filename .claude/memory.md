@@ -9,13 +9,37 @@
 Documents) COMPLETE**: F10 (`8940dd1`), F11 (`c58a5e7`), F12 (`0b44b9c`). **F50 + a slice of F51
 (Phase 5 frontend) DONE and committed** (`054aa36`). **Phase 2 (Ingestion core path) COMPLETE**:
 F20 parsing (`0277cfe`), F21 structuring (`5eecac5`), F22 embedding (`4598698`). **Phase 2.5
-COMPLETE: F23 Real parser integration built and committed this session** (code `9e7f319`,
-docs `90285c2`).
-Next: **one real PDF should be run through the opt-in `real_parser` integration test** (needs
-an `OPENROUTER_API_KEY` + a sample PDF — not yet done, no real document has exercised this
-path) to confirm the empirical findings (heading recovery, page provenance) on an actual file
-before leaning on it for Phase 3+. After that: F30 Notebooks (Phase 3), or resume the rest of
-F51 (folders/tags/upload UI) against the real F11/F12 backend — ask the user which.
+COMPLETE: F23 Real parser integration, code+docs committed `9e7f319`/`90285c2`; empirical
+validation against a real PDF run and confirmed this session.**
+Next: **F30 Notebooks (Phase 3), or resume the rest of F51 (folders/tags/upload UI) against the
+real F11/F12 backend — ask the user which.**
+
+## F23 empirical validation run (2026-06-23, this session, validation only — no code changes)
+- Ran the opt-in `real_parser` integration test
+  (`backend/tests/test_real_parser_integration.py`) against a real PDF (`pdf/kech104.pdf`, 36
+  pages) with a real `OPENROUTER_API_KEY`. Test passed on the first run — **no fixes were
+  required**, so the F23 code committed last session (`9e7f319`) needed zero changes.
+- **Engine used: `cloudflare-ai`** — primary engine's output was sufficient; the
+  `mistral-ocr` billed fallback was never triggered for this document.
+- **Document reached `READY`** via the real parser → fake embedder path (parse → structure →
+  embed all returned 200, final status `READY`, `language="en"`, `page_count=36`).
+- **Heading recovery: confirmed yes, and better than the conservative pre-validation
+  expectation** — 39 sections recovered as a genuine 3-level tree
+  (`document.pdf → {Metadata, Contents → Page 1..36}`), not the degenerate single-root case.
+  110 chunks created, all nested correctly under leaf sections.
+- **Page-level provenance: confirmed does NOT survive, exactly as predicted** — every
+  section's `page_start`/`page_end` is `(1, 36)` (document-wide) even though the heading
+  *text* is literally `"Page 9"` etc. with correct char boundaries. `RealParser` hardcodes
+  these fields; the markdown's page-boundary information shows up in heading text/char
+  offsets but is never threaded into the `page_start`/`page_end` fields themselves. Confirmed
+  bug-shaped gap, not a crash — left as a known limitation per F23's original scope (OCR/
+  page-provenance tuning was explicitly deferred out of F23).
+- **Offsets verified manually on two chunk pairs**: the `Metadata` section `(42,1128)`
+  contains chunks `(42,1040)`+`(1040,1128)` — contiguous, no gaps/overlaps,
+  `token_count == len(content)//4` exactly. Same contiguity held for a `Page 9` section's
+  3 chunks. No offset corruption found.
+- **F23 marked [x] complete** in progresstracker.md — this was the last remaining DoD item
+  (real document reaches READY on real-parser output, findings confirmed empirically).
 
 ## F23 Real parser integration — built (2026-06-23, this session)
 - **Provider, resolved**: OpenRouter's file-parser plugin, called directly over HTTP from
