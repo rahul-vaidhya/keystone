@@ -143,6 +143,31 @@ class DocumentRepository(BaseRepository[Document]):
         document.error_detail = error_detail
         await self._db.flush()
 
+    async def begin_structuring(self, document_id: uuid.UUID) -> Document | None:
+        """Transition to (or remain in) ``STRUCTURING`` if eligible; otherwise return the
+        document unchanged so the caller treats it as an idempotent no-op (F21: "idempotent
+        re-run"). Eligible: a doc already in ``STRUCTURING`` (the state F20 leaves it in, or
+        a crashed-and-resumed structuring run — there's nothing to resume but a rebuild), or
+        a doc that previously ``FAILED`` at the structuring stage (retry). A doc already past
+        structuring (``EMBEDDING``/``READY``) is left as-is."""
+        document = await self.get_by_id(document_id)
+        if document is None:
+            return None
+        eligible = document.status == DocumentStatus.STRUCTURING or (
+            document.status == DocumentStatus.FAILED
+            and document.failed_stage == DocumentStatus.STRUCTURING
+        )
+        if eligible:
+            document.status = DocumentStatus.STRUCTURING
+            document.failed_stage = None
+            document.error_detail = None
+            await self._db.flush()
+        return document
+
+    async def complete_structuring(self, document: Document) -> None:
+        document.status = DocumentStatus.EMBEDDING
+        await self._db.flush()
+
 
 class DocumentTagRepository(BaseRepository[DocumentTag]):
     model = DocumentTag

@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # message_traces).
 import app.documents.models  # noqa: F401
 import app.identity.models  # noqa: F401
+import app.ingestion.models  # noqa: F401
 from app.platform.config import settings
 from app.platform.db import Base
 

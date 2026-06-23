@@ -29,3 +29,14 @@ async def parse_document(
     return await ingestion_service.run_parsing_stage(
         ctx, document_id, parser=parser, object_store=object_store
     )
+
+
+@router.post("/documents/{document_id}/structure", response_model=DocumentOut)
+async def structure_document(
+    document_id: uuid.UUID,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+    object_store: Annotated[ObjectStore, Depends(get_object_store)],
+) -> DocumentOut:
+    return await ingestion_service.run_structuring_stage(
+        ctx, document_id, object_store=object_store
+    )

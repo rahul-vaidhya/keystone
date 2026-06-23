@@ -178,5 +178,37 @@ class DocumentsService:
             out = DocumentOut.model_validate(document)
         return out
 
+    async def begin_structuring(self, ctx: TenantContext, document_id: uuid.UUID) -> DocumentOut:
+        """Called by ``ingestion.service`` (never the repository directly — module boundary
+        rule) to claim a document for the structuring stage. Returns the document unchanged
+        when structuring isn't eligible to (re)start — the caller checks the returned status."""
+        async with db_mod.sessionmaker() as session, session.begin():
+            document = await DocumentRepository(session, ctx).begin_structuring(document_id)
+            if document is None:
+                raise DocumentNotFound("Document not found")
+            out = DocumentOut.model_validate(document)
+        return out
+
+    async def complete_structuring(self, ctx: TenantContext, document_id: uuid.UUID) -> DocumentOut:
+        async with db_mod.sessionmaker() as session, session.begin():
+            repo = DocumentRepository(session, ctx)
+            document = await repo.get_by_id(document_id)
+            if document is None:
+                raise DocumentNotFound("Document not found")
+            await repo.complete_structuring(document)
+            out = DocumentOut.model_validate(document)
+        return out
+
+    async def get_parse_artifact_key(self, ctx: TenantContext, document_id: uuid.UUID) -> str:
+        """Narrow accessor for ``ingestion.service`` (structuring stage): the F20 parsing
+        artifact key, written into ``metadata_`` by ``complete_parsing``. A dedicated method
+        rather than exposing ``metadata`` on ``DocumentOut`` — keeps the internal storage
+        layout out of the public HTTP response shape."""
+        async with db_mod.sessionmaker() as session:
+            document = await DocumentRepository(session, ctx).get_by_id(document_id)
+            if document is None:
+                raise DocumentNotFound("Document not found")
+        return document.metadata_["parse_artifact_key"]
+
 
 documents_service = DocumentsService()

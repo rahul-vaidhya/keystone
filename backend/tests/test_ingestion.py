@@ -7,7 +7,9 @@ import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
+from app.ingestion.models import Chunk, Section
 from app.platform.seams import ParsedDoc, get_parser
 from app.platform.storage import build_artifact_key, get_object_store
 from main import app
@@ -114,3 +116,125 @@ async def test_parse_document_tenant_isolation(client: AsyncClient) -> None:
 
     resp = await client.post(f"/ingestion/documents/{doc['id']}/parse", headers=headers_b)
     assert resp.status_code == 404
+
+
+async def _upload_and_parse(client: AsyncClient, headers: dict) -> dict:
+    doc = await _upload(client, headers)
+    resp = await client.post(f"/ingestion/documents/{doc['id']}/parse", headers=headers)
+    assert resp.json()["status"] == "STRUCTURING"
+    return doc
+
+
+async def test_structure_document_builds_sections_and_chunks(client: AsyncClient) -> None:
+    tokens = await _signup(client, "ing-st1@test.com", "IngSt1")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    doc = await _upload_and_parse(client, headers)
+
+    resp = await client.post(f"/ingestion/documents/{doc['id']}/structure", headers=headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "EMBEDDING"
+    assert body["failed_stage"] is None
+    assert body["error_detail"] is None
+
+
+async def test_structure_document_idempotent_rerun_no_duplicates(client: AsyncClient) -> None:
+    tokens = await _signup(client, "ing-st2@test.com", "IngSt2")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    doc = await _upload_and_parse(client, headers)
+
+    first = await client.post(f"/ingestion/documents/{doc['id']}/structure", headers=headers)
+    assert first.json()["status"] == "EMBEDDING"
+
+    second = await client.post(f"/ingestion/documents/{doc['id']}/structure", headers=headers)
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+
+async def test_structure_document_failure_sets_failed_status(client: AsyncClient) -> None:
+    tokens = await _signup(client, "ing-st3@test.com", "IngSt3")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    doc = await _upload_and_parse(client, headers)
+
+    store = app.dependency_overrides[get_object_store]()
+    artifact_key = build_artifact_key(uuid.UUID(doc["org_id"]), uuid.UUID(doc["id"]), "parsing")
+    del store.puts[artifact_key]  # simulate a missing/corrupt artifact
+
+    resp = await client.post(f"/ingestion/documents/{doc['id']}/structure", headers=headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "FAILED"
+    assert body["failed_stage"] == "STRUCTURING"
+
+
+async def test_structure_document_tenant_isolation(client: AsyncClient) -> None:
+    tokens_a = await _signup(client, "ing-isoc@test.com", "IngIsoC")
+    tokens_b = await _signup(client, "ing-isod@test.com", "IngIsoD")
+    headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}
+    headers_b = {"Authorization": f"Bearer {tokens_b['access_token']}"}
+    doc = await _upload_and_parse(client, headers_a)
+
+    resp = await client.post(f"/ingestion/documents/{doc['id']}/structure", headers=headers_b)
+    assert resp.status_code == 404
+
+
+async def test_structure_document_sections_and_chunks_shape(
+    client: AsyncClient, session_factory
+) -> None:
+    """FakeParser returns a flat two-heading outline (Introduction, Background) — both
+    leaves, so each gets its own section and at least one chunk, every chunk carrying
+    valid offsets and a section_id."""
+    tokens = await _signup(client, "ing-st4@test.com", "IngSt4")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    doc = await _upload_and_parse(client, headers)
+    doc_id = uuid.UUID(doc["id"])
+
+    resp = await client.post(f"/ingestion/documents/{doc['id']}/structure", headers=headers)
+    assert resp.json()["status"] == "EMBEDDING"
+
+    async with session_factory() as session:
+        sections = list(await session.scalars(select(Section).where(Section.document_id == doc_id)))
+        chunks = list(await session.scalars(select(Chunk).where(Chunk.document_id == doc_id)))
+
+    assert {s.heading for s in sections} == {"Introduction", "Background"}
+    assert all(s.parent_section_id is None for s in sections)
+    assert len(chunks) >= len(sections)
+    section_ids = {s.id for s in sections}
+    for chunk in chunks:
+        assert chunk.section_id in section_ids
+        assert chunk.char_start < chunk.char_end
+
+
+async def test_structure_document_degenerate_outline_one_root_section(
+    client: AsyncClient, session_factory
+) -> None:
+    """architecture.md "Degenerate-outline contract": a headingless document gets ONE root
+    section spanning the full char range, and every chunk attaches to it."""
+
+    class _HeadinglessParser:
+        async def extract(self, blob: bytes, mime: str) -> ParsedDoc:
+            text = "Plain text with no headings at all, just a wall of prose to chunk.\n"
+            return ParsedDoc(text=text, outline=[], language="en", page_count=1)
+
+    tokens = await _signup(client, "ing-st5@test.com", "IngSt5")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    app.dependency_overrides[get_parser] = lambda: _HeadinglessParser()
+    doc = await _upload_and_parse(client, headers)
+    doc_id = uuid.UUID(doc["id"])
+
+    resp = await client.post(f"/ingestion/documents/{doc['id']}/structure", headers=headers)
+    assert resp.json()["status"] == "EMBEDDING"
+
+    async with session_factory() as session:
+        sections = list(await session.scalars(select(Section).where(Section.document_id == doc_id)))
+        chunks = list(await session.scalars(select(Chunk).where(Chunk.document_id == doc_id)))
+
+    assert len(sections) == 1
+    root = sections[0]
+    assert root.heading is None
+    assert root.parent_section_id is None
+    assert root.char_start == 0
+    assert root.char_end > 0
+    assert len(chunks) >= 1
+    assert all(c.section_id == root.id for c in chunks)
