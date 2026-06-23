@@ -15,6 +15,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.ingestion.models import Chunk, Embedding, Section
+from app.ingestion.schemas import ChunkHit
 from app.platform.repository import BaseRepository
 
 
@@ -88,3 +89,42 @@ class EmbeddingRepository(BaseRepository[Embedding]):
             },
         )
         await self._db.execute(stmt)
+
+    async def search_chunks(
+        self,
+        query_vector: list[float],
+        document_ids: list[uuid.UUID],
+        model: str,
+        k: int,
+    ) -> list[ChunkHit]:
+        """The MVP ``flat_vector`` retrieval query (librarydocs.md "pgvector",
+        architecture.md ``retrieve()``). Filters ``org_id`` directly — an independent
+        backstop, not merely a consequence of the caller already having resolved
+        ``document_ids`` to an org-scoped notebook (see F31's repository-level isolation
+        test) — plus ``owner_type='chunk'`` and ``model = :active_model`` so a re-embed
+        under a new model name never returns duplicate hits per chunk. Caller passes ``k``
+        straight through to ``LIMIT``; no over-fetch (no reranker exists yet to justify one).
+        """
+        if not document_ids:
+            return []
+        stmt = (
+            select(
+                Embedding.owner_id.label("chunk_id"),
+                Chunk.document_id,
+                Chunk.content,
+                Chunk.char_start,
+                Chunk.char_end,
+                Embedding.embedding.cosine_distance(query_vector).label("distance"),
+            )
+            .join(Chunk, Chunk.id == Embedding.owner_id)
+            .where(
+                Embedding.org_id == self._ctx.org_id,
+                Embedding.owner_type == "chunk",
+                Embedding.model == model,
+                Embedding.document_id.in_(document_ids),
+            )
+            .order_by("distance")
+            .limit(k)
+        )
+        rows = await self._db.execute(stmt)
+        return [ChunkHit(**row._mapping) for row in rows]

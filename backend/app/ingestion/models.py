@@ -1,10 +1,12 @@
 """Ingestion domain models: sections, chunks, and embeddings (architecture.md "sections
 tree — the key future-proofing" / "embeddings — polymorphic, multi-granularity index").
-Owned by ``ingestion`` because its stages (structuring, embedding) are what produce them;
-no ``retrieval`` module exists yet to own them — a future one can import these ORM classes
-directly for read-side joins (same precedent as F21), without going through ingestion's
-service/repository. Structural fields only — ``summary``/``topics`` on ``Section`` are
-[later] V2 enrichment columns, populated by a backfill job behind a flag, never by F21.
+Owned by ``ingestion`` because its stages (structuring, embedding) are what produce them.
+``retrieval`` (F31) reads this data only through ``IngestionService.search_chunks`` — it
+does NOT import these ORM classes directly; the join SQL lives in
+``ingestion/repository.py`` per the module-boundary rule (a module's tables stay behind its
+own service/repository, even for read-only cross-module access). Structural fields only —
+``summary``/``topics`` on ``Section`` are [later] V2 enrichment columns, populated by a
+backfill job behind a flag, never by F21.
 """
 
 from __future__ import annotations

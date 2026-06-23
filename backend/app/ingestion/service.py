@@ -17,6 +17,7 @@ from app.documents.service import documents_service
 from app.documents.status import DocumentStatus
 from app.ingestion.models import Chunk, Section
 from app.ingestion.repository import ChunkRepository, EmbeddingRepository, SectionRepository
+from app.ingestion.schemas import ChunkHit
 from app.platform import db as db_mod
 from app.platform.context import TenantContext
 from app.platform.logging import get_logger
@@ -380,6 +381,24 @@ class IngestionService:
             await EmbeddingRepository(session, ctx).upsert_chunk_embeddings(document_id, rows)
 
         return await documents_service.complete_embedding(ctx, document_id)
+
+    async def search_chunks(
+        self,
+        ctx: TenantContext,
+        *,
+        query_vector: list[float],
+        document_ids: list[uuid.UUID],
+        model: str,
+        k: int,
+    ) -> list[ChunkHit]:
+        """``flat_vector`` retrieval (F31): the narrow entry point ``retrieval.service``
+        calls instead of importing ``ingestion.repository``/``ingestion.models`` directly
+        (module-boundary rule — chunks/embeddings are ingestion's tables). All SQL lives in
+        ``EmbeddingRepository.search_chunks``; this is pure orchestration."""
+        async with db_mod.sessionmaker() as session:
+            return await EmbeddingRepository(session, ctx).search_chunks(
+                query_vector, document_ids, model, k
+            )
 
 
 ingestion_service = IngestionService()

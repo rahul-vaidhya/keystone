@@ -16,6 +16,7 @@ from app.knowledge.router import router as knowledge_router
 from app.platform.config import settings
 from app.platform.http import register_exception_handlers
 from app.platform.logging import configure_logging
+from app.retrieval.router import router as retrieval_router
 
 configure_logging()
 
@@ -35,6 +36,7 @@ app.include_router(auth_router)
 app.include_router(documents_router)
 app.include_router(ingestion_router)
 app.include_router(knowledge_router)
+app.include_router(retrieval_router)
 
 
 @app.get("/health")
