@@ -133,7 +133,19 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       See memory.md "F23 empirical validation run" for full detail.
 
 ## Phase 3 — Knowledge + Retrieval
-- [ ] F30 Notebooks (reference join)
+- [x] F30 Notebooks (reference join) (`a85138e`) — new `app/knowledge` module (`Notebook`/
+      `NotebookDocument` models mapped to the locked `knowledge_bases`/
+      `knowledge_base_documents` table names; public API/schemas/routes/tests use "Notebook"
+      terminology throughout). Migration `0008_notebooks.py`. CRUD for notebooks
+      (create/update-metadata/delete/list) + idempotent attach/detach + list-documents-in-
+      notebook, all org-scoped (`knowledge_base_documents` carries `org_id` directly, no
+      scope-via-parent). Cross-module document existence/ownership validation goes through
+      two new narrow `DocumentsService` methods (`get_document`, `list_by_ids`), each with a
+      real caller in `knowledge.service` — not a repository/ORM import (a first draft that
+      did this was caught and fixed in self-review, see memory.md). DoD met: a document
+      attached to two notebooks shares one row (asserted directly in
+      `tests/test_knowledge.py`); 14 new tests (CRUD, idempotency, tenant isolation incl.
+      cross-org attach denial). 74/74 suite green, ruff clean.
 - [ ] F31 Flat retrieval (scoped, isolation test passing)
 
 ## Phase 4 — Chat
@@ -167,7 +179,10 @@ F22 embedding (`4598698`).**
 **Phase 2.5 COMPLETE: F23 Real parser integration** (code `9e7f319`, docs `90285c2`,
 empirical validation run and confirmed this session — real 36-page PDF reached `READY` via
 `cloudflare-ai`, heading recovery confirmed, page-provenance gap confirmed, offsets sane).
-Next action: **F30 Notebooks (Phase 3), or resume the rest of F51 (folders/tags/upload UI)**
+**Phase 3 started: F30 Notebooks COMPLETE this session (`a85138e`)** — new `app/knowledge`
+module, migration `0008_notebooks.py`, 74/74 suite green, ruff clean — see memory.md
+"F30 Notebooks" for full detail.
+Next action: **F31 Flat retrieval, or resume the rest of F51 (folders/tags/upload UI)**
 — ask the user which.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

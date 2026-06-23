@@ -10,9 +10,69 @@ Documents) COMPLETE**: F10 (`8940dd1`), F11 (`c58a5e7`), F12 (`0b44b9c`). **F50 
 (Phase 5 frontend) DONE and committed** (`054aa36`). **Phase 2 (Ingestion core path) COMPLETE**:
 F20 parsing (`0277cfe`), F21 structuring (`5eecac5`), F22 embedding (`4598698`). **Phase 2.5
 COMPLETE: F23 Real parser integration, code+docs committed `9e7f319`/`90285c2`; empirical
-validation against a real PDF run and confirmed this session.**
-Next: **F30 Notebooks (Phase 3), or resume the rest of F51 (folders/tags/upload UI) against the
-real F11/F12 backend — ask the user which.**
+validation against a real PDF run and confirmed this session.** **Phase 3 started: F30
+Notebooks COMPLETE this session, code `a85138e`** (see entry below).
+Next: **F31 Flat retrieval (Phase 3), or resume the rest of F51 (folders/tags/upload UI)
+against the real F11/F12 backend — ask the user which.**
+
+## F30 Notebooks (2026-06-27, this session, `a85138e`)
+- **New `app/knowledge` module** (`models.py`/`repository.py`/`service.py`/`router.py`/
+  `schemas.py`/`exceptions.py`) — first module to populate the previously-empty `knowledge/`
+  package architecture.md already reserved for "the reference join." Migration
+  `0008_notebooks.py`.
+- **Public terminology is "Notebook" everywhere** (schemas/service/router/tests/docs) per
+  direct instruction; the underlying tables stay `knowledge_bases`/`knowledge_base_documents`
+  to match the names already locked in architecture.md's data model. ORM classes are named
+  `Notebook`/`NotebookDocument` (Python-facing name), mapped via `__tablename__` to the locked
+  table names — this split (class name vs table name) is deliberate, not an inconsistency.
+- **`knowledge_base_documents` carries `org_id` directly** (no scope-via-parent), per the
+  hard-rule pattern already established by `document_tags`. Composite PK
+  `(knowledge_base_id, document_id)` is itself what makes "a document in two notebooks has
+  exactly one set of chunks/embeddings" hold — the join only ever adds a join row; chunks/
+  embeddings key off `document_id` alone and are completely untouched by notebook membership.
+- **Cross-module document-existence/ownership check, resolved via a documents.service call,
+  not a repository/ORM import** — this was the one open design question from the architect
+  step. A plain FK on `document_id` only proves the document exists *somewhere*, not that it
+  belongs to the *same org* as the notebook (the case the tenant-isolation test needs to
+  catch: attaching org B's document to org A's notebook must 404). Validating org-scoped
+  existence needs a query against `documents` with `org_id` — only `documents.service` can do
+  that without violating hard rule #1 ("a module calls another module only through its
+  service, never its repository or tables"). Added **two new, narrow, non-speculative**
+  `DocumentsService` methods, each with a real caller in `knowledge.service`:
+  `get_document(ctx, document_id) -> DocumentOut` (attach-time existence/ownership check) and
+  `list_by_ids(ctx, document_ids) -> list[DocumentOut]` (resolving a notebook's attached
+  document ids back to full document rows for the "list documents in a notebook" endpoint).
+  `get_document` is the SAME method F20's audit removed as speculative (zero callers, at the
+  time) — it's back now because `knowledge.service.attach_document` is a genuine caller, not
+  a re-introduction of dead code.
+  - **First draft of `repository.py` got this wrong**: imported `app.documents.models.Document`
+    directly into `knowledge/repository.py` to do a SQL `JOIN` for `list_documents` — caught in
+    self-review as a hard-rule-#1 violation (a repository touching another module's table
+    directly, even just for a read-only join) before it was committed. Replaced with
+    `NotebookDocumentRepository.list_document_ids` (returns only ids, scoped to
+    `knowledge_base_documents`) + the new `documents_service.list_by_ids` call from
+    `knowledge.service`. **Don't reintroduce a cross-module ORM import for "just a join" — it
+    violates hard rule #1 regardless of how read-only or convenient it looks; route it through
+    a service method instead, even if that means adding one.**
+- **Gotcha — `updated_at` with `onupdate=func.now()` + immediate `model_validate` raises
+  `MissingGreenlet`**: a server-side `onupdate` only populates the Python attribute on a
+  post-flush refresh (a SELECT), which the synchronous `model_validate` call can't trigger
+  inside an async session. Fixed by setting `notebook.updated_at = datetime.now(UTC)`
+  explicitly in `NotebookRepository.update` instead of relying on the column's `onupdate`.
+  **If any future table needs an `updated_at` touched on update, set it explicitly in the
+  repository — don't rely on `onupdate=func.now()` if the caller immediately reads the
+  attribute back in the same request.**
+- Attach/detach are idempotent via the same pattern as `DocumentTagRepository`
+  (`ON CONFLICT DO NOTHING` on the composite PK for attach; no-op-if-absent for detach).
+- Endpoints: `POST/GET /notebooks`, `GET/PATCH/DELETE /notebooks/{id}`,
+  `POST/DELETE /notebooks/{id}/documents/{document_id}`, `GET /notebooks/{id}/documents`.
+- No retrieval/vector/chunk/embedding/chat/ACL code touched — scope held exactly to F30.
+- 14 new tests in `tests/test_knowledge.py` (create, update metadata, delete, list, attach +
+  list documents, attach idempotency, detach idempotency, "document in two notebooks" DoD
+  assertion, attach-missing-document 404, attach-to-missing-notebook 404, tenant isolation
+  incl. cross-org attach denial). Full suite: 74/74 green (1 pre-existing skip), ruff clean
+  (`ruff check .` / `ruff format --check .`, excluding the pre-existing non-production
+  `scripts/inspect_document.py` lint findings from a prior session, untouched here).
 
 ## F23 empirical validation run (2026-06-23, this session, validation only — no code changes)
 - Ran the opt-in `real_parser` integration test
