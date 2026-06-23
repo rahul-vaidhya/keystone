@@ -37,7 +37,7 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       `0003_auth_password_hash`. Endpoints: signup (creates org + owner), login (multi-org aware),
       refresh, logout, `/me`, invite, list org users, patch user role. DoD met:
       `tests/test_auth.py` (34/34 suite green incl. this file).
-- [x] F11 Folders + tags (`PENDING_COMMIT`) — new `app/documents` module (`Folder`/`Tag`/
+- [x] F11 Folders + tags (`c58a5e7`) — new `app/documents` module (`Folder`/`Tag`/
       `Document`/`DocumentTag` models, repository/service/router/schemas/exceptions),
       migration `0004_folders_tags.py`. `documents` table is a minimal anchor here
       (id/org_id/folder_id/title) — F12 ALTERs it, doesn't recreate it. Folder tree via

@@ -7,10 +7,10 @@
 ## Current phase
 **Phase 0 COMPLETE** (F00–F04, F03+F04 = c35ee11, 27 tests, ruff clean). **F10 (Phase 1 auth) DONE
 and committed** (`8940dd1`). **F50 + a slice of F51 (Phase 5 frontend) DONE and committed**
-(`054aa36`). **F11 (Folders + tags) DONE and committed this session.** Next: **F12 Upload +
+(`054aa36`). **F11 (Folders + tags) DONE and committed this session** (`c58a5e7`). Next: **F12 Upload +
 dedupe**, then resume the rest of F51 (folders/tags/upload UI).
 
-## F11 Folders + tags (2026-06-23, this session)
+## F11 Folders + tags (2026-06-23, this session, c58a5e7)
 - **New `app/documents` module** (first module besides `identity`): `models.py` (`Folder`,
   `Tag`, `Document`, `DocumentTag`), `repository.py`, `service.py`, `router.py`,
   `schemas.py`, `exceptions.py`. Migration `0004_folders_tags.py` (Revises `0003`).
