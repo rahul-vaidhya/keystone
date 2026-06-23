@@ -96,7 +96,19 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       set FAILED+failed_stage=STRUCTURING. DoD met: `tests/test_ingestion.py` (sections
       reflect the outline, chunks carry valid offsets, degenerate-outline one-root case,
       idempotent re-run, failure path, tenant isolation). 55/55 suite green, ruff clean.
-- [ ] F22 embedding stage (chunk embeddings, idempotent, status→ready)
+- [x] F22 embedding stage (`4598698`) — new `Embedding` model in `app/ingestion/models.py` (owned by
+      ingestion, same reasoning as Section/Chunk) + `EmbeddingRepository.upsert_chunk_embeddings`
+      (true upsert on `unique(owner_type, owner_id, model)` via `ON CONFLICT DO UPDATE` — unlike
+      F21's delete-then-rebuild, since chunk→embedding is a 1:1 keyed relationship). Migration
+      `0007_embeddings.py` (`vector(1536)`, HNSW index, btree `(org_id, document_id, owner_type)`).
+      `IngestionService.run_embedding_stage` reads the document's chunks (new
+      `ChunkRepository.list_for_document`), calls the `Embedder` seam once in a batch, upserts,
+      advances EMBEDDING → READY; failures set FAILED+failed_stage=EMBEDDING. New
+      `documents.repository`/`documents.service` `begin_embedding`/`complete_embedding` pair
+      (mirrors F20/F21 exactly). `POST /ingestion/documents/{id}/embed`. DoD met:
+      `tests/test_ingestion.py` (status→READY with one embedding row per chunk + model/dim/
+      vector-length provenance, embedder failure path, idempotent re-run, tenant isolation).
+      59/59 suite green, ruff clean.
 
 ## Phase 3 — Knowledge + Retrieval
 - [ ] F30 Notebooks (reference join)
@@ -128,10 +140,9 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
 Phase: **0 COMPLETE** (F00–F04, F03+F04 = c35ee11). **Phase 1 (Identity + Documents) COMPLETE**
 (F10 `8940dd1`, F11 `c58a5e7`, F12 `0b44b9c`). **F50 + a slice of F51 (Phase 5 frontend) DONE
 and committed (`054aa36`)**, pulled forward out of sequence per direct senior instruction.
-**F20 (Phase 2 parsing stage) DONE (`0277cfe`). F21 (Phase 2 structuring stage) DONE and
-committed this session (`5eecac5`).**
-Next action: F22 embedding stage (embed chunks, upsert `embeddings(owner_type='chunk')`,
-status→ready), **or** resume the rest of F51 (folders/tags/upload UI) against the real
-F11/F12 backend — both are unblocked; ask the user which to pick up first.
+**Phase 2 (Ingestion core path) COMPLETE: F20 parsing (`0277cfe`), F21 structuring (`5eecac5`),
+F22 embedding (`4598698`).**
+Next action: F30 Notebooks (Phase 3), **or** resume the rest of F51 (folders/tags/upload UI)
+against the real F11/F12 backend — both are unblocked; ask the user which to pick up first.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

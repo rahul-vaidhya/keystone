@@ -7,10 +7,46 @@
 ## Current phase
 **Phase 0 COMPLETE** (F00–F04, F03+F04 = c35ee11, 27 tests, ruff clean). **Phase 1 (Identity +
 Documents) COMPLETE**: F10 (`8940dd1`), F11 (`c58a5e7`), F12 (`0b44b9c`). **F50 + a slice of F51
-(Phase 5 frontend) DONE and committed** (`054aa36`). **Phase 2: F20 parsing stage DONE** (`0277cfe`)
-**and F21 structuring stage DONE** (`5eecac5`, this session). Next: F22 embedding stage (embed
-chunks, upsert `embeddings(owner_type='chunk')`, status→ready), or resume the rest of F51
-(folders/tags/upload UI) against the real F11/F12 backend — ask the user which.
+(Phase 5 frontend) DONE and committed** (`054aa36`). **Phase 2 (Ingestion core path) COMPLETE**:
+F20 parsing (`0277cfe`), F21 structuring (`5eecac5`), F22 embedding (`4598698`).
+Next: F30 Notebooks (Phase 3), or resume the rest of F51 (folders/tags/upload UI) against the
+real F11/F12 backend — ask the user which.
+
+## F22 Embedding stage (2026-06-26, this session)
+- **`Embedding` model lives in `app/ingestion/models.py`** alongside `Section`/`Chunk` — same
+  reasoning as F21: ingestion's embedding stage is what produces these rows; no `retrieval`
+  module exists yet to own the table. A future retrieval module can import the ORM class
+  directly for the vector-join query in librarydocs.md, same precedent as sections/chunks.
+  Migration `0007_embeddings.py`: `vector(1536)` column via `pgvector.sqlalchemy.Vector`
+  (already a core dep), HNSW index (`vector_cosine_ops`), btree `(org_id, document_id,
+  owner_type)`, `unique(owner_type, owner_id, model)`.
+- **Idempotency = true upsert, NOT delete-then-rebuild** (unlike F21's sections/chunks). The
+  embeddings table's `unique(owner_type, owner_id, model)` constraint exists specifically so
+  a re-embed updates the existing row — `EmbeddingRepository.upsert_chunk_embeddings` uses
+  `pg_insert(...).on_conflict_do_update(...)` on that constraint, updating `embedding`/`dim`.
+  **Decision, not a gap**: deliberately different idempotency mechanism per stage — F21's
+  sections/chunks have no natural per-row upsert key shape (a tree), F22's chunk→embedding is
+  a 1:1 keyed relationship, so upsert is the simpler and more correct choice here.
+- **`ChunkRepository.list_for_document` added back** (F21 removed an unused
+  `list_for_document` on both Section/Chunk repos as speculative). This time it has a real
+  caller (`run_embedding_stage` needs the document's chunks to embed) — not speculative.
+- **One batched `embedder.embed(texts)` call per document** — the seam already takes a list,
+  no manual batching added (chunk counts are small, ~1000-char windows).
+- **Status pair `begin_embedding`/`complete_embedding`** added to `DocumentRepository` +
+  `DocumentsService`, exact same shape as F20/F21's pairs: eligible to (re)start only if
+  status is `EMBEDDING` (the state F21 leaves a doc in, or a crashed/resumed run) or `FAILED`
+  with `failed_stage == EMBEDDING`; `READY` is left as-is (idempotent no-op, matches F20/F21).
+- **`POST /ingestion/documents/{id}/embed`** — same thin router shape as `/parse`/`/structure`.
+- **Embedder seam call happens outside any DB transaction** (read chunks in one short-lived
+  session, call `embedder.embed`, then a separate transaction for the upsert) — mirrors F20's
+  parsing stage not holding a transaction open across the external `Parser.extract` call.
+- 4 new integration tests in `tests/test_ingestion.py`: successful embed (status→READY,
+  one embedding row per chunk, `model`/`dim`/vector-length provenance asserted), failure path
+  (failing fake embedder → FAILED + failed_stage=EMBEDDING), idempotent re-run (second call is
+  a no-op since status is already READY — same idempotency-test shape as F20/F21), tenant
+  isolation. Full suite: 59/59 green, ruff clean. No unused code/single-caller issues found on
+  audit — every new repository/service method has a real caller; all in line with F20/F21's
+  established patterns.
 
 ## F21 Structuring stage (2026-06-25, this session, 5eecac5)
 - **New tables owned by `ingestion`, not a new module**: `app/ingestion/models.py`
