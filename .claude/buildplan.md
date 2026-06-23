@@ -23,12 +23,14 @@ one's DoD is met. Keep features small enough for one focused session.
   - *DoD:* green pipeline on a trivial PR.
 
 ## Phase 1 — Identity + Documents
-- **F10 Auth:** signup, login, org creation, invite teammates (email/magic-link or password).
+- **F10 Auth — DONE.** signup (creates org + owner), login (multi-org aware), refresh, logout,
+  `/me`, invite teammates, list org users, patch user role.
   - Role enum: **`owner | admin | member`** — org creator → `owner`; invites default → `member`.
   - Session mechanism: credential → **short-lived JWT access token + httpOnly refresh cookie**,
     validated by the `current_user` dependency → `TenantContext`.
-  - *DoD:* a user signs up, creates an org (becomes `owner`), logs in; sessions scoped to org;
-    an invited teammate joins as `member`.
+  - *DoD met:* a user signs up, creates an org (becomes `owner`), logs in; sessions scoped to org;
+    an invited teammate joins as `member`. See `app/identity/*`, migration `0003_auth_password_hash`,
+    `tests/test_auth.py` (217 lines).
 - **F11 Folders + tags:** CRUD for the folder tree (materialized path) and tags.
   - *DoD:* create nested folders; tag a document; list by folder/tag.
 - **F12 Upload + dedupe:** upload to object store, checksum, `unique(org_id, checksum)`, status=`uploaded`.
@@ -61,9 +63,23 @@ one's DoD is met. Keep features small enough for one focused session.
   - *DoD:* an admin can see why any answer was produced (from the persisted trace, not recomputed).
 
 ## Phase 5 — Frontend SPA
-- **F50 App shell + auth UI.** **F51 Repository (folders/tags/upload + status).**
-  **F52 Notebook + chat UI with streaming + citations.**
+- **F50 App shell + auth UI — DONE OUT OF SEQUENCE (direct instruction, before Phase 2-4).**
+  Built early per a direct senior instruction rather than waiting for the normal phase order.
+  Vite React app scaffolded (`frontend/{package.json,vite.config.ts,tailwind.config.js,...}`),
+  `App.tsx` + `ProtectedRoute` + `lib/auth.tsx`/`lib/api.ts`, `AppShell`/`Sidebar`/`HomePage` shell,
+  `LoginPage`/`SignupPage` wired to the F10 auth endpoints.
+  - *DoD met:* a user can sign up, log in, and land in the app shell against the real F10 backend.
+- **F51 Repository (folders/tags/upload + status) — PARTIAL / IN PROGRESS.** Only the
+  auth-adjacent slice landed as part of the F50 pull-forward: `UsersPage.tsx` (org user list +
+  role management UI, calling F10's `/invite` / `/users` / `/users/{id}/role`) and `DocsPage.tsx`
+  (placeholder panel, not yet wired to F11/F12 — those backend features don't exist yet).
+  Folders/tags/upload UI itself is **not started** — blocked on F11/F12 landing first.
+- **F52 Notebook + chat UI with streaming + citations.** Not started — blocked on Phase 3/4.
   - *DoD:* a non-technical user completes the full core flow end-to-end.
+
+> Note: F50/F51 were pulled forward out of normal phase order specifically for the auth-facing
+> slice. Resume the rest of F51 (folders/tags/upload) only after F11 + F12 land on the backend —
+> don't build more frontend ahead of the backend it depends on.
 
 ## Phase 6 — Security Hardening (AFTER MVP is validated, BEFORE real customer data)
 The schema + plumbing exist from Phase 0; this phase turns on the teeth.
@@ -74,6 +90,16 @@ The schema + plumbing exist from Phase 0; this phase turns on the teeth.
     app-level filter, and still read **zero** cross-tenant rows (RLS alone blocks the leak).
 
 ---
+
+## Unplanned additions — needs a decision
+- **`GET /context/docs` + `/context/docs/{path}`** — **RESOLVED: deleted** (2026-06-23).
+  Decision was "remove" — exposed internal `.claude/`/`CLAUDE.md` build docs to any
+  authenticated user across all orgs (not org-scoped), too risky to formalize as a real
+  feature. Removed `backend/app/platform/context_docs.py`, its router wiring in `main.py`,
+  the `CONTEXT_DOCS_ROOT` config field, the `test_context_docs_list` test, and the frontend
+  docs-viewer (`DocsPage.tsx`, `MainPanels.tsx`, `contextApi`/`DocEntry`/`DocContent` in
+  `lib/api.ts`, the `/app/docs` route + `Library` nav item, the `/context` Vite proxy entry,
+  the `react-markdown` dependency). Auth UI + plain app shell kept intact.
 
 ## Postponed (designed-for — see architecture.md, do NOT build yet)
 - V2: enrichment backfill, hierarchical retrieval strategies, reranker seam, groups/grants permissions, connectors.

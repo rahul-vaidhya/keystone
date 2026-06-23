@@ -5,9 +5,104 @@
 > Keep it short and high-signal. Delete stale entries.
 
 ## Current phase
-**Phase 0 COMPLETE.** F00–F04 built & green (F03+F04 committed c35ee11, 2026-06-22; 27 tests, ruff
-clean on a real pgvector container). Next: **Phase 1 — F10 Auth + org creation + invites**. See
-`buildplan.md`/`progresstracker.md`.
+**Phase 0 COMPLETE** (F00–F04, F03+F04 = c35ee11, 27 tests, ruff clean). **F10 (Phase 1 auth) DONE
+and committed** (`8940dd1`). **F50 + a slice of F51 (Phase 5 frontend) DONE and committed**
+(`054aa36`). **F11 (Folders + tags) DONE and committed this session.** Next: **F12 Upload +
+dedupe**, then resume the rest of F51 (folders/tags/upload UI).
+
+## F11 Folders + tags (2026-06-23, this session)
+- **New `app/documents` module** (first module besides `identity`): `models.py` (`Folder`,
+  `Tag`, `Document`, `DocumentTag`), `repository.py`, `service.py`, `router.py`,
+  `schemas.py`, `exceptions.py`. Migration `0004_folders_tags.py` (Revises `0003`).
+- **`documents` table is deliberately minimal in this migration** — only
+  `id/org_id/folder_id/title/created_at`. It exists now only so `document_tags` has
+  something to FK to (folders/tags need a document to attach to for the DoD's "tag a
+  document"). **F12 ALTERs this same table** to add `storage_key/checksum/mime_type/
+  byte_size/page_count/language/status/failed_stage/error_detail/metadata` — F12 does
+  **not** get a new table. Don't recreate `documents` in F12's migration.
+  - **Why:** buildplan sequences F11 before F12, but F11's DoD ("tag a document") needs a
+    document row to exist. Building the full upload/dedupe columns now would be doing F12's
+    job out of order; building nothing would leave document_tags with no FK target. The
+    minimal-anchor-table-now / ALTER-later split is the smallest move that respects both
+    constraints, mirroring the project's existing "structural now, semantic later" pattern.
+- **Folders**: self-referencing tree, `path` materialized column (e.g. `'HR/Policies'`),
+  built by reading the parent's `path` at create time (`f"{parent.path}/{name}"`, or just
+  `name` for a root folder). `ON DELETE CASCADE` on `parent_id` (delete cascades to
+  subtree) and on `documents.folder_id` it's `SET NULL` (folder is "not a permission
+  boundary" per architecture.md — deleting a folder must not delete its documents).
+- **Scope decision — no folder rename/move endpoint**: buildplan's one-line feature
+  description says "CRUD for the folder tree," but the actual DoD line only requires
+  "create nested folders; tag a document; list by folder/tag." Implemented Create/Read/
+  Delete for folders and tags; deliberately **did not** build folder rename/move, because
+  a move requires rewriting the materialized `path` of every descendant (a cycle-detection
+  + bulk-update routine) that the DoD doesn't exercise and that risked introducing
+  untested bugs. **If a future feature needs folder move, build it then** — this was a
+  scope call, not an oversight; noted here so it isn't silently re-litigated as "missing
+  CRUD."
+- **Tag attach/detach is idempotent**: `attach` uses `INSERT ... ON CONFLICT DO NOTHING`
+  (Postgres dialect insert) on `(document_id, tag_id)`; `detach` is a no-op if the row
+  doesn't exist. `create_tag` is get-or-create by `(org_id, name)` rather than erroring on
+  duplicate — there's a unique constraint on `(org_id, name)` so this avoids a 409 for the
+  common case of re-tagging with an existing tag name.
+- **Gotcha — cross-test-file data collisions in the shared Testcontainers DB**: `pg_url` is
+  a `scope="session"` fixture, so **one Postgres container is shared across every test file
+  in the run**, and `AuthRepository.email_exists_globally` checks across the WHOLE
+  database, not per-test. `test_documents.py`'s first draft reused emails already used in
+  `test_auth.py` (`owner2@test.com` through `owner5@test.com`) and got `409 Conflict` on
+  signup. Fixed by prefixing all emails in `test_documents.py` with `docs-`. **Any new test
+  file that signs up users must use an email prefix/namespace unique to that file** — this
+  is a standing constraint of the test harness, not a one-off bug.
+- Exception handlers added to the existing `app/platform/http.py` (not a new file) for
+  `FolderNotFound`/`TagNotFound`/`DocumentNotFound` (404) and the `DocumentsError` base
+  (400) — same pattern as identity's handlers in the same file.
+- 7 new integration tests in `tests/test_documents.py` (nested folder creation + path
+  correctness, missing-parent 404, folder delete, tag-a-document + list-by-tag + detach,
+  list-by-folder, tag-missing-document 404, two-org tenant isolation on folders/tags).
+  Full suite: 41/41 green, ruff clean. No unused code or single-caller-abstraction issues
+  found on audit — every repository/service method has a real caller.
+
+## `/context/docs` removed (2026-06-23, this session)
+- The unplanned/undecided `GET /context/docs` endpoint (see prior entry below) was **deleted**,
+  not formalized — decision: too risky to ship (served `.claude/`/`CLAUDE.md` to any authenticated
+  user across all orgs, not org-scoped).
+- **Why:** direct senior instruction to remove it before committing F10/F50/F51, rather than
+  carry an undecided cross-tenant-readable endpoint into the committed history.
+- **Removed:** `backend/app/platform/context_docs.py`, the router import/mount in `main.py`,
+  `CONTEXT_DOCS_ROOT` from `platform/config.py`, `test_context_docs_list` from `test_auth.py`;
+  frontend `DocsPage.tsx` + `MainPanels.tsx`, `contextApi`/`DocEntry`/`DocContent` from
+  `lib/api.ts`, the `/app/docs` route in `App.tsx`, the `Library` nav item in `Sidebar.tsx`, the
+  `/context` Vite proxy entry, and the now-unused `react-markdown` dependency (package.json +
+  regenerated package-lock.json). Auth UI and the plain app shell (Home, Users, AppShell,
+  Sidebar) were kept as-is.
+- **Verified:** `pytest` 34/34 green (Testcontainers Postgres, Docker Desktop had to be started
+  first), `ruff check` clean, frontend `tsc -b` clean with no dangling references.
+- **Committed as two commits**: `8940dd1` "F10: auth backend" (identity/*, migration 0003, auth
+  tests, pyproject auth deps, main.py wiring, docker-compose port fix, the context_docs deletion
+  bits that live in those same files) and `054aa36` "F50/F51 (partial): frontend auth UI + app
+  shell, built ahead of sequence per direction" (Vite scaffold + auth UI, with the docs-viewer
+  already stripped out before staging).
+- `buildplan.md`'s "Unplanned additions" entry for this endpoint is marked RESOLVED: deleted.
+
+## Re-baseline correction (2026-06-22, this session — docs only, no code)
+- **Why this was needed:** `memory.md`/`progresstracker.md` still said "Next: F10" while F10
+  (full auth backend) and F50 + an auth-adjacent slice of F51 (frontend app shell + auth UI) were
+  already built, uncommitted, on disk. Re-baselined both files against actual repo state, not
+  against the stale plan.
+- **F10 DONE:** `app/identity/{router,service,repository,models,schemas,deps,tokens,passwords,
+  constants,exceptions}.py` + migration `0003_auth_password_hash` + `tests/test_auth.py` (217
+  lines). Signup creates org+owner; login is multi-org aware; refresh/logout/`/me`/invite/list
+  users/patch role all present.
+- **F50 DONE + F51 PARTIAL, built OUT OF SEQUENCE per direct senior instruction** (ahead of Phase
+  2–4): Vite React scaffold (`frontend/{package.json,vite.config.ts,...}`), `App.tsx`/
+  `ProtectedRoute`/`lib/auth.tsx`/`lib/api.ts`, `AppShell`/`Sidebar`/`HomePage` (F50), plus
+  `LoginPage`/`SignupPage` wired to the real F10 endpoints and `UsersPage.tsx` (org user/role
+  management) + a `DocsPage.tsx` placeholder (auth-adjacent slice of F51). Folders/tags/upload UI
+  itself is **not started** — don't resume it until F11/F12 land on the backend.
+- **F03/F04 status corrected:** were briefly suspected stale/skipped during this re-baseline, but
+  verified still fully intact and unchanged since `c35ee11` (`git diff c35ee11 HEAD` empty for
+  `seams.py`/`ci.yml`) — confirmed with the user, no actual gap. Don't re-litigate this.
+- **`GET /context/docs`** — was unplanned/undecided as of the re-baseline; resolved and deleted
+  this session, see the entry above.
 
 ## Phase 0 build decisions (F03 seams + F04 CI, 2026-06-22, c35ee11)
 - **All 3 seams live in ONE flat module `platform/seams.py`** (matches the flat platform/ layout —

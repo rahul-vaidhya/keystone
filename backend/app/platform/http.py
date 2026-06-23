@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from app.documents.exceptions import DocumentNotFound, DocumentsError, FolderNotFound, TagNotFound
 from app.identity.exceptions import (
     AmbiguousLogin,
     AuthError,
@@ -17,6 +18,34 @@ from app.identity.schemas import LoginAmbiguousResponse, OrgChoice
 
 
 def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(FolderNotFound)
+    async def _folder_not_found(_request: Request, exc: FolderNotFound) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": str(exc) or "Folder not found"},
+        )
+
+    @app.exception_handler(TagNotFound)
+    async def _tag_not_found(_request: Request, exc: TagNotFound) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": str(exc) or "Tag not found"},
+        )
+
+    @app.exception_handler(DocumentNotFound)
+    async def _document_not_found(_request: Request, exc: DocumentNotFound) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": str(exc) or "Document not found"},
+        )
+
+    @app.exception_handler(DocumentsError)
+    async def _documents_error(_request: Request, exc: DocumentsError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": str(exc) or "Documents error"},
+        )
+
     @app.exception_handler(InvalidCredentials)
     async def _invalid_credentials(_request: Request, exc: InvalidCredentials) -> JSONResponse:
         return JSONResponse(

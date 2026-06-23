@@ -32,8 +32,21 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       GH Actions green on first push pending).
 
 ## Phase 1 — Identity + Documents
-- [ ] F10 Auth + org creation + invites
-- [ ] F11 Folders + tags
+- [x] F10 Auth + org creation + invites (`8940dd1`) — `app/identity/{router,service,repository,
+      models,schemas,deps,tokens,passwords,constants,exceptions}.py`, migration
+      `0003_auth_password_hash`. Endpoints: signup (creates org + owner), login (multi-org aware),
+      refresh, logout, `/me`, invite, list org users, patch user role. DoD met:
+      `tests/test_auth.py` (34/34 suite green incl. this file).
+- [x] F11 Folders + tags (`PENDING_COMMIT`) — new `app/documents` module (`Folder`/`Tag`/
+      `Document`/`DocumentTag` models, repository/service/router/schemas/exceptions),
+      migration `0004_folders_tags.py`. `documents` table is a minimal anchor here
+      (id/org_id/folder_id/title) — F12 ALTERs it, doesn't recreate it. Folder tree via
+      materialized `path`; tags get-or-create by name; tag attach/detach idempotent.
+      Endpoints under `/documents/folders`, `/documents/tags`, `/documents/{id}/tags/{id}`,
+      `GET /documents?folder_id=&tag_id=`. DoD met: nested folder create, tag-a-document,
+      list-by-folder/tag — `tests/test_documents.py` (7 tests incl. tenant isolation).
+      Folder rename/move deliberately deferred (not in DoD — see memory.md). 41/41 suite
+      green, ruff clean.
 - [ ] F12 Upload + checksum dedupe
 
 ## Phase 2 — Ingestion core path
@@ -51,8 +64,14 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
 - [ ] F42 Admin debug bundle
 
 ## Phase 5 — Frontend SPA
-- [ ] F50 App shell + auth UI
-- [ ] F51 Repository UI (folders/tags/upload + status)
+- [x] F50 App shell + auth UI (`054aa36`) — built OUT OF SEQUENCE per direct senior instruction,
+      ahead of Phase 2-4. Vite React scaffold, `App.tsx`/`ProtectedRoute`/`lib/auth.tsx`/`lib/api.ts`,
+      `AppShell`/`Sidebar`/`HomePage`, `LoginPage`/`SignupPage` wired to the real F10 backend.
+- [~] F51 Repository UI (folders/tags/upload + status) — PARTIAL: only the auth-adjacent slice
+      (`UsersPage.tsx` org user/role management) landed alongside F50. The `DocsPage.tsx` placeholder
+      was removed (it depended on the deleted `/context/docs` endpoint — see "Unplanned additions"
+      in buildplan.md, resolved 2026-06-23). Folders/tags/upload itself not started — blocked on
+      F11/F12. Do not resume until those land.
 - [ ] F52 Notebook + chat UI (streaming + citations)
 
 ## Phase 6 — Security Hardening (after MVP validated, before real customer data)
@@ -62,7 +81,11 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
 **Demoable milestone reached:** [ ] end of Phase 4
 
 ## Current status
-Phase: **0 COMPLETE.** F00–F04 done (F03+F04 = c35ee11; 27 tests green on real pgvector, ruff clean).
-Next action: **Phase 1 — F10 Auth + org creation + invites** (roles `owner|admin|member`; short-lived
-JWT access + httpOnly refresh cookie; `current_user` → `TenantContext`; `get_ctx` dependency from
-librarydocs.md). First real consumer of the seams arrives in Phase 2 (ingestion).
+Phase: **0 COMPLETE** (F00–F04, F03+F04 = c35ee11). **F10 (Phase 1 auth) DONE and committed
+(`8940dd1`).** **F50 + a slice of F51 (Phase 5 frontend) also DONE and committed (`054aa36`)** —
+pulled forward out of sequence per direct senior instruction so the app shell + auth UI exist
+against the real F10 backend. **F11 (Folders + tags) DONE and committed this session.**
+Next action: **F12 Upload + checksum dedupe**, then resume the rest of F51 (folders/tags/
+upload UI) against the real F11/F12 backend.
+**Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
+not org-scoped) — see buildplan.md "Unplanned additions".
