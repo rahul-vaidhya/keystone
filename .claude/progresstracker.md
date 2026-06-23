@@ -62,7 +62,20 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       45/45 suite green, ruff clean.
 
 ## Phase 2 — Ingestion core path
-- [ ] F20 parsing stage (artifacts persisted, failures recorded)
+- [x] F20 parsing stage (`0277cfe`) — new `app/ingestion` module (`service.py`/`router.py`
+      only — no `repository.py`/`schemas.py`/`tasks.py`: no own table, no arq caller yet).
+      `IngestionService.run_parsing_stage` calls `documents_service.begin_parsing` /
+      `.complete_parsing` / `.fail_stage` (new methods) for every document-row mutation —
+      ingestion never touches `documents.repository` directly (module boundary rule).
+      Zero migration: F12 already added page_count/language/status/failed_stage/
+      error_detail/metadata. `POST /ingestion/documents/{id}/parse` fetches the blob via
+      `ObjectStore.get` (new method, alongside `put`), calls the `Parser` seam, persists a
+      JSON artifact (text+outline) to `.../artifacts/parsing.json`, then sets
+      language/page_count and status=STRUCTURING. Failures set status=FAILED+failed_stage+
+      error_detail. Idempotent/resumable via a status-eligibility check in
+      `DocumentRepository.begin_parsing` (UPLOADED/PARSING/FAILED-at-PARSING are eligible;
+      STRUCTURING+ is a no-op). DoD met: `tests/test_ingestion.py` (successful parse,
+      parser failure, idempotent re-run, tenant isolation). 49/49 suite green, ruff clean.
 - [ ] F21 structuring stage (sections tree + chunks + offsets, idempotent)
 - [ ] F22 embedding stage (chunk embeddings, idempotent, status→ready)
 
@@ -93,14 +106,12 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
 **Demoable milestone reached:** [ ] end of Phase 4
 
 ## Current status
-Phase: **0 COMPLETE** (F00–F04, F03+F04 = c35ee11). **F10 (Phase 1 auth) DONE and committed
-(`8940dd1`).** **F50 + a slice of F51 (Phase 5 frontend) also DONE and committed (`054aa36`)** —
-pulled forward out of sequence per direct senior instruction so the app shell + auth UI exist
-against the real F10 backend. **F11 (Folders + tags) DONE (`c58a5e7`).** **F12 (Upload +
-checksum dedupe) DONE and committed this session (`0b44b9c`).** Phase 1 (Identity + Documents)
-is now COMPLETE.
-Next action: resume the rest of F51 (folders/tags/upload UI) against the real F11/F12
-backend, **or** move to Phase 2 (F20 parsing stage) — both are unblocked; ask the user which
-to pick up first.
+Phase: **0 COMPLETE** (F00–F04, F03+F04 = c35ee11). **Phase 1 (Identity + Documents) COMPLETE**
+(F10 `8940dd1`, F11 `c58a5e7`, F12 `0b44b9c`). **F50 + a slice of F51 (Phase 5 frontend) DONE
+and committed (`054aa36`)**, pulled forward out of sequence per direct senior instruction.
+**F20 (Phase 2 parsing stage) DONE and committed this session (`0277cfe`).**
+Next action: F21 structuring stage (build `sections` tree + `chunks` from the F20 parsing
+artifact), **or** resume the rest of F51 (folders/tags/upload UI) against the real F11/F12
+backend — both are unblocked; ask the user which to pick up first.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

@@ -6,10 +6,61 @@
 
 ## Current phase
 **Phase 0 COMPLETE** (F00–F04, F03+F04 = c35ee11, 27 tests, ruff clean). **Phase 1 (Identity +
-Documents) COMPLETE**: F10 (`8940dd1`), F11 (`c58a5e7`), F12 (`0b44b9c`, this session). **F50 + a
-slice of F51 (Phase 5 frontend) DONE and committed** (`054aa36`). Next: resume the rest of F51
-(folders/tags/upload UI) against the real F11/F12 backend, or start Phase 2 (F20 parsing) — ask
-the user which.
+Documents) COMPLETE**: F10 (`8940dd1`), F11 (`c58a5e7`), F12 (`0b44b9c`). **F50 + a slice of F51
+(Phase 5 frontend) DONE and committed** (`054aa36`). **Phase 2 started: F20 parsing stage DONE**
+(`0277cfe`, this session). Next: F21 structuring stage (sections tree + chunks from the F20
+parsing artifact), or resume the rest of F51 (folders/tags/upload UI) against the real F11/F12
+backend — ask the user which.
+
+## F20 Parsing stage (2026-06-24, this session, 0277cfe)
+- **New `app/ingestion` module**: `service.py` + `router.py` only — deliberately **no**
+  `repository.py` (ingestion owns no table of its own; every `documents` row mutation goes
+  through `documents_service`, never `documents.repository` directly — the module-boundary
+  hard rule), **no** `schemas.py` (reuses `documents.schemas.DocumentOut`), and **no**
+  `tasks.py`/arq wiring — nothing enqueues a parse job yet (no caller), so building one now
+  would be dead code. Wired the manual-trigger endpoint into `main.py`; production
+  auto-dispatch (enqueue-on-upload, or F21 chaining a follow-on job) is left for whichever
+  future feature actually needs it.
+- **Zero migration needed.** F12 already added `page_count/language/status/failed_stage/
+  error_detail/metadata` to `documents` — F20 only adds behavior, not schema.
+- **New `DocumentRepository` methods** (`begin_parsing`/`complete_parsing`/`mark_failed`) and
+  matching `DocumentsService` methods (`begin_parsing`/`complete_parsing`/`fail_stage`) — F20's
+  ingestion module calls these instead of touching the `documents` table itself.
+- **Idempotency/resumability lives in `DocumentRepository.begin_parsing`**: a document is
+  eligible to (re)start parsing only if its status is `UPLOADED`, already `PARSING` (crashed
+  before the artifact was persisted — nothing to resume, just re-parse), or `FAILED` with
+  `failed_stage == PARSING` (retry). Anything already past parsing (`STRUCTURING`+) comes back
+  unchanged with no seam/object-store calls — `IngestionService.run_parsing_stage` checks
+  `document.status != PARSING` after calling `begin_parsing` and returns early if so.
+- **`ObjectStore` Protocol gained a `get(key) -> bytes` method** (alongside the existing
+  `put`) — F12 only ever wrote blobs; F20 is the first feature that needs to read one back
+  to hand to the `Parser` seam. Added to `R2ObjectStore` too (one more `asyncio.to_thread`
+  around the boto3 call).
+- **Parser artifact format** (persisted to `org/{org_id}/doc/{document_id}/artifacts/
+  parsing.json` via new `storage.build_artifact_key`): JSON `{text, language, page_count,
+  outline: [{heading, level, char_start, char_end, page_start, page_end}, ...]}` — directly
+  serializes `ParsedDoc`/`OutlineNode` from the seam. This is the contract F21 structuring
+  reads from; do not change its shape without checking F21's consumer.
+- **Failure handling**: `run_parsing_stage` wraps the object-store `get`/`put` + `parser.extract`
+  calls in one `try/except Exception`, logs via structlog (`ingestion.parsing_failed`), then
+  calls `documents_service.fail_stage(...)` — it does NOT re-raise, so the HTTP endpoint
+  returns 200 with the document's `FAILED` state in the body rather than a 500. This matches
+  codestandards "on failure: set status=failed, never swallow" (logged + persisted, not raised).
+- **Gotcha — test object-store fixture was silently broken for round-tripping**: the existing
+  `tests/test_documents.py` `client` fixture did
+  `app.dependency_overrides[get_object_store] = lambda: _InMemoryObjectStore()` — a **new**
+  empty store on every dependency resolution, since FastAPI calls the override fresh per
+  request. F12's tests never noticed because dedupe is checked via the DB checksum, not the
+  store. F20 needs to `put` (upload) then `get` (parse) the *same* blob across two separate
+  HTTP requests, which only works with one shared instance — fixed by hoisting `store =
+  _InMemoryObjectStore()` outside the lambda in that fixture, and using the same pattern in
+  the new `tests/test_ingestion.py`. **Any future test that exercises object-store
+  round-tripping across requests must use this hoisted-instance pattern, not a fresh lambda.**
+- 4 new integration tests in `tests/test_ingestion.py` (successful parse incl. artifact
+  content check, parser failure via a `get_parser` dependency override, idempotent re-run
+  returns an identical response, cross-org parse attempt 404s). Full suite: 49/49 green,
+  ruff clean. Audited for unused code: removed a speculative `DocumentsService.get_document`
+  that had no caller — kept the audit trail here so it isn't silently re-added later.
 
 ## F12 Upload + checksum dedupe (2026-06-24, this session, 0b44b9c)
 - **ALTERed the F11 `documents` anchor table** (migration `0005_document_upload_dedupe.py`) exactly
