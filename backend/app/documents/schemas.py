@@ -42,6 +42,11 @@ class DocumentOut(BaseModel):
     org_id: uuid.UUID
     folder_id: uuid.UUID | None
     title: str
+    storage_key: str | None
+    mime_type: str | None
+    byte_size: int | None
+    checksum: str | None
+    status: str
     created_at: datetime
 
     model_config = {"from_attributes": True}

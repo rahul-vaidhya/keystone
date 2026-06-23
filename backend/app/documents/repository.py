@@ -64,6 +64,10 @@ class DocumentRepository(BaseRepository[Document]):
         stmt = self._scoped().where(Document.id == document_id)
         return await self._db.scalar(stmt)
 
+    async def get_by_checksum(self, checksum: str) -> Document | None:
+        stmt = self._scoped().where(Document.checksum == checksum)
+        return await self._db.scalar(stmt)
+
     async def list(
         self, *, folder_id: uuid.UUID | None = None, tag_id: uuid.UUID | None = None
     ) -> list[Document]:
@@ -76,6 +80,29 @@ class DocumentRepository(BaseRepository[Document]):
             )
         stmt = stmt.order_by(Document.created_at)
         return list(await self._db.scalars(stmt))
+
+    async def create_upload(self, *, folder_id: uuid.UUID | None, title: str) -> Document:
+        """Insert the row with an id assigned (flushed) but no storage_key/checksum yet —
+        the caller needs the id to build the object-store key before the upload completes."""
+        document = Document(org_id=self._ctx.org_id, folder_id=folder_id, title=title)
+        self._db.add(document)
+        await self._db.flush()
+        return document
+
+    async def mark_uploaded(
+        self,
+        document: Document,
+        *,
+        storage_key: str,
+        checksum: str,
+        mime_type: str,
+        byte_size: int,
+    ) -> None:
+        document.storage_key = storage_key
+        document.checksum = checksum
+        document.mime_type = mime_type
+        document.byte_size = byte_size
+        await self._db.flush()
 
 
 class DocumentTagRepository(BaseRepository[DocumentTag]):

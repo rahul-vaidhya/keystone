@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 
 from app.documents.exceptions import DocumentNotFound, FolderNotFound, TagNotFound
@@ -14,6 +15,7 @@ from app.documents.repository import (
 from app.documents.schemas import DocumentOut, FolderCreate, FolderOut, TagCreate, TagOut
 from app.platform import db as db_mod
 from app.platform.context import TenantContext
+from app.platform.storage import ObjectStore, build_storage_key
 
 
 class DocumentsService:
@@ -94,6 +96,43 @@ class DocumentsService:
         async with db_mod.sessionmaker() as session:
             docs = await DocumentRepository(session, ctx).list(folder_id=folder_id, tag_id=tag_id)
         return [DocumentOut.model_validate(d) for d in docs]
+
+    async def upload_document(
+        self,
+        ctx: TenantContext,
+        *,
+        filename: str,
+        content_type: str,
+        data: bytes,
+        folder_id: uuid.UUID | None,
+        object_store: ObjectStore,
+    ) -> tuple[DocumentOut, bool]:
+        """Upload to the object store and record the document. Re-uploading a byte-identical
+        file (same org, same checksum) returns the existing document instead of a duplicate
+        (``unique(org_id, checksum)`` — the DoD this enforces)."""
+        checksum = hashlib.sha256(data).hexdigest()
+        async with db_mod.sessionmaker() as session, session.begin():
+            repo = DocumentRepository(session, ctx)
+            if folder_id is not None:
+                if await FolderRepository(session, ctx).get_by_id(folder_id) is None:
+                    raise FolderNotFound("Folder not found")
+
+            existing = await repo.get_by_checksum(checksum)
+            if existing is not None:
+                return DocumentOut.model_validate(existing), False
+
+            document = await repo.create_upload(folder_id=folder_id, title=filename)
+            key = build_storage_key(ctx.org_id, document.id, filename)
+            await object_store.put(key, data, content_type)
+            await repo.mark_uploaded(
+                document,
+                storage_key=key,
+                checksum=checksum,
+                mime_type=content_type,
+                byte_size=len(data),
+            )
+            out = DocumentOut.model_validate(document)
+        return out, True
 
 
 documents_service = DocumentsService()

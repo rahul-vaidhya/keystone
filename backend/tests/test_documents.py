@@ -1,4 +1,4 @@
-"""F11 folders + tags integration tests."""
+"""F11 folders + tags, F12 upload + dedupe integration tests."""
 
 from __future__ import annotations
 
@@ -8,13 +8,27 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.documents.models import Document
+from app.platform.storage import get_object_store
 from main import app
+
+
+class _InMemoryObjectStore:
+    """F12 test double: object storage isn't a seam (architecture.md — only Parser/
+    Embedder/LLM are), so this is plain FastAPI dependency-override DI, not a 4th seam."""
+
+    def __init__(self) -> None:
+        self.puts: dict[str, bytes] = {}
+
+    async def put(self, key: str, data: bytes, content_type: str) -> None:
+        self.puts[key] = data
 
 
 @pytest.fixture
 async def client(session_factory, tenant_engine) -> AsyncClient:
+    app.dependency_overrides[get_object_store] = lambda: _InMemoryObjectStore()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
+    app.dependency_overrides.pop(get_object_store, None)
 
 
 async def _signup(client: AsyncClient, email: str, org_name: str) -> dict:
@@ -150,3 +164,64 @@ async def test_tenant_isolation_on_folders_and_tags(client: AsyncClient) -> None
 
     cross_tag_list = await client.get("/documents/tags", headers=headers_b)
     assert all(t["id"] != tag_id for t in cross_tag_list.json())
+
+
+async def test_upload_creates_document_uploaded_status(client: AsyncClient) -> None:
+    tokens = await _signup(client, "docs-up1@test.com", "UpOne")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    resp = await client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("handbook.pdf", b"hello world", "application/pdf")},
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["status"] == "UPLOADED"
+    assert body["checksum"] is not None
+    assert body["storage_key"] == f"org/{body['org_id']}/doc/{body['id']}/source.pdf"
+    assert body["byte_size"] == len(b"hello world")
+
+
+async def test_reupload_identical_file_returns_existing_document(client: AsyncClient) -> None:
+    tokens = await _signup(client, "docs-up2@test.com", "UpTwo")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    file = {"file": ("dup.pdf", b"same bytes", "application/pdf")}
+
+    first = await client.post("/documents/upload", headers=headers, files=file)
+    assert first.status_code == 201
+    first_id = first.json()["id"]
+
+    second = await client.post("/documents/upload", headers=headers, files=file)
+    assert second.status_code == 200
+    assert second.json()["id"] == first_id
+
+    listing = await client.get("/documents", headers=headers)
+    assert len(listing.json()) == 1
+
+
+async def test_upload_same_checksum_different_orgs_not_deduped(client: AsyncClient) -> None:
+    tokens_a = await _signup(client, "docs-up3@test.com", "UpThreeA")
+    tokens_b = await _signup(client, "docs-up4@test.com", "UpThreeB")
+    headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}
+    headers_b = {"Authorization": f"Bearer {tokens_b['access_token']}"}
+    file = {"file": ("shared.pdf", b"identical content", "application/pdf")}
+
+    resp_a = await client.post("/documents/upload", headers=headers_a, files=file)
+    resp_b = await client.post("/documents/upload", headers=headers_b, files=file)
+    assert resp_a.status_code == 201
+    assert resp_b.status_code == 201
+    assert resp_a.json()["id"] != resp_b.json()["id"]
+
+
+async def test_upload_missing_folder_404(client: AsyncClient) -> None:
+    tokens = await _signup(client, "docs-up5@test.com", "UpFive")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    resp = await client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("x.txt", b"x", "text/plain")},
+        data={"folder_id": str(uuid.uuid4())},
+    )
+    assert resp.status_code == 404

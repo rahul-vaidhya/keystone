@@ -6,12 +6,14 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Form, UploadFile, status
+from fastapi.responses import JSONResponse
 
 from app.documents.schemas import DocumentOut, FolderCreate, FolderOut, TagCreate, TagOut
 from app.documents.service import documents_service
 from app.identity.deps import get_ctx
 from app.platform.context import TenantContext
+from app.platform.storage import ObjectStore, get_object_store
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -82,3 +84,25 @@ async def list_documents(
     tag_id: uuid.UUID | None = None,
 ) -> list[DocumentOut]:
     return await documents_service.list_documents(ctx, folder_id=folder_id, tag_id=tag_id)
+
+
+@router.post("/upload")
+async def upload_document(
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+    object_store: Annotated[ObjectStore, Depends(get_object_store)],
+    file: UploadFile,
+    folder_id: Annotated[uuid.UUID | None, Form()] = None,
+) -> JSONResponse:
+    data = await file.read()
+    doc, created = await documents_service.upload_document(
+        ctx,
+        filename=file.filename or "upload",
+        content_type=file.content_type or "application/octet-stream",
+        data=data,
+        folder_id=folder_id,
+        object_store=object_store,
+    )
+    return JSONResponse(
+        content=doc.model_dump(mode="json"),
+        status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+    )
