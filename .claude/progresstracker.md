@@ -146,7 +146,24 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       attached to two notebooks shares one row (asserted directly in
       `tests/test_knowledge.py`); 14 new tests (CRUD, idempotency, tenant isolation incl.
       cross-org attach denial). 74/74 suite green, ruff clean.
-- [ ] F31 Flat retrieval (scoped, isolation test passing)
+- [x] F31 Flat retrieval (`c194b2b`) — new `app/retrieval` module (router/service/schemas
+      only — no own table). `RetrievalService.search` scopes to `notebook ∩ allowed` via
+      `knowledge.service.list_notebook_documents` + `resolve_allowed_documents` (MVP stub:
+      all org docs via `documents.service.list_documents`, the V2 permissions hook), embeds
+      the query via the `Embedder` seam, and calls the new
+      `IngestionService.search_chunks` (kNN SQL stays in `ingestion/repository.py` since
+      embeddings/chunks are ingestion's tables — `EmbeddingRepository.search_chunks` filters
+      `org_id`/`owner_type='chunk'`/`model=:active_model`, `k` passed straight to `LIMIT`,
+      no over-fetch). New `app/ingestion/schemas.py` (`ChunkHit`) carries the result shape
+      across the module boundary. `assemble_context` (pure function) numbers hits into
+      `ContextBlock`s — the shape F40/F41 will consume. `POST /retrieval/search`. DoD met:
+      `tests/test_retrieval.py` — notebook-scoped search, empty-notebook no-op, k bounds
+      (422 outside 1–50), API-level cross-org 404, a repository-level isolation backstop
+      test calling `search_chunks` directly with a cross-org document id (independent of
+      upstream scoping), active-model filtering (no duplicate hits after a re-embed),
+      `resolve_allowed_documents` unit test, `assemble_context` unit tests. 83/83 suite
+      green, ruff clean. Independent code-review pass: zero violations against the 7 hard
+      rules.
 
 ## Phase 4 — Chat
 - [ ] F40 Grounded generation (SSE, refuses outside sources)
@@ -179,10 +196,12 @@ F22 embedding (`4598698`).**
 **Phase 2.5 COMPLETE: F23 Real parser integration** (code `9e7f319`, docs `90285c2`,
 empirical validation run and confirmed this session — real 36-page PDF reached `READY` via
 `cloudflare-ai`, heading recovery confirmed, page-provenance gap confirmed, offsets sane).
-**Phase 3 started: F30 Notebooks COMPLETE this session (`a85138e`)** — new `app/knowledge`
-module, migration `0008_notebooks.py`, 74/74 suite green, ruff clean — see memory.md
-"F30 Notebooks" for full detail.
-Next action: **F31 Flat retrieval, or resume the rest of F51 (folders/tags/upload UI)**
-— ask the user which.
+**Phase 3 COMPLETE: F30 Notebooks (`a85138e`), F31 Flat retrieval (`c194b2b`)** — new
+`app/knowledge` module (migration `0008_notebooks.py`) and new `app/retrieval` module
+(no migration — reads existing F21/F22 tables via `ingestion.service.search_chunks`).
+83/83 suite green, ruff clean — see memory.md "F30 Notebooks" / "F31 Flat retrieval" for
+full detail.
+Next action: **F40 Grounded generation (Phase 4), or resume the rest of F51 (folders/tags/
+upload UI)** — ask the user which.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

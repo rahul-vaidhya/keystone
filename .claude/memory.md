@@ -10,10 +10,82 @@ Documents) COMPLETE**: F10 (`8940dd1`), F11 (`c58a5e7`), F12 (`0b44b9c`). **F50 
 (Phase 5 frontend) DONE and committed** (`054aa36`). **Phase 2 (Ingestion core path) COMPLETE**:
 F20 parsing (`0277cfe`), F21 structuring (`5eecac5`), F22 embedding (`4598698`). **Phase 2.5
 COMPLETE: F23 Real parser integration, code+docs committed `9e7f319`/`90285c2`; empirical
-validation against a real PDF run and confirmed this session.** **Phase 3 started: F30
-Notebooks COMPLETE this session, code `a85138e`** (see entry below).
-Next: **F31 Flat retrieval (Phase 3), or resume the rest of F51 (folders/tags/upload UI)
+validation against a real PDF run and confirmed this session.** **Phase 3 COMPLETE: F30
+Notebooks (`a85138e`), F31 Flat retrieval (`c194b2b`)** (see entry below).
+Next: **F40 Grounded generation (Phase 4), or resume the rest of F51 (folders/tags/upload UI)
 against the real F11/F12 backend — ask the user which.**
+
+## F31 Flat retrieval (2026-06-23, this session, `c194b2b`)
+- **New `app/retrieval` module** (`router.py`/`service.py`/`schemas.py` only — no
+  `models.py`/`repository.py`/`exceptions.py`: retrieval owns no table, so no new error
+  types or SQL of its own). First real exercise of architecture.md's `retrieve()`
+  pseudocode (`flat_vector` only — no hierarchical/graph/reranker/chat/LLM in scope).
+- **Cross-module design, option (a) as approved**: the kNN SQL stays in
+  `ingestion/repository.py` (`EmbeddingRepository.search_chunks`) since embeddings/chunks
+  are ingestion's own tables (F21/F22). `retrieval.service` never imports
+  `ingestion.models`/`ingestion.repository` — it calls a new, narrow
+  `IngestionService.search_chunks(ctx, *, query_vector, document_ids, model, k)`, mirroring
+  how `knowledge.service` already calls `documents_service.get_document`/`list_by_ids`
+  instead of touching `documents` directly. New `app/ingestion/schemas.py` (`ChunkHit`) is
+  ingestion's first schemas file (it previously reused `documents.schemas.DocumentOut` for
+  everything) — carries the result shape across the module boundary as a Pydantic value
+  object, not a leaked ORM row.
+  - **Corrected a stale docstring** in `ingestion/models.py`: it previously said a future
+    retrieval module "can import these ORM classes directly for read-side joins... without
+    going through ingestion's service/repository" — written during F22, before this
+    feature existed. That statement would have violated hard rule #1; replaced with a note
+    that retrieval reaches this data only through `IngestionService.search_chunks`. **If
+    this docstring is ever quoted as precedent again, it's wrong — option (a) is the
+    locked design.**
+- **No hardcoded over-fetch.** First draft (pre-implementation plan) fetched k=30 then
+  sliced to `hits[:8]`, mirroring architecture.md's pseudocode literally. User caught this
+  as unjustified without a reranker (none exists in F31) and inconsistent for `req.k > 30`.
+  Fixed: `req.k` is passed straight through to the SQL `LIMIT` in `search_chunks`; no
+  slicing happens in `assemble_context`. `RetrievalSearchRequest.k` is bounded
+  `Field(default=8, ge=1, le=50)` at the schema level. **If a reranker is ever added (V2),
+  it should be named explicitly as a fetch-then-rerank stage — don't reintroduce a silent
+  over-fetch constant.**
+- **`resolve_allowed_documents(ctx)`** is a module-level free function in
+  `retrieval/service.py` (not a class method) — deliberately mirrors architecture.md's
+  pseudocode shape, which shows it as a standalone function called inside `retrieve()`.
+  MVP body is one line: `documents_service.list_documents(ctx)` with no filters → all org
+  docs. This is the ONLY place V2 groups/grants permission logic needs to slot in later.
+- **`assemble_context(query, hits)`** is a pure function (no DB, no seam) — unit-tested
+  directly with fake `ChunkHit` lists. Produces `ContextBlock`s numbered 1..N with
+  `document_id`/`chunk_id`/`char_start`/`char_end`/`content` — this is the SHAPE F40 (chat)
+  will consume; citation mapping itself is F41, not built here.
+- **Active-model filter** (`Embedding.model == model` in `search_chunks`'s WHERE clause) —
+  required so a re-embed under a new model name (F22's upsert path) never produces a
+  duplicate hit for the same chunk. Confirmed by `test_active_model_filter_excludes_other_models`.
+- **Two isolation tests, deliberately not one** (direct instruction): an API-level test
+  (cross-org notebook access 404s before `search_chunks` is ever reached) AND a
+  repository-level test (`test_search_chunks_org_id_is_an_independent_backstop`) that calls
+  `ingestion_service.search_chunks` directly with org A's `ctx` but org B's `document_id` in
+  the scope list, asserting zero hits, with a same-org control proving the absence is the
+  filter and not a query bug. **Rationale, worth keeping**: the API-level test can never
+  reach the `search_chunks` internals, because `list_notebook_documents` already 404s
+  cross-org before `search_chunks` is called — so only the repository-level test would catch
+  a future accidental removal of the `WHERE org_id = :org` predicate inside
+  `search_chunks` itself. Don't collapse these into one test in a future refactor.
+- **Gotcha (test-writing only, not app code)**: tests that call `ingestion_service.search_chunks`
+  directly (bypassing the HTTP `client` fixture) must depend on the `tenant_engine` fixture,
+  not just `session_factory` — `session_factory` only gives the test its own engine bound to
+  the Testcontainers URL; `IngestionService.search_chunks` opens its session via the
+  **global** `app.platform.db.sessionmaker`, which is only rebound to the test container by
+  `tenant_engine`. Missing it produces a `ConnectionRefusedError` against the dev DB URL, not
+  an obviously-tenancy-related failure. The `client` fixture already depends on
+  `tenant_engine` transitively, so HTTP-level tests never hit this; only direct
+  service-layer test calls need to request it explicitly.
+- **Gotcha (test-writing only)**: directly constructing `Document`/`Chunk`/`Embedding` rows
+  for a hand-rolled `org_id` (not one created via `/auth/signup`) needs an explicit
+  `Organization(id=org_id, ...)` row first (the FK target) — and needs `await
+  session.flush()` between adding the `Organization` and adding the `Document` in the same
+  transaction, since SQLAlchemy's ORM flush ordering for objects with explicit (non
+  server-generated-and-awaited) PKs and no `relationship()` between the two mapped classes
+  doesn't auto-detect the table-level FK dependency the way `MetaData.create_all` does.
+- Verified independently via a code-review subagent against all 7 hard rules + F31 DoD:
+  zero violations. 83/83 suite green, ruff clean (`ruff check .` / `ruff format --check .`,
+  same pre-existing `scripts/inspect_document.py` exclusions as prior sessions).
 
 ## F30 Notebooks (2026-06-27, this session, `a85138e`)
 - **New `app/knowledge` module** (`models.py`/`repository.py`/`service.py`/`router.py`/
