@@ -47,7 +47,19 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       list-by-folder/tag — `tests/test_documents.py` (7 tests incl. tenant isolation).
       Folder rename/move deliberately deferred (not in DoD — see memory.md). 41/41 suite
       green, ruff clean.
-- [ ] F12 Upload + checksum dedupe
+- [x] F12 Upload + checksum dedupe (`0b44b9c`) — ALTERed the F11 `documents` anchor
+      (migration `0005_document_upload_dedupe.py`): `storage_key/checksum/mime_type/
+      byte_size/page_count/language/status/failed_stage/error_detail/metadata`,
+      `unique(org_id, checksum)`. New `app/documents/status.py` (authoritative
+      `DocumentStatus` enum). New `app/platform/storage.py` (`ObjectStore` Protocol +
+      `R2ObjectStore`, NOT a 4th seam — object store is called directly per
+      architecture.md; tests override the FastAPI dependency with an in-memory fake).
+      `POST /documents/upload` (multipart) computes a sha256 checksum, checks
+      `org_id+checksum` before inserting, uploads to the object store, then records the
+      row; re-uploading identical bytes returns the existing document (200) instead of a
+      duplicate (201 on first upload). DoD met: `tests/test_documents.py` (4 new tests:
+      create+status, dedupe-returns-existing, cross-org not deduped, missing-folder 404).
+      45/45 suite green, ruff clean.
 
 ## Phase 2 — Ingestion core path
 - [ ] F20 parsing stage (artifacts persisted, failures recorded)
@@ -84,8 +96,11 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
 Phase: **0 COMPLETE** (F00–F04, F03+F04 = c35ee11). **F10 (Phase 1 auth) DONE and committed
 (`8940dd1`).** **F50 + a slice of F51 (Phase 5 frontend) also DONE and committed (`054aa36`)** —
 pulled forward out of sequence per direct senior instruction so the app shell + auth UI exist
-against the real F10 backend. **F11 (Folders + tags) DONE and committed this session.**
-Next action: **F12 Upload + checksum dedupe**, then resume the rest of F51 (folders/tags/
-upload UI) against the real F11/F12 backend.
+against the real F10 backend. **F11 (Folders + tags) DONE (`c58a5e7`).** **F12 (Upload +
+checksum dedupe) DONE and committed this session (`0b44b9c`).** Phase 1 (Identity + Documents)
+is now COMPLETE.
+Next action: resume the rest of F51 (folders/tags/upload UI) against the real F11/F12
+backend, **or** move to Phase 2 (F20 parsing stage) — both are unblocked; ask the user which
+to pick up first.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

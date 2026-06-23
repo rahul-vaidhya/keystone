@@ -5,10 +5,53 @@
 > Keep it short and high-signal. Delete stale entries.
 
 ## Current phase
-**Phase 0 COMPLETE** (F00–F04, F03+F04 = c35ee11, 27 tests, ruff clean). **F10 (Phase 1 auth) DONE
-and committed** (`8940dd1`). **F50 + a slice of F51 (Phase 5 frontend) DONE and committed**
-(`054aa36`). **F11 (Folders + tags) DONE and committed this session** (`c58a5e7`). Next: **F12 Upload +
-dedupe**, then resume the rest of F51 (folders/tags/upload UI).
+**Phase 0 COMPLETE** (F00–F04, F03+F04 = c35ee11, 27 tests, ruff clean). **Phase 1 (Identity +
+Documents) COMPLETE**: F10 (`8940dd1`), F11 (`c58a5e7`), F12 (`0b44b9c`, this session). **F50 + a
+slice of F51 (Phase 5 frontend) DONE and committed** (`054aa36`). Next: resume the rest of F51
+(folders/tags/upload UI) against the real F11/F12 backend, or start Phase 2 (F20 parsing) — ask
+the user which.
+
+## F12 Upload + checksum dedupe (2026-06-24, this session, 0b44b9c)
+- **ALTERed the F11 `documents` anchor table** (migration `0005_document_upload_dedupe.py`) exactly
+  per the F11 entry's pre-recorded plan: `storage_key/checksum/mime_type/byte_size/page_count/
+  language/status/failed_stage/error_detail/metadata`, `unique(org_id, checksum)`. No new table.
+- **`metadata` Python attribute is named `metadata_`** (mapped to the `"metadata"` DB column) —
+  `metadata` is reserved on SQLAlchemy's `DeclarativeBase` (collides with `Base.metadata`).
+- **New `app/documents/status.py`**: the authoritative `DocumentStatus` `StrEnum`
+  (`UPLOADED|PARSING|STRUCTURING|EMBEDDING|READY|FAILED`) architecture.md names as the single
+  source of truth — built in full now even though F12 only uses `UPLOADED`, since the enum itself
+  (not its later transitions) is the locked schema decision.
+- **New `app/platform/storage.py`**: `ObjectStore` Protocol + `R2ObjectStore` (lazy `import boto3`
+  inside `__init__`, mirrors the seam adapters' lazy-import pattern) + `get_object_store()` FastAPI
+  dependency factory + `build_storage_key(org_id, document_id, filename)` →
+  `org/{org_id}/doc/{document_id}/source{ext}` (librarydocs.md convention).
+  **This is deliberately NOT a 4th seam** — architecture.md says only Parser/Embedder/LLM are
+  seams; the object store is called directly. Testability comes from plain FastAPI
+  `app.dependency_overrides[get_object_store]`, not a `SEAMS_MODE`-style fake/real switch.
+- **Added `boto3` and `python-multipart` as core `pyproject.toml` dependencies** (not under the
+  `[real]` extra like the OpenAI seam) — unlike the seams, the object store has no fake/real mode;
+  production always needs it, and tests override the FastAPI dependency instead of swapping a
+  config flag. `python-multipart` is required by FastAPI for `UploadFile`/`Form` parsing.
+- **Dedupe is check-then-act, not concurrency-safe** (`DocumentsService.upload_document`): looks up
+  `get_by_checksum` before inserting, inside one transaction. The `unique(org_id, checksum)`
+  constraint exists as a backstop, but a true concurrent double-upload of the same byte-identical
+  file in the same org could still raise `IntegrityError` on commit instead of returning the
+  existing row — **not handled** (no retry/catch). **Minor, deliberately left**: the DoD only
+  requires sequential re-upload to dedupe, and this is a narrow race window; revisit if it's ever
+  observed in practice rather than building speculative concurrency handling now.
+- **Object-store-write-before-DB-commit ordering**: `upload_document` flushes the row (to get its
+  `id` for the storage key) but does NOT commit until after `object_store.put()` succeeds — if the
+  put fails, the whole transaction (including the row) rolls back, so there's never a DB row
+  pointing at a blob that was never written. (The reverse leak — a blob written but the transaction
+  then failing for an unrelated reason — is accepted; same class of gap the orphan sweep design in
+  librarydocs.md's "Object storage" section exists to catch later.)
+- **Upload response status code**: `201` on first upload, `200` when the checksum already existed
+  (dedupe hit) — the router returns a `JSONResponse` directly rather than using `response_model`
+  because the status code is data-dependent.
+- 4 new integration tests in `tests/test_documents.py` (create + `status=UPLOADED`, re-upload
+  returns existing doc, same-checksum-different-orgs not deduped, missing-folder 404), using a
+  `_InMemoryObjectStore` test double registered via `app.dependency_overrides[get_object_store]`.
+  Full suite: 45/45 green, ruff clean.
 
 ## F11 Folders + tags (2026-06-23, this session, c58a5e7)
 - **New `app/documents` module** (first module besides `identity`): `models.py` (`Folder`,
