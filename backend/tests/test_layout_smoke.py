@@ -16,7 +16,8 @@ def test_health_returns_200() -> None:
 
 
 def test_worker_has_redis_settings() -> None:
-    assert WorkerSettings.functions == []
+    # F24: the ingestion pipeline's 3 stage jobs are registered (was [] through F23).
+    assert len(WorkerSettings.functions) == 3
     assert WorkerSettings.redis_settings is not None
 
 

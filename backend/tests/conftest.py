@@ -25,6 +25,29 @@ os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 BACKEND = Path(__file__).resolve().parents[1]
 
 
+class FakeJobQueue:
+    """F24 test double for ``platform.queue.JobQueue`` — records every enqueue call
+    instead of touching real Redis/arq. Shared across test files that hit
+    ``/documents/upload`` (which now enqueues the parsing job on every genuine new
+    upload).
+
+    Models arq's real ``_job_id`` dedup: a second enqueue sharing an already-seen
+    ``job_id`` is silently dropped (not recorded), same as real arq refusing to create a
+    second job with an ID already queued/active. This is the mechanism that actually
+    prevents a double-enqueue under concurrent redelivery (see ``ingestion/tasks.py``)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self._seen_job_ids: set[str] = set()
+
+    async def enqueue(self, function: str, *, job_id: str | None = None, **kwargs: object) -> None:
+        if job_id is not None:
+            if job_id in self._seen_job_ids:
+                return
+            self._seen_job_ids.add(job_id)
+        self.calls.append((function, kwargs))
+
+
 @pytest.fixture(scope="session")
 def pg_url() -> Iterator[str]:
     try:

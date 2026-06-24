@@ -23,11 +23,27 @@ from app.ingestion.service import parsing as _parsing
 from app.ingestion.service import search as _search
 from app.ingestion.service import structuring as _structuring
 from app.platform.context import TenantContext
+from app.platform.queue import JobQueue
 from app.platform.seams import Embedder, Parser
 from app.platform.storage import ObjectStore
 
 
 class IngestionService:
+    async def enqueue_pipeline(
+        self, ctx: TenantContext, document_id: uuid.UUID, *, job_queue: JobQueue
+    ) -> None:
+        """F24: kick off the pipeline by enqueueing the parsing stage's job. Called by
+        ``documents`` module's upload router (never by ``documents.service`` directly —
+        ``ingestion`` already imports ``documents.service``, so the reverse import would
+        be circular; the router is the composition point, same module-boundary rule
+        applied at the HTTP edge instead of service-to-service)."""
+        await job_queue.enqueue(
+            "run_parsing_stage_job",
+            job_id=f"ingestion:parsing:{document_id}",
+            org_id=str(ctx.org_id),
+            document_id=str(document_id),
+        )
+
     async def run_parsing_stage(
         self,
         ctx: TenantContext,

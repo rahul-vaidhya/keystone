@@ -8,8 +8,10 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.documents.models import Document
+from app.platform.queue import get_job_queue
 from app.platform.storage import get_object_store
 from main import app
+from tests.conftest import FakeJobQueue
 
 
 class _InMemoryObjectStore:
@@ -33,9 +35,13 @@ async def client(session_factory, tenant_engine) -> AsyncClient:
     # empty store and a later GET could never see an earlier PUT.
     store = _InMemoryObjectStore()
     app.dependency_overrides[get_object_store] = lambda: store
+    # F24: upload now enqueues the parsing job — fake the queue so these tests never
+    # touch real Redis/arq.
+    app.dependency_overrides[get_job_queue] = lambda: FakeJobQueue()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.pop(get_object_store, None)
+    app.dependency_overrides.pop(get_job_queue, None)
 
 
 async def _signup(client: AsyncClient, email: str, org_name: str) -> dict:

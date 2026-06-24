@@ -25,9 +25,11 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.ingestion.models import Chunk, Section
+from app.platform.queue import get_job_queue
 from app.platform.seams import RealParser, get_embedder, get_parser
 from app.platform.storage import get_object_store
 from main import app
+from tests.conftest import FakeJobQueue
 
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 REAL_PDF_PATH = os.environ.get("REAL_PDF_PATH")
@@ -57,11 +59,16 @@ async def client(session_factory, tenant_engine) -> AsyncClient:
     store = _InMemoryObjectStore()
     app.dependency_overrides[get_object_store] = lambda: store
     app.dependency_overrides[get_parser] = lambda: RealParser()
+    # F24: upload now enqueues the parsing job — fake the queue so this test never
+    # touches real Redis/arq (this test drives stages manually via /ingestion/*, the
+    # auto-enqueued job is simply never consumed since no worker runs here).
+    app.dependency_overrides[get_job_queue] = lambda: FakeJobQueue()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.pop(get_object_store, None)
     app.dependency_overrides.pop(get_parser, None)
     app.dependency_overrides.pop(get_embedder, None)
+    app.dependency_overrides.pop(get_job_queue, None)
 
 
 async def test_real_pdf_reaches_ready_and_prints_structure_findings(

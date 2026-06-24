@@ -10,9 +10,11 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.ingestion.models import Chunk, Embedding, Section
+from app.platform.queue import get_job_queue
 from app.platform.seams import ParsedDoc, get_embedder, get_parser
 from app.platform.storage import build_artifact_key, get_object_store
 from main import app
+from tests.conftest import FakeJobQueue
 
 
 class _InMemoryObjectStore:
@@ -35,11 +37,15 @@ class _FailingParser:
 async def client(session_factory, tenant_engine) -> AsyncClient:
     store = _InMemoryObjectStore()
     app.dependency_overrides[get_object_store] = lambda: store
+    # F24: upload now enqueues the parsing job — fake the queue so these tests never
+    # touch real Redis/arq.
+    app.dependency_overrides[get_job_queue] = lambda: FakeJobQueue()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.pop(get_object_store, None)
     app.dependency_overrides.pop(get_parser, None)
     app.dependency_overrides.pop(get_embedder, None)
+    app.dependency_overrides.pop(get_job_queue, None)
 
 
 async def _signup(client: AsyncClient, email: str, org_name: str) -> dict:

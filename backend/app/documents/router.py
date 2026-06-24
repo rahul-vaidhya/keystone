@@ -12,7 +12,9 @@ from fastapi.responses import JSONResponse
 from app.documents.schemas import DocumentOut, FolderCreate, FolderOut, TagCreate, TagOut
 from app.documents.service import documents_service
 from app.identity.deps import get_ctx
+from app.ingestion.service import ingestion_service
 from app.platform.context import TenantContext
+from app.platform.queue import JobQueue, get_job_queue
 from app.platform.storage import ObjectStore, get_object_store
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -90,6 +92,7 @@ async def list_documents(
 async def upload_document(
     ctx: Annotated[TenantContext, Depends(get_ctx)],
     object_store: Annotated[ObjectStore, Depends(get_object_store)],
+    job_queue: Annotated[JobQueue, Depends(get_job_queue)],
     file: UploadFile,
     folder_id: Annotated[uuid.UUID | None, Form()] = None,
 ) -> JSONResponse:
@@ -102,6 +105,13 @@ async def upload_document(
         folder_id=folder_id,
         object_store=object_store,
     )
+    # F24: only a genuine new upload starts the pipeline — a dedupe hit (created=False)
+    # returns an already-ingested (or already in-flight) document, which must not be
+    # re-dispatched. The upload's own transaction has already committed by this point
+    # (documents_service.upload_document commits internally) — never enqueue before that,
+    # or a rolled-back upload could leave a job pointing at a row that doesn't exist.
+    if created:
+        await ingestion_service.enqueue_pipeline(ctx, doc.id, job_queue=job_queue)
     return JSONResponse(
         content=doc.model_dump(mode="json"),
         status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
