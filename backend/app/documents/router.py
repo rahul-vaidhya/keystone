@@ -9,8 +9,17 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Form, UploadFile, status
 from fastapi.responses import JSONResponse
 
-from app.documents.schemas import DocumentOut, FolderCreate, FolderOut, TagCreate, TagOut
+from app.documents.schemas import (
+    DocumentOut,
+    FolderCreate,
+    FolderMove,
+    FolderOut,
+    FolderRename,
+    TagCreate,
+    TagOut,
+)
 from app.documents.service import documents_service
+from app.documents.service.folders import DeleteMode
 from app.identity.deps import get_ctx
 from app.ingestion.service import ingestion_service
 from app.platform.context import TenantContext
@@ -41,9 +50,29 @@ async def get_folder(
 
 @router.delete("/folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_folder(
-    folder_id: uuid.UUID, ctx: Annotated[TenantContext, Depends(get_ctx)]
+    folder_id: uuid.UUID,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+    mode: DeleteMode = "block",
 ) -> None:
-    await documents_service.delete_folder(ctx, folder_id)
+    await documents_service.delete_folder(ctx, folder_id, mode=mode)
+
+
+@router.patch("/folders/{folder_id}", response_model=FolderOut)
+async def rename_folder(
+    folder_id: uuid.UUID,
+    req: FolderRename,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+) -> FolderOut:
+    return await documents_service.rename_folder(ctx, folder_id, req.name)
+
+
+@router.post("/folders/{folder_id}/move", response_model=FolderOut)
+async def move_folder(
+    folder_id: uuid.UUID,
+    req: FolderMove,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+) -> FolderOut:
+    return await documents_service.move_folder(ctx, folder_id, req.parent_id)
 
 
 @router.post("/tags", response_model=TagOut, status_code=status.HTTP_201_CREATED)

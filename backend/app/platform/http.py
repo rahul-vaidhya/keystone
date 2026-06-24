@@ -6,7 +6,14 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from app.chat.exceptions import GenerationFailed
-from app.documents.exceptions import DocumentNotFound, DocumentsError, FolderNotFound, TagNotFound
+from app.documents.exceptions import (
+    DocumentNotFound,
+    DocumentsError,
+    FolderNameConflict,
+    FolderNotEmpty,
+    FolderNotFound,
+    TagNotFound,
+)
 from app.identity.exceptions import (
     AmbiguousLogin,
     AuthError,
@@ -39,6 +46,20 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
             content={"detail": str(exc) or "Document not found"},
+        )
+
+    @app.exception_handler(FolderNotEmpty)
+    async def _folder_not_empty(_request: Request, exc: FolderNotEmpty) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": str(exc) or "Folder is not empty"},
+        )
+
+    @app.exception_handler(FolderNameConflict)
+    async def _folder_name_conflict(_request: Request, exc: FolderNameConflict) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": str(exc) or "Folder name conflict"},
         )
 
     @app.exception_handler(DocumentsError)

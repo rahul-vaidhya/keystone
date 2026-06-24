@@ -18,6 +18,7 @@ from app.documents.schemas import DocumentOut, FolderCreate, FolderOut, TagCreat
 from app.documents.service import documents as _documents
 from app.documents.service import folders as _folders
 from app.documents.service import tags as _tags
+from app.documents.service.folders import DeleteMode
 from app.platform.context import TenantContext
 from app.platform.storage import ObjectStore
 
@@ -32,8 +33,20 @@ class DocumentsService:
     async def get_folder(self, ctx: TenantContext, folder_id: uuid.UUID) -> FolderOut:
         return await _folders.get_folder(ctx, folder_id)
 
-    async def delete_folder(self, ctx: TenantContext, folder_id: uuid.UUID) -> None:
-        return await _folders.delete_folder(ctx, folder_id)
+    async def delete_folder(
+        self, ctx: TenantContext, folder_id: uuid.UUID, *, mode: DeleteMode = "block"
+    ) -> None:
+        return await _folders.delete_folder(ctx, folder_id, mode=mode)
+
+    async def rename_folder(
+        self, ctx: TenantContext, folder_id: uuid.UUID, new_name: str
+    ) -> FolderOut:
+        return await _folders.rename_folder(ctx, folder_id, new_name)
+
+    async def move_folder(
+        self, ctx: TenantContext, folder_id: uuid.UUID, new_parent_id: uuid.UUID | None
+    ) -> FolderOut:
+        return await _folders.move_folder(ctx, folder_id, new_parent_id)
 
     async def create_tag(self, ctx: TenantContext, req: TagCreate) -> TagOut:
         return await _tags.create_tag(ctx, req)

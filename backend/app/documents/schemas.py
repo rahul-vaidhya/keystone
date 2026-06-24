@@ -24,6 +24,14 @@ class FolderOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class FolderRename(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class FolderMove(BaseModel):
+    parent_id: uuid.UUID | None = None
+
+
 class TagCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
 
