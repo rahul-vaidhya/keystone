@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
@@ -8,6 +8,11 @@ export default defineConfig({
     proxy: {
       "/auth": { target: "http://127.0.0.1:8010", changeOrigin: true },
       "/health": { target: "http://127.0.0.1:8010", changeOrigin: true },
+      "/documents": { target: "http://127.0.0.1:8010", changeOrigin: true },
     },
+  },
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.ts"],
   },
 });

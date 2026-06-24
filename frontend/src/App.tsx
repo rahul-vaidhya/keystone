@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AdminRoute, ProtectedRoute } from "./components/ProtectedRoute";
 import { AppShell } from "./features/app/AppShell";
 import { HomePage } from "./features/app/HomePage";
+import { DocumentsPage } from "./features/documents/DocumentsPage";
 import { LoginPage } from "./features/auth/LoginPage";
 import { SignupPage } from "./features/auth/SignupPage";
 import { UsersPage } from "./features/users/UsersPage";
@@ -22,6 +23,7 @@ export default function App() {
             <Route element={<ProtectedRoute />}>
               <Route path="/app" element={<AppShell />}>
                 <Route index element={<HomePage />} />
+                <Route path="repository" element={<DocumentsPage />} />
                 <Route element={<AdminRoute />}>
                   <Route path="users" element={<UsersPage />} />
                 </Route>
