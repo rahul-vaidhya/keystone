@@ -4,6 +4,134 @@
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
 
+## F25 Folder move/rename/delete (2026-06-24, this session, built out of numeric order)
+- **Trigger**: a real client requirement, not a planned roadmap item — folders must be
+  movable/renameable/deletable; folders are heavily used and deeply nested (client wants
+  to sort things to reduce mistakes); moves/renames are explicitly INFREQUENT and allowed
+  to be slow. Client separately described per-folder role-based access as a real future
+  need — factored into the data-model choice below, but explicitly NOT built now (V2).
+- **Analysis-first session, no code until the model was picked**: confirmed by reading the
+  actual code (not relying on prior memory) that F11's `Folder` model is materialized-path
+  (`path` column, computed once at creation) with `parent_id` already present as a plain
+  FK. There was genuinely zero rename/move code anywhere — no repository method, no
+  service function, no test. Worse: `delete_folder` had **no non-empty check at all** —
+  the DB's `ON DELETE CASCADE` on `Folder.parent_id` silently deleted the whole descendant
+  subtree on every delete, with documents in any of those folders orphaned to root via
+  `Document.folder_id`'s `ON DELETE SET NULL`. This is a live data-loss footgun, not just
+  a missing feature — directly contradicts the client's stated "reduce mistakes" goal.
+  Blast-radius check (grepped the whole backend for `folder`/`path`): confirmed contained
+  entirely to `app/documents/*` — object-store keys are `document_id`-based, never
+  folder-path-based (architecture.md's existing convention), and no other module
+  (ingestion/retrieval/knowledge/chat) references folder path or id at all. The one
+  `path`-named field elsewhere (`Section.path` in `ingestion/service/structuring.py`) is
+  a completely unrelated field on the section tree, not folders.
+- **Data model decision: parent pointer (adjacency list), NOT materialized path as
+  authoritative** — `path` is kept, but demoted to a non-authoritative DISPLAY CACHE,
+  rebuilt SYNCHRONOUSLY in the same transaction as any move/rename (never async, never
+  stale-by-design). Chosen NOT for performance (a wash at this client's scale — recursive
+  parent_id walks for navigation/breadcrumbs are not a real bottleneck) but for two
+  decisive factors, both by direct instruction: (1) the deferred V2 folder-permissions
+  layer keys cleanly on a stable `folder_id` that never changes across a move, vs.
+  materialized path requiring permission-grant rows to be rewritten in lockstep with every
+  path rewrite — "does role X see folder Y" becomes a parent_id ancestor-walk, same CTE/
+  BFS shape navigation already needs; (2) move correctness — a parent-pointer move is a
+  single-row update that can't half-fail, eliminating the materialized-path approach's
+  subtree-rewrite-must-be-one-transaction risk and its entire substring-rewrite bug class.
+  This is "design for permissions, don't build them" — no permission code exists.
+- **The substring-rewrite bug class was explicitly named and avoided, not just
+  theoretical**: the first design pass considered deriving a descendant's new path via
+  `descendant.path[len(old_prefix)+1:]` (slice off the old prefix, append the new one).
+  Rejected before any code was written — flagged as fragile because `path` is a
+  non-authoritative cache that can already be stale, and because string-prefix logic
+  risks false-matching an unrelated SIBLING sharing a name prefix (e.g. "HR" vs.
+  "HR-Archive"). **Built instead**: `FolderRepository.list_subtree` does a BFS purely over
+  `parent_id` (never touches `path` for traversal) returning root-then-descendants in
+  parent-before-child order; `_rebuild_subtree_paths` (`documents/service/folders.py`)
+  walks that list top-down, computing each folder's new path ONLY from its
+  already-rebuilt parent's new path + its own name (a `dict[folder_id, new_path]` built
+  as it goes) — `path` (the OLD value) is never read for any computation, only ever
+  overwritten. The regression test (`test_path_rebuild_multi_generation_with_sibling_name_
+  prefix_collision_risk` in `tests/test_folder_moves.py`) deliberately includes a 3-level
+  subtree being renamed AND a sibling "HR-Archive" next to the renamed "HR" — asserts the
+  sibling is completely untouched. **A weaker version of this test (no sibling, or only
+  1-level depth) would have passed even with the rejected slicing approach — don't
+  simplify this test back down in a future edit.**
+- **`_relocate_folder` is one shared internal helper for both rename and move**
+  (`documents/service/folders.py`) — same correctness shape (cycle check via
+  subtree-membership, target-scoped name-collision check excluding the folder's own row,
+  same-transaction path rebuild), differing only in which field changes. A `_UNCHANGED`
+  sentinel object distinguishes "leave parent_id untouched" (rename) from "move to root"
+  (`new_parent_id=None`, a real, meaningful move target) — `parent_id: None` alone can't
+  carry both meanings. **Two separate endpoints** (`PATCH /documents/folders/{id}` for
+  rename, `POST /documents/folders/{id}/move` for move) rather than one combined PATCH
+  with optional `name`/`parent_id` fields — a single `Optional[UUID]` field on the wire
+  can't distinguish "don't touch parent" from "move to root" without inventing a sentinel
+  in the HTTP schema too, which is more complexity than just splitting the endpoint.
+- **Cycle check**: `list_subtree(folder_id)` includes the folder itself (BFS seeds with
+  the root), so `target_parent_id in subtree_ids` catches "move into self" AND "move into
+  any descendant at any depth" with one check — no separate self-check needed. Tested at
+  3 depths (self, direct child, 3-level-deep descendant).
+- **Delete gained 3 explicit modes** (`?mode=block|cascade|reflow`, default `block`,
+  `documents/service/folders.py`'s `DeleteMode` Literal): `block` is the fix for the prior
+  unconditional-cascade bug — 409s if the folder has any direct child folder OR document.
+  `cascade` is an explicit, CONFIRMED product decision (not just "whatever the FK
+  happens to do"): relies on the existing `ON DELETE CASCADE`/`ON DELETE SET NULL` FK
+  pair, so documents anywhere in the deleted subtree survive, orphaned to org root, never
+  deleted — this is consistent with architecture.md's already-locked "folder is NOT a
+  permission boundary" decision, so it's a confirmed-by-existing-architecture behavior,
+  not an incidental one. Tested with a 3-level subtree with documents at EVERY depth
+  (root/mid/leaf), asserting all 3 documents survive with `folder_id=None` — a one-level
+  cascade test would not have proven the subtree-wide FK cascade actually reaches deep
+  documents. `reflow` moves only the deleted folder's DIRECT children (folders AND
+  documents) up to its parent (or root), reusing `_rebuild_subtree_paths` per reflowed
+  child folder (so a reflowed child's own descendants get correctly rebuilt too) — NOT a
+  full-subtree reflow, only one level moves.
+- **Residual race, accepted by direct instruction, tested**: the name-collision check and
+  the write happen in one transaction (per instruction — no check-then-act across
+  transactions), but Postgres read-committed isolation doesn't fully serialize two
+  genuinely concurrent moves/renames. `uq_folders_org_parent_name`'s `IntegrityError` is
+  caught and translated to `FolderNameConflict` (409), never a raw 500 — same precedent as
+  F12's accepted checksum-dedupe race. Directly tested
+  (`test_concurrent_rename_constraint_violation_translated_to_409`, monkeypatches the
+  app-level check to force the race past it, proving the constraint is the actual
+  backstop, not the check).
+- **New finding, surfaced while writing that backstop test, NOT introduced by F25**: the
+  `uq_folders_org_parent_name` constraint (`UNIQUE(org_id, parent_id, name)`, from F11)
+  provides ZERO protection between two ROOT-level folders sharing a name — Postgres
+  treats `NULL != NULL` for uniqueness purposes, so two rows with `parent_id IS NULL` and
+  the same name never violate the constraint. Confirmed empirically: the backstop test
+  had to be rewritten to use a non-null parent, because the original root-level version
+  didn't raise at all. **Only the application-level `exists_name_conflict` check protects
+  root-level name collisions today; a genuine concurrent race at root level has no
+  constraint backstop and could silently produce duplicate root folder names.** Flagged,
+  NOT fixed — fixing it means an `ALTER TABLE ... ADD CONSTRAINT ... NULLS NOT DISTINCT`
+  migration, outside this feature's approved scope. **If a future session touches folder
+  uniqueness again, this is the gap to close, not relitigate as already-handled.**
+- **Independent code-review pass** (separate subagent): zero hard-rule violations. One
+  minor, accepted-as-is note: reflow-delete's per-child collision race is
+  correctness-equivalent to move/rename's (same `try`/`except IntegrityError` pattern
+  wraps the eventual flush) but has weaker DIRECT test coverage of the constraint-backstop
+  actually firing under a forced race (only the application-level check is tested for
+  reflow's collision path, not a monkeypatch-forced race like rename's) — not blocking,
+  noted for a future session if reflow's race path is ever revisited.
+- **Zero migration needed** — `parent_id` already existed from F11; this was logic-only
+  (new repository/service methods + 2 new endpoints + 3 new exception types + their HTTP
+  mappings). `documents/repository/folders.py` gained `list_subtree` (BFS),
+  `has_children`/`has_documents` (block-mode gate), `exists_name_conflict`,
+  `list_direct_children`/`reparent_documents` (reflow). All org-scoped via `_scoped()` or
+  an explicit `org_id` filter — confirmed by independent review, no bypass found.
+  `FolderCycleError` deliberately has NO dedicated HTTP handler — falls through to the
+  existing generic `DocumentsError` 400 handler (Starlette's exception-handler lookup
+  walks the MRO, so a more-specific registered handler always wins when one exists, and
+  the base handler catches everything else); only `FolderNotEmpty`/`FolderNameConflict`
+  needed new dedicated 409 handlers.
+- `tests/test_folder_moves.py`: 20 new tests (rename, the multi-generation +
+  sibling-name-prefix path-rebuild regression test, move-to-new-parent, move-to-root, all
+  3 cycle depths, both collision directions, the constraint-backstop translation, all 3
+  delete modes incl. multi-level cascade with documents at every depth, reflow-at-root,
+  reflow-collision, cross-org 404 for rename/move/delete, and a repository-level
+  cross-org target-parent move backstop). 125/125 full suite green, ruff clean.
+
 ## F24 Ingestion auto-dispatch (2026-06-24, this session, built out of numeric order)
 - **Why this exists, and why it's dated after F41**: discovered as a real gap during F51
   frontend recon (folders/tags/upload UI), not planned ahead of time. Confirmed by reading

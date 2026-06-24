@@ -60,6 +60,60 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       duplicate (201 on first upload). DoD met: `tests/test_documents.py` (4 new tests:
       create+status, dedupe-returns-existing, cross-org not deduped, missing-folder 404).
       45/45 suite green, ruff clean.
+- [x] F25 Folder move/rename/delete — **built out of numeric order, this session**, well
+      after F11/F12/F24/F30/F31/F40/F41, surfaced by a real client requirement (folders
+      must be moveable/renameable/deletable; heavily navigated, deeply nested, moves rare
+      and allowed to be slow). Preceded by a dedicated analysis+design session (no code)
+      that confirmed the actual F11 model (materialized path, parent_id FK, no rename/move
+      code at all, and an unconditional cascading delete with zero non-empty check — a live
+      data-loss bug) and chose **parent-pointer (adjacency list)** over keeping materialized
+      path as authoritative — `path` is now a non-authoritative display cache, rebuilt
+      synchronously in the same transaction as any move/rename.
+      New `FolderRepository.list_subtree` (BFS over `parent_id`, parent-before-child order)
+      backs both the cycle check and the path rebuild; `_rebuild_subtree_paths` derives
+      every path strictly from parent_id+name (never by slicing the old path string — the
+      bug class the design session explicitly flagged, since slicing risks false-matching a
+      sibling with a shared name prefix, e.g. "HR" vs. "HR-Archive"). `_relocate_folder` is
+      one shared helper for both rename and move (same correctness shape: cycle check via
+      subtree-membership, target-scoped name-collision check excluding the folder's own
+      row, same-transaction rebuild); a `_UNCHANGED` sentinel distinguishes "don't touch
+      parent_id" (rename) from "move to root" (`parent_id=None`, a real move). New
+      `PATCH /documents/folders/{id}` (rename) and `POST /documents/folders/{id}/move`
+      (move) — deliberately two endpoints, not one combined PATCH, since a single optional
+      `parent_id` field can't distinguish "unchanged" from "move to root" without inventing
+      a sentinel in the wire schema too.
+      Delete gained 3 modes (`?mode=block|cascade|reflow`, default `block`): `block` (the
+      fix for the prior unconditional-cascade bug) 409s on any direct child folder or
+      document; `cascade` is an explicit, confirmed action relying on the existing FK
+      behavior (`Folder.parent_id` `ON DELETE CASCADE` removes the subtree;
+      `Document.folder_id` `ON DELETE SET NULL` means documents anywhere in the subtree
+      survive, orphaned to org root — never deleted, consistent with architecture.md's
+      "folder is NOT a permission boundary"); `reflow` moves only the deleted folder's
+      DIRECT children (folders and documents) up to its parent, reusing the same
+      subtree-rebuild helper per reflowed child folder, then deletes the now-empty folder.
+      Zero migration needed — `parent_id` already existed; this was logic-only.
+      **Residual race, accepted and tested**: the collision check and the write share one
+      transaction (per direct instruction), but read-committed isolation can't fully
+      serialize two truly concurrent moves — `uq_folders_org_parent_name`'s `IntegrityError`
+      is caught and translated to `FolderNameConflict` (409), never a raw 500, same
+      precedent as F12's checksum-dedupe race. **New finding surfaced while testing this
+      backstop, not introduced by F25**: that constraint provides NO protection between two
+      ROOT-level folders sharing a name (`parent_id IS NULL` on both — Postgres treats
+      NULL≠NULL for uniqueness), so a genuine concurrent race at root level could still
+      produce duplicate root names with no constraint to catch it. Only the
+      application-level check protects root-level names today; flagged, not fixed (fixing
+      it means an `ALTER ... ADD CONSTRAINT ... NULLS NOT DISTINCT` migration, out of this
+      feature's approved scope). Independent code-review pass: zero hard-rule violations;
+      one minor note (reflow-delete's per-child collision race is correctness-equivalent to
+      move/rename's but has weaker direct test coverage of the constraint-backstop firing,
+      vs. rename's dedicated monkeypatch-forced-race test) — accepted as-is, not blocking.
+      `tests/test_folder_moves.py` (20 new tests): rename, multi-generation path rebuild
+      with a sibling sharing a name prefix (the strong regression test), move-to-new-parent,
+      move-to-root, all 3 cycle depths (self/direct child/deep descendant), both collision
+      directions, the constraint-backstop-to-409 translation, block/cascade/reflow delete
+      (cascade tested with documents at every depth of a 3-level subtree), reflow-at-root,
+      reflow-collision, cross-org 404 for all 3 ops, and a repository-level cross-org
+      target-parent backstop. 125/125 suite green, ruff clean.
 
 ## Phase 2 — Ingestion core path
 - [x] F20 parsing stage (`0277cfe`) — new `app/ingestion` module (`service.py`/`router.py`
@@ -335,8 +389,24 @@ silently — no sweeper/re-dispatch built. 105/105 suite green, ruff clean. See 
 **A future cold-start reading dates: F24 lands after F41 in the commit timeline — this is
 intentional, not a mistake.** It exists because F51 (frontend) recon surfaced that upload
 alone never produced a queryable document.
-Next action: **F51's upload UI now against an actually-advancing pipeline** (folders/tags/
-upload, with a minimal Vitest+RTL harness introduced alongside it per this session's
+**F25 Folder move/rename/delete DONE — built out of numeric order, THIS session, after
+F24/F30/F31/F40/F41**, surfaced by a real client requirement. Preceded by a dedicated
+analysis+design session (no code) that confirmed F11's folder model had zero rename/move
+code and an unconditional cascading delete (a live data-loss bug). Chose **parent pointer
+over materialized path** (path demoted to a synchronously-rebuilt, non-authoritative
+display cache) — decided primarily for the deferred V2 folder-permissions layer (stable
+`folder_id`, no rewrite-on-move) and move atomicity, not performance. New
+`FolderRepository.list_subtree` (BFS) + `_rebuild_subtree_paths` derive every path from
+parent_id+name only, never by slicing the old path string (the bug class explicitly
+avoided — false-prefix-matching a sibling like "HR" vs. "HR-Archive"). Delete gained 3
+modes (`block` default — the fix for the prior unconditional-cascade bug —
+`cascade`/`reflow`). A real, pre-existing gap was surfaced (not introduced) while testing
+the concurrent-race backstop: `uq_folders_org_parent_name` provides no protection between
+two ROOT-level folders sharing a name (Postgres NULL≠NULL) — flagged, not fixed, out of
+this feature's scope. 125/125 suite green, ruff clean, independent review clean (one
+minor, accepted note). See memory.md "F25 Folder move/rename/delete" for full detail.
+Next action: **F51's upload/folder-tree UI now against the real F25 endpoints** (folders/
+tags/upload, with a minimal Vitest+RTL harness introduced alongside it per this session's
 decision) — or F4x SSE streaming / F42 admin debug bundle, ask the user which to resume.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

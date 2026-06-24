@@ -35,6 +35,23 @@ one's DoD is met. Keep features small enough for one focused session.
   - *DoD:* create nested folders; tag a document; list by folder/tag.
 - **F12 Upload + dedupe:** upload to object store, checksum, `unique(org_id, checksum)`, status=`uploaded`.
   - *DoD:* re-uploading an identical file returns the existing document, not a duplicate.
+- **F25 Folder move/rename/delete:** added late, **out of numeric order** — same shape as
+  F24, surfaced by a client requirement (move/rename/delete must exist; folders are heavily
+  navigated and deeply nested) discovered well after F11 shipped. F11's folder model was
+  materialized-path-only with no move/rename and an unconditional cascading delete (a live
+  data-loss bug, not just a missing feature). Resolved via an explicit analysis+design
+  session (parent-pointer model chosen over materialized-path, see memory.md "F25" for the
+  full reasoning) before any code was written.
+  - *DoD:* rename and move correctly reject cycles and name collisions (target-scoped,
+    same-transaction checks, unique-constraint backstop on race); every descendant's
+    display-cache `path` is rebuilt correctly (multi-generation depth, no false match on a
+    sibling sharing a name prefix); delete defaults to block-if-non-empty (409), with
+    explicit `cascade` (DB-driven, documents survive orphaned to root) and `reflow`
+    (direct children move up to the deleted folder's parent) modes; full org isolation.
+  - **V2 folder-permissions note (do NOT build yet):** the client separately described
+    per-folder role-based access as a real future need. The parent-pointer model was chosen
+    partly because it gives that future layer a stable `folder_id` to key grants on (never
+    invalidated by a move), unlike a path-string scheme. No permission code exists yet.
 
 ## Phase 2 — Ingestion core path
 - **F20 parsing stage:** parser seam → persist raw text + structure artifact; set language/page_count.
