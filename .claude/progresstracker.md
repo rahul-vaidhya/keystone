@@ -114,6 +114,17 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       (cascade tested with documents at every depth of a 3-level subtree), reflow-at-root,
       reflow-collision, cross-org 404 for all 3 ops, and a repository-level cross-org
       target-parent backstop. 125/125 suite green, ruff clean.
+- [x] F25 follow-up: folder create hardening + root-uniqueness backstop — closes the
+      finding above, plus a more severe, genuinely pre-existing, separate bug surfaced
+      while fixing it: `create_folder` had NO duplicate-name check or `IntegrityError`
+      handling at all (any duplicate-name create, root or sibling, raised an unhandled
+      500 — `_relocate_folder` had this discipline from F25, `create_folder` never did).
+      New partial unique index `uq_folders_org_root_name ON folders (org_id, name) WHERE
+      parent_id IS NULL` (migration `0010_folder_root_uniqueness.py`) closes the root-NULL
+      gap; `create_folder` now mirrors `_relocate_folder`'s check-then-act +
+      `IntegrityError → FolderNameConflict` shape. 3 new tests (2 plain duplicate-create,
+      1 forced-race root backstop). 128/128 suite green, ruff clean, independent review
+      clean. See memory.md for full detail.
 
 ## Phase 2 — Ingestion core path
 - [x] F20 parsing stage (`0277cfe`) — new `app/ingestion` module (`service.py`/`router.py`

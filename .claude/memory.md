@@ -4,6 +4,46 @@
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
 
+## F25 follow-up: folder create hardening + root-uniqueness backstop (2026-06-24, this session)
+- **Two distinct findings, fixed together but recorded separately — do not conflate them.**
+- **Finding 1 (more severe, genuinely pre-existing, NOT introduced by F25): `create_folder`
+  had zero duplicate-name protection of any kind.** No `exists_name_conflict` pre-check, no
+  `try/except IntegrityError`. `_relocate_folder` (rename/move) already had both, from F25 —
+  `create_folder` never did. Net effect: creating a folder with a name already taken by a
+  sibling (or another root folder) raised a raw, unhandled `IntegrityError` → an unhandled
+  500, on the single most common folder operation. Directly contradicts the client's
+  reduce-mistakes goal driving F25 in the first place — a duplicate-name create should
+  cleanly 409, not crash. Fixed by bringing `create_folder`
+  (`app/documents/service/folders.py`) to the exact same check-then-act +
+  `IntegrityError → FolderNameConflict` shape `_relocate_folder` already used.
+  `FolderRepository.exists_name_conflict`'s `exclude_id` param was made optional
+  (default `None`, skips the `Folder.id != exclude_id` predicate) — the two existing
+  rename/move call sites still pass it explicitly; only `create_folder`'s new call site
+  relies on the default, since a brand-new folder has no own row to exclude.
+- **Finding 2 (the previously-flagged finding, now closed): root-level name collisions had
+  no DB backstop.** `uq_folders_org_parent_name` (`UNIQUE(org_id, parent_id, name)`)
+  provides zero protection between two ROOT-level folders (`parent_id IS NULL` on both) —
+  Postgres treats `NULL != NULL` for uniqueness. Closed via a new partial unique index,
+  `uq_folders_org_root_name ON folders (org_id, name) WHERE parent_id IS NULL` (migration
+  `0010_folder_root_uniqueness.py`) — chosen over `NULLS NOT DISTINCT` (also viable on
+  PG16) because it's a smaller diff (existing constraint untouched, used as-is for the
+  non-null-parent case) and reads as "uniqueness among root folders" without requiring the
+  reader to know Postgres's NULL-uniqueness semantics. Verified empirically before writing
+  the migration: 0 existing root folders in the dev DB, so no data conflict to reconcile.
+  Applied cleanly to the real dev DB (`alembic upgrade head`, 0009→0010).
+- **Both findings are now covered by both an everyday-path test and a forced-race test**:
+  `test_create_duplicate_root_folder_name_is_409_not_500` and
+  `test_create_duplicate_sibling_folder_name_is_409_not_500` (plain, non-forced — these are
+  what actually proves Finding 1 is fixed) plus
+  `test_concurrent_root_create_constraint_violation_translated_to_409` (monkeypatches
+  `exists_name_conflict` to force a false negative, proving the new partial index — not just
+  the app-level check — is the real backstop for the root case; mirrors F25's existing
+  `test_concurrent_rename_constraint_violation_translated_to_409` for the non-null-parent
+  case). 128/128 suite green (was 125), ruff clean. Independent code-review pass: zero
+  issues — `create_folder` correctly mirrors `_relocate_folder`'s shape, `exclude_id`'s new
+  default is only exercised by the new call site, the migration is reversible and scoped
+  correctly, org_id scoping preserved throughout.
+
 ## F25 Folder move/rename/delete (2026-06-24, this session, built out of numeric order)
 - **Trigger**: a real client requirement, not a planned roadmap item — folders must be
   movable/renameable/deletable; folders are heavily used and deeply nested (client wants
