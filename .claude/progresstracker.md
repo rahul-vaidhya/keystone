@@ -225,7 +225,26 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       fake-embedder-can't-prove-the-positive-case finding and the one-OpenRouter-key-feeds-
       all-3-seams architectural note).
 - [ ] F4x SSE streaming for chat (deferred out of F40 — see buildplan.md)
-- [ ] F41 Citations (offset mapping + persisted)
+- [x] F41 Citations (offset mapping + persisted) — new `app/chat/models.py`/`repository.py`
+      (`Conversation`/`Message`, migration `0009_conversations_messages.py`). Citations are
+      now derived from the model's `[n]` markers actually present in the answer
+      (`parse_citation_markers`, pure regex function) instead of every block retrieval
+      returned (F40's prior shape). Each resolved citation is rebuilt from a FRESH
+      `ingestion_service.get_chunks(ctx, chunk_ids)` read of the source-of-truth `chunks`
+      row (new narrow accessor, backed by new `ChunkRepository.get_by_ids`, org-scoped
+      independently — same precedent as F31's `search_chunks`/F30's `get_document`), not
+      from the `ContextBlock` copy retrieval already had in hand — this is the provenance
+      round-trip the DoD's "clicking a citation shows the exact source span" requires, and
+      it's directly tested (`test_ask_citation_provenance_round_trip_matches_stored_chunk`).
+      An out-of-range/malformed/missing-chunk marker is dropped silently (logged, never
+      raised, never fabricated — `test_ask_out_of_range_marker_is_dropped_not_fabricated`).
+      Every `/chat/ask` call creates a brand-new `Conversation` + user `Message` + assistant
+      `Message` (citations jsonb) — no conversation reuse/multi-turn threading yet
+      (deliberate scope decision, see memory.md — reuse waits for a future history-
+      threading feature). `chat/` stayed flat (no subpackage promotion; reviewed against
+      hard rule #8 and judged still one cohesive pipeline). DoD met. 99/99 suite green (1
+      pre-existing real-parser test deselected), ruff clean. Independent code-review pass:
+      zero violations against hard rules #1/#3/#4/#8.
 - [ ] F42 Admin debug bundle
 
 ## Phase 5 — Frontend SPA
@@ -262,14 +281,22 @@ full detail.
 **Maintenance (prior session): structural package-layout refactor complete** (4 commits,
 zero behavior change, convention now locked in architecture.md/orchestrator.md/review skill
 — see "Maintenance" section above).
-**Phase 4 STARTED: F40 Grounded generation (`1572fa8`)** — non-streaming `POST /chat/ask`,
-stateless, retrieval-only cross-module call, retry-on-transient-only LLM seam call. 95/95
-suite green, ruff clean, independent review clean. **Manual acceptance gate SATISFIED
-(2026-06-24, this session)** — real parser+embedder+LLM run against `pdf/kech104.pdf`
-confirmed grounded answer on an in-scope question and the exact refusal string (no
-fabrication) on an out-of-scope one. F40 is now fully done, not just automated-green. F4x
-(SSE) and F41/F42 not started.
-Next action: **either F41 Citations, F4x SSE streaming, or resume the rest of F51
-(folders/tags/upload UI)** — ask the user which.
+**Phase 4 IN PROGRESS: F40 Grounded generation (`1572fa8`)** — non-streaming `POST /chat/ask`,
+retrieval-only cross-module call, retry-on-transient-only LLM seam call. **Manual
+acceptance gate SATISFIED (2026-06-24)** — real parser+embedder+LLM run against
+`pdf/kech104.pdf` confirmed grounded answer on an in-scope question and the exact refusal
+string (no fabrication) on an out-of-scope one. F40 fully done.
+**F41 Citations DONE (this session, feature commit pending)** — `chat/` gained persistence
+(`app/chat/models.py`/`repository.py`, migration `0009_conversations_messages.py`:
+`conversations`+`messages`). Citations now resolve from the model's `[n]` markers actually
+in the answer (not every retrieved block), rebuilt from a fresh `ingestion_service.
+get_chunks` read of the source-of-truth chunk row (new accessor, org-scoped
+independently) — the provenance round-trip the DoD required, directly tested. Invalid
+markers dropped silently, logged, never fabricated. Every `/chat/ask` creates a fresh
+conversation+message pair (no reuse/multi-turn yet — deliberate, see memory.md). 99/99
+suite green, ruff clean, independent review: zero hard-rule violations. F4x (SSE) and
+F42 (admin debug bundle) not started.
+Next action: **either F4x SSE streaming, F42 admin debug bundle, or resume the rest of
+F51 (folders/tags/upload UI)** — ask the user which.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

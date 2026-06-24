@@ -4,6 +4,73 @@
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
 
+## F41 Citations (2026-06-24, this session, feature commit pending)
+- **New `app/chat/models.py` + `repository.py`** (`Conversation`, `Message` — architecture's
+  locked table names). Migration `0009_conversations_messages.py`. `chat/` stays flat (6
+  files now, ~250-line `service.py`) — reviewed against hard rule #8 and judged still one
+  cohesive request-flow pipeline, not 2+ independent responsibility groups; revisit if it
+  grows further.
+- **The real logic gap F41 fills**: F40's `ChatResponse.citations` was every block
+  retrieval returned, regardless of whether the model actually cited it. F41 derives
+  citations from the model's `[n]` markers in the answer text instead —
+  `parse_citation_markers` (pure function, regex `\[(\d+)\]`, dedup, order of first
+  appearance) → `resolve_citations` maps each marker to the `ContextBlock` actually sent
+  at that position.
+- **Drop-invalid-marker rule, decided and applied**: a marker outside `1..len(blocks)`, or
+  one whose mapped chunk no longer exists by resolution time, is dropped from the result
+  — logged (`chat.citations_resolved`: counts of parsed/resolved/dropped-out-of-range/
+  dropped-missing-chunk), never raised, never fabricated. The literal `[n]` text stays in
+  the answer string untouched; only the structured `citations` list omits it. Tested:
+  `test_ask_out_of_range_marker_is_dropped_not_fabricated`.
+- **Provenance round-trip, the core of F41 (this feature's equivalent of F40's refusal
+  gate)**: `resolve_citations` rebuilds each `ResolvedCitation` from a FRESH
+  `ingestion_service.get_chunks(ctx, chunk_ids)` read of the chunk row — the
+  source-of-truth `chunks` table — rather than trusting the `ContextBlock`'s
+  self-reported fields copied earlier in the same request. Tested directly:
+  `test_ask_citation_provenance_round_trip_matches_stored_chunk` independently re-reads
+  the chunk row via raw SQL and asserts the citation matches exactly, including that
+  `stored_chunk.content[char_start:char_end] == citation.content`.
+- **New narrow `ingestion.service` accessor: `get_chunks(ctx, chunk_ids) -> list[ChunkRecord]`**
+  (`ingestion/service/search.py`, backed by new `ChunkRepository.get_by_ids`) — same
+  precedent as F31's `search_chunks` / F30's `get_document`: one real caller
+  (`chat.service.resolve_citations`), added because `chat` must reach ingestion's tables
+  only through ingestion's service (hard rule #1), never by importing
+  `ingestion.models`/`ingestion.repository` directly. `get_by_ids` filters `org_id`
+  directly as an independent backstop (not relying on the caller having already
+  org-scoped the chunk_ids) — by-id fetches are exactly where a missing filter would leak
+  cross-tenant content, so it got its own direct isolation test
+  (`test_get_chunks_org_id_is_an_independent_backstop`, same two-pronged
+  cross-org-empty + same-org-control pattern as F31's `search_chunks` test), not just a
+  happy-path check.
+- **Persistence scope decision, explicit (direct instruction, not silent narrowing)**:
+  every `/chat/ask` call creates a FRESH `Conversation` + a user `Message` (citations=
+  null) + an assistant `Message` (citations=resolved jsonb) — `ChatRequest` does NOT
+  accept a `conversation_id` to reuse, and there is no `ConversationNotFound`/cross-org
+  validation for one, because there is no input to validate. Reasoning, same shape as
+  F40's SSE deferral: conversation reuse only earns its place alongside multi-turn
+  history-threading (using prior messages as LLM context), which F41 deliberately does
+  NOT build — shipping append-to-conversation with no read/threading side yet would be
+  speculative storage (hard rule #8). **The reuse path is for a future multi-turn
+  feature to build, together with the threading that gives it a purpose** — don't
+  reintroduce `conversation_id` reuse in isolation without that.
+- **`ChatResponse` shape changed** (breaking, by design): `citations: list[ContextBlock]`
+  → `citations: list[ResolvedCitation]` (`marker`, `document_id`, `chunk_id`,
+  `char_start`, `char_end`, `content` — no `index`/`distance`), plus new
+  `conversation_id`/`message_id` fields. F40's old "all blocks numbered 1..N" test
+  (`test_ask_multiple_chunks_numbered_citations_match_blocks`) was rewritten to use a new
+  test-local `_MultiCitingLLM` double (cites every block it's sent) — the existing
+  `FakeLLM` only ever cites `[1]` regardless of context size, so it could never have
+  exercised multi-citation resolution; this is now the standing way to test >1 citation
+  without changing `FakeLLM`'s own contract again.
+- **`migrations/env.py`**: uncommented/added `import app.chat.models` for ORM metadata
+  registration (the placeholder comment for this was already there from F40, per the
+  package-layout convention's ORM-registration rule).
+- Independent code-review pass (separate subagent, given only this session's diff + the
+  hard rules + the F41 DoD): zero violations against rules #1/#3/#4/#8; one cosmetic note
+  (a stale "chat is stateless" docstring on `GenerationFailed`, fixed in this session).
+- 99/99 suite green (1 pre-existing real-parser test deselected, matching prior sessions'
+  count), ruff clean.
+
 ## F40 manual acceptance gate (2026-06-24, this session, validation only — no code changes)
 - **Satisfied the outstanding DoD item from the F40 entry below**: ran the real pipeline
   end-to-end (real `RealParser` + real `RealEmbedder` + real `RealLLM`, all via the existing
