@@ -212,10 +212,18 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       against hard rules #1/#3/#4/#8 + the F40 DoD: zero violations.
       **DoD's automated half met** (refuses on empty context — `tests/test_chat.py`,
       enforced structurally by `_SYSTEM_PROMPT` and exercised against a now
-      context-aware `FakeLLM`). **DoD's manual acceptance gate is OUTSTANDING** — see
-      buildplan.md's F40 entry: a human must confirm the REAL LLM refuses (not invents)
-      on an unanswerable real question before F40 is considered fully done, not just
-      automated-green. Tracked here so it isn't silently treated as complete.
+      context-aware `FakeLLM`). **DoD's manual acceptance gate SATISFIED (2026-06-24,
+      this session)** — ran the real pipeline (real parser + real embedder + real LLM,
+      all via the OpenRouter key, `pdf/kech104.pdf`) against an in-scope and an
+      out-of-scope question, end to end through `chat_service.ask`. In-scope ("Kossel-Lewis
+      approach... octet rule") retrieved tight, relevant distances (0.35–0.42) and got a
+      correctly grounded answer citing `[1][6]`. Out-of-scope ("2022 FIFA World Cup
+      winner") retrieved loose, irrelevant distances (0.80–0.90) and the real LLM returned
+      the exact fixed refusal string verbatim, with no fallback to its own training
+      knowledge. Config/script-only validation — zero production code changed (see
+      memory.md "F40 manual acceptance gate" for full detail, including the
+      fake-embedder-can't-prove-the-positive-case finding and the one-OpenRouter-key-feeds-
+      all-3-seams architectural note).
 - [ ] F4x SSE streaming for chat (deferred out of F40 — see buildplan.md)
 - [ ] F41 Citations (offset mapping + persisted)
 - [ ] F42 Admin debug bundle
@@ -256,11 +264,12 @@ zero behavior change, convention now locked in architecture.md/orchestrator.md/r
 — see "Maintenance" section above).
 **Phase 4 STARTED: F40 Grounded generation (`1572fa8`)** — non-streaming `POST /chat/ask`,
 stateless, retrieval-only cross-module call, retry-on-transient-only LLM seam call. 95/95
-suite green, ruff clean, independent review clean. **Manual acceptance gate outstanding**
-(real LLM must be confirmed to refuse, not invent, on a real unanswerable question — see
-F40 entry above and memory.md). F4x (SSE) and F41/F42 not started.
-Next action: **either the F40 manual acceptance gate (ask the real LLM an unanswerable
-question against real content and confirm refusal), or F41 Citations, or resume the rest
-of F51 (folders/tags/upload UI)** — ask the user which.
+suite green, ruff clean, independent review clean. **Manual acceptance gate SATISFIED
+(2026-06-24, this session)** — real parser+embedder+LLM run against `pdf/kech104.pdf`
+confirmed grounded answer on an in-scope question and the exact refusal string (no
+fabrication) on an out-of-scope one. F40 is now fully done, not just automated-green. F4x
+(SSE) and F41/F42 not started.
+Next action: **either F41 Citations, F4x SSE streaming, or resume the rest of F51
+(folders/tags/upload UI)** — ask the user which.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

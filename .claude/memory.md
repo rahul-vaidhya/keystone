@@ -4,6 +4,50 @@
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
 
+## F40 manual acceptance gate (2026-06-24, this session, validation only — no code changes)
+- **Satisfied the outstanding DoD item from the F40 entry below**: ran the real pipeline
+  end-to-end (real `RealParser` + real `RealEmbedder` + real `RealLLM`, all via the existing
+  `OPENROUTER_API_KEY`, model `openai/gpt-4o-mini`) against `pdf/kech104.pdf` (NCERT Class 11
+  Chemistry, "Chemical Bonding and Molecular Structure"), through `chat_service.ask` exactly
+  as a real request would hit it — not a mocked/simulated call.
+  - **In-scope question** ("What is the Kossel-Lewis approach to chemical bonding, and what
+    is the octet rule?"): retrieval distances 0.35–0.42 (tight, genuinely relevant), real LLM
+    returned a correct grounded answer citing `[1][6]`.
+  - **Out-of-scope question** ("Who won the FIFA World Cup in 2022...?"): retrieval distances
+    0.80–0.90 (loose, nothing actually matched), real LLM returned the exact fixed string
+    `"I don't have that in the provided sources."` verbatim — no fallback to its own training
+    knowledge. This is the specific behavior the gate exists to catch (a model confidently
+    fabricating from pretraining when retrieval comes up empty/irrelevant) and it held.
+- **Config/script-only — zero production code touched.** Verified via `git status`/`git
+  diff` (clean) before and after. The only "change" was a throwaway script (outside the
+  repo, in session scratchpad) that imported the already-existing `RealEmbedder`/`RealLLM`
+  classes (built in F03) instead of the fakes, and mutated the in-process `settings`
+  singleton's `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`LLM_MODEL` at runtime — never written to
+  `.env`, never touched `backend/app/*`. Bypassed R2 (no creds configured in this dev
+  environment) via a local-disk `ObjectStore` impl in the same script, mirroring the
+  in-memory fakes the test suite already uses for that dependency. Confirmed afterward:
+  `pytest -q -m "not real_parser"` still 95 passed / 1 deselected, fake-only, no real key
+  required — CI posture unchanged.
+- **Finding: the FAKE embedder cannot produce a true-positive case for this kind of manual
+  test.** First attempt used `FakeEmbedder` (hash-of-text, semantically meaningless) for the
+  in-scope question — it retrieved essentially random chunks (distances ~0.93–0.96, no
+  separation from the out-of-scope run) and the real LLM correctly refused given that
+  irrelevant context. That's a *correct* refusal, but it doesn't prove grounded-citation
+  behavior works, only that refusal-on-noise works. Switching to the real embedder is what
+  produced the genuine positive/negative pair (tight vs. loose distances) above. **Applies
+  to any future manual retrieval/chat validation**: if the goal includes confirming a
+  *correct* grounded answer (not just refusal), the embedder must be real — fakes are fine
+  for refusal-only checks but will under-test groundedness.
+- **Architectural note worth carrying forward**: `OPENROUTER_API_KEY` alone, with
+  `OPENAI_BASE_URL` pointed at `https://openrouter.ai/api/v1` and `OPENAI_API_KEY` set to
+  the same value, serves all 3 seams — parser (already known, F23), and now confirmed for
+  embeddings (`RealEmbedder.embed` succeeded against `text-embedding-3-small` through
+  OpenRouter) and LLM (`RealLLM.stream` succeeded against `openai/gpt-4o-mini`). One
+  credential, three independently-metered vendor paths. Relevant for the eventual deploy/
+  secrets story and any Phase 5+ cost-control thinking — there is no technical need for a
+  separate `OPENAI_API_KEY` in this stack unless a reason to split billing/rate-limits
+  between parser and embedder/LLM traffic comes up later.
+
 ## F40 Grounded generation (2026-06-24, this session, `1572fa8`)
 - **New `app/chat` module, stateless** (`schemas.py`/`service.py`/`router.py`/
   `exceptions.py` only — no `models.py`/`repository.py`/`tasks.py`, no migration).
