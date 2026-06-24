@@ -4,6 +4,105 @@
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
 
+## F51 Repository UI: folder tree + document list + upload (2026-06-24, this session)
+- **Completes F51** — the feature F24 (auto-dispatch) and F25 (move/rename/delete) unblocked.
+  Built via a fresh-recon architect pass in THIS session, not trusted from an unrecorded
+  prior session's claims — confirmed at session start that memory.md had no dedicated F51
+  recon entry beyond the Vitest+RTL harness decision (which buildplan.md did already
+  record); the left-rail layout call is `uirules.md`'s own locked rule, not something this
+  session invented.
+- **New `lib/api.ts` `documentsApi` namespace** — typed to the REAL backend schemas read
+  directly from `app/documents/{schemas,router}.py` (not assumed): `Folder`, `Tag`,
+  `Document` (incl. `DocumentStatus` as the literal `"UPLOADED"|"PARSING"|"STRUCTURING"|
+  "EMBEDDING"|"READY"|"FAILED"` union — the wire value IS upper-case, matching the
+  backend's `StrEnum` members verbatim, not lower-cased). Remains the sole fetch boundary;
+  no component calls `fetch`/`apiFetch` directly.
+- **Real bug found and fixed in the pre-existing `apiFetch` while wiring multipart
+  upload**: it unconditionally set `Content-Type: application/json` whenever `init.body`
+  was truthy, with no exception for `FormData` — would have silently broken every
+  multipart upload's boundary. Fixed with an explicit `!(init.body instanceof FormData)`
+  guard. The `Authorization` bearer header is set in a separate, unconditional code path
+  (always runs regardless of body type) — confirmed by both manual Playwright testing and
+  independent review that the FormData fix does not also drop auth.
+- **Whole-list refetch on every folder mutation, no optimistic/partial update — a
+  deliberate, instructed constraint, not an oversight.** `FolderTree.tsx`'s
+  `invalidateFolders()` is the only callback every create/rename/move/delete mutation
+  uses. Reason: F25's move/rename rebuild EVERY descendant's `path` server-side in one
+  transaction — an optimistic client-side patch would show stale descendant paths until
+  the next unrelated refetch. Verified directly (Playwright + independent review): no
+  `queryClient.setQueryData` anywhere in the file.
+- **`FolderTree` is the narrow, swappable navigator** as planned:
+  `{currentFolderId, onNavigate}` only — builds its own tree client-side from the flat
+  `parent_id` list (no separate tree endpoint exists or is needed), owns create/rename/
+  move/delete UI entirely internally. Move target picker excludes self + all descendants
+  via a client-side BFS over `parent_id` (`descendantIds`) — mirrors the backend's own
+  cycle-rejection logic so the UI never offers a target the API would reject anyway.
+  Delete-with-children uses `window.prompt` to choose `cascade`/`reflow` in plain language
+  (not raw enum values) — functional but rougher than the rename/move controls; noted in
+  uiregistry.md as a polish gap, not a correctness one.
+- **`DocumentList`'s polling predicate (`pollIntervalFor`) is exported and unit-tested
+  directly** against a fake `Query` object — proven to return `false` with no data, `false`
+  when every visible document is terminal (`READY`/`FAILED`), and `2000` (ms) when any
+  document is non-terminal. No real timers in the test; the predicate is pure. Status/
+  `failed_stage`/`error_detail` are rendered LITERALLY via `StatusBadge` — no invented
+  client-side progress percentage, since the backend gives none.
+- **`StatusBadge` promoted to `src/components/` (shared, not feature-folder-local)** on the
+  judgment that F52 (chat/citations) will likely want the same status-pill treatment —
+  recorded in uiregistry.md as `[built, F51]`. Initial version had an unsafe
+  `failedStage as DocumentStatus` cast (caught by independent review) — `failed_stage` is
+  its own free-text field on the wire, not actually a `DocumentStatus` value; fixed with a
+  proper `isKnownStatus` type guard that falls back to the raw string when it doesn't match.
+- **`UploadDropzone` deliberately NOT built as planned** — `DocumentList` uses a plain
+  hidden `<input type="file">` + button instead. No drag/drop, no per-file progress bar,
+  because the backend's upload response gives no progress signal to show (a fabricated
+  progress bar would violate the "don't recompute server state" principle). Recorded in
+  uiregistry.md as a scope reduction, not a gap — build the real dropzone only if drag/drop
+  becomes a real product ask.
+- **Vite dev proxy gets exactly one new entry, `/documents`** — `/ingestion`/`/retrieval`/
+  `/chat` deliberately NOT added speculatively; add each only when its own feature is built.
+  This is now the standing per-feature proxy-entry pattern for future frontend work.
+- **Vitest+RTL is now the established frontend test convention** (first-ever frontend test
+  runner in this repo — confirmed at session start there was none). Deliberately NOT using
+  vitest's `globals: true` — every test file imports `describe`/`it`/`expect`/`vi`
+  explicitly, matching this project's general preference for explicit over implicit. This
+  means RTL's auto-cleanup-between-tests (which self-registers only when it detects global
+  test hooks) does NOT fire automatically — `src/test/setup.ts` wires `afterEach(cleanup)`
+  manually. **Gotcha for any future frontend test file**: forgetting this would have caused
+  exactly the failure hit here — multiple even-DOM-instances of the same text across tests,
+  `getByText` throwing "found multiple elements." It's now fixed once, globally, in setup.ts
+  — no future test file needs to re-add it. Tests mock `documentsApi` only (`vi.mock`), no
+  MSW, no real backend — confirmed by independent review.
+  Also added: a second `frontend` CI job (`.github/workflows/ci.yml`), fully independent of
+  the backend `test` job (no Postgres/Docker needed) — `npm ci && npm run test && npm run
+  build`.
+- **Manual end-to-end verification, not just automated-green**: ran the actual feature in a
+  browser via Playwright against the REAL backend (not mocked) — signup, navigate to
+  `/app/repository`, create folder "HR", navigate into it, rename to "Personnel", delete
+  it (plain confirm, block mode, succeeded since childless), and a real PDF upload that
+  showed up in the document list with `StatusBadge` rendering "Uploaded". Confirmed the
+  whole-list refetch behavior live (folder list re-fetched after every mutation, not
+  patched). **Gotcha hit again, same shape as F40's manual-validation entry**: this dev
+  environment has no R2 credentials configured, so a real `POST /documents/upload` 500s
+  inside `boto3.client(...)` construction (`ValueError: Invalid endpoint:`) — same gap
+  F40's entry already documented. Worked around the same way: a throwaway scratchpad-only
+  shim app (`dev_main.py`, never committed) importing the real `main:app` and overriding
+  `get_object_store` with a local-disk store via `app.dependency_overrides`, run from the
+  `backend/` working directory specifically (so `.env`-relative config loading still
+  resolves — running it from a different cwd silently picked up wrong DB credentials via
+  Pydantic's relative `env_file=".env"` resolution and produced an unrelated, confusing
+  `InvalidPasswordError` red herring before the actual fix). **Confirms this is now a
+  recurring dev-environment gap, not a one-off** — worth a real fix (e.g. a documented
+  local MinIO/S3-compatible container in docker-compose, or a `STORAGE_MODE=local` dev
+  switch) if manual verification against real uploads keeps coming up in future sessions.
+- Independent code-review pass (separate subagent): all 3 explicitly-flagged points
+  (proxy scoping, no-optimistic-folder-updates, auth-header-survives-FormData-fix)
+  confirmed PASS. Two real findings fixed (StatusBadge unsafe cast; uiregistry.md not
+  updated — both addressed this session via the Imprint skill). One accepted-as-is note
+  (`window.prompt` for delete-mode choice, functional but rougher UX than the rest of the
+  file).
+- 14 new frontend tests (`FolderTree.test.tsx`, `DocumentList.test.tsx`), `tsc -b` clean,
+  `vite build` clean, manual Playwright verification against the real backend.
+
 ## F25 follow-up: folder create hardening + root-uniqueness backstop (2026-06-24, this session)
 - **Two distinct findings, fixed together but recorded separately — do not conflate them.**
 - **Finding 1 (more severe, genuinely pre-existing, NOT introduced by F25): `create_folder`

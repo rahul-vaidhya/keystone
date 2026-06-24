@@ -340,11 +340,31 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
 - [x] F50 App shell + auth UI (`054aa36`) — built OUT OF SEQUENCE per direct senior instruction,
       ahead of Phase 2-4. Vite React scaffold, `App.tsx`/`ProtectedRoute`/`lib/auth.tsx`/`lib/api.ts`,
       `AppShell`/`Sidebar`/`HomePage`, `LoginPage`/`SignupPage` wired to the real F10 backend.
-- [~] F51 Repository UI (folders/tags/upload + status) — PARTIAL: only the auth-adjacent slice
-      (`UsersPage.tsx` org user/role management) landed alongside F50. The `DocsPage.tsx` placeholder
-      was removed (it depended on the deleted `/context/docs` endpoint — see "Unplanned additions"
-      in buildplan.md, resolved 2026-06-23). Folders/tags/upload itself not started — blocked on
-      F11/F12. Do not resume until those land.
+- [x] F51 Repository UI (folders/tags/upload + status) — DONE, this session. New
+      `documentsApi` namespace in `lib/api.ts` (typed to the real `app/documents` schemas),
+      `features/documents/{FolderTree,DocumentList,DocumentsPage}.tsx`,
+      `components/StatusBadge.tsx` (shared). Folder tree built client-side from the flat
+      `parent_id` list; create/rename/move/delete all wired to the real F25 endpoints, every
+      mutation does a WHOLE-list refetch (no optimistic patch — F25's move/rename rebuild
+      every descendant's `path` server-side). Document list polls every 2s while any visible
+      document is non-terminal, stops once all are READY/FAILED (`pollIntervalFor`, unit
+      tested directly). Upload via a plain file input (not the originally-sketched
+      drag/drop `UploadDropzone` — no backend progress signal to show, recorded as a scope
+      reduction in uiregistry.md, not a gap). Fixed a real pre-existing bug in `apiFetch`
+      found while wiring multipart upload: it would have forced `Content-Type:
+      application/json` onto FormData bodies, breaking the multipart boundary — confirmed
+      the separate, unconditional Authorization-header code path still applies to uploads.
+      First-ever frontend test runner introduced (Vitest+RTL, explicit imports not
+      `globals: true`, manual `afterEach(cleanup)` in `src/test/setup.ts`) — 14 tests, all
+      mocking `documentsApi` only, never a real backend. New `frontend` CI job, independent
+      of the backend job (no Docker needed). `tsc -b`/`vite build` clean. Manually verified
+      end-to-end in a browser via Playwright against the real backend (create/rename/delete
+      folder, real PDF upload, status display) — hit the same R2-credentials-missing dev
+      gap F40 already documented; worked around with a throwaway local-disk storage
+      override script, never committed. Independent code-review pass: zero issues on the
+      3 explicitly-flagged points (proxy scoping, no-optimistic-updates, auth survives the
+      FormData fix); 2 minor findings fixed (StatusBadge unsafe type cast; uiregistry.md
+      updated via Imprint). See memory.md for full detail.
 - [ ] F52 Notebook + chat UI (streaming + citations)
 
 ## Phase 6 — Security Hardening (after MVP validated, before real customer data)
@@ -416,8 +436,15 @@ the concurrent-race backstop: `uq_folders_org_parent_name` provides no protectio
 two ROOT-level folders sharing a name (Postgres NULL≠NULL) — flagged, not fixed, out of
 this feature's scope. 125/125 suite green, ruff clean, independent review clean (one
 minor, accepted note). See memory.md "F25 Folder move/rename/delete" for full detail.
-Next action: **F51's upload/folder-tree UI now against the real F25 endpoints** (folders/
-tags/upload, with a minimal Vitest+RTL harness introduced alongside it per this session's
-decision) — or F4x SSE streaming / F42 admin debug bundle, ask the user which to resume.
+**F51 Repository UI (folder tree + document list + upload) DONE — this session.** New
+`documentsApi` (`lib/api.ts`), `features/documents/{FolderTree,DocumentList,
+DocumentsPage}.tsx`, shared `components/StatusBadge.tsx`. Whole-folder-list refetch on
+every mutation (no optimistic patch, since F25's move/rename rebuild every descendant's
+path server-side); document list polls only while non-terminal. First-ever frontend test
+runner introduced (Vitest+RTL) plus a new independent `frontend` CI job. Manually verified
+end-to-end against the real backend via Playwright. See memory.md "F51 Repository UI" for
+full detail, including a real `apiFetch` multipart-Content-Type bug found and fixed.
+Next action: **F4x SSE streaming for chat, or F42 admin debug bundle, or F52 notebook+chat
+UI** — ask the user which to resume.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".
