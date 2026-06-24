@@ -38,7 +38,22 @@ async def create_folder(ctx: TenantContext, req: FolderCreate) -> FolderOut:
             if parent is None:
                 raise FolderNotFound("Parent folder not found")
             path = f"{parent.path}/{req.name}"
-        folder = await repo.create(parent_id=req.parent_id, name=req.name, path=path)
+        # Pre-existing gap, fixed here: create_folder previously had neither this
+        # application-level check nor the IntegrityError translation below, so any
+        # duplicate-name create (root OR sibling, no race needed) raised an unhandled
+        # IntegrityError -> 500. _relocate_folder (rename/move) already had both; this
+        # brings create to the same check-then-act + constraint-backstop discipline.
+        if await repo.exists_name_conflict(req.parent_id, req.name):
+            raise FolderNameConflict("A folder with that name already exists here")
+        try:
+            folder = await repo.create(parent_id=req.parent_id, name=req.name, path=path)
+        except IntegrityError as exc:
+            # Residual race, same shape as _relocate_folder's: the check above and this
+            # write share one transaction, but read-committed isolation doesn't fully
+            # serialize two concurrent creates racing for the same (parent_id, name) — the
+            # unique constraint (or, for parent_id IS NULL, the new partial unique index
+            # closing the root-level gap) is the actual backstop.
+            raise FolderNameConflict("A folder with that name already exists here") from exc
     return FolderOut.model_validate(folder)
 
 

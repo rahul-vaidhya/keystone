@@ -12,8 +12,9 @@ from httpx import ASGITransport, AsyncClient
 from app.documents.exceptions import FolderNameConflict, FolderNotFound
 from app.documents.models import Folder
 from app.documents.repository.folders import FolderRepository
+from app.documents.schemas import FolderCreate
 from app.documents.service import documents_service
-from app.documents.service.folders import move_folder, rename_folder
+from app.documents.service.folders import create_folder, move_folder, rename_folder
 from app.identity.models import Organization
 from app.platform.context import TenantContext
 from app.platform.queue import get_job_queue
@@ -253,6 +254,37 @@ async def test_move_collision_at_target_parent(client: AsyncClient) -> None:
     assert resp.status_code == 409
 
 
+# --- create: duplicate-name 409s, root and sibling alike (pre-existing gap, fixed here) -
+
+# Pre-existing gap, separate from and more severe than the root-uniqueness finding below:
+# create_folder previously had neither an application-level collision check nor an
+# IntegrityError->409 translation at all, so ANY duplicate-name create (root or sibling,
+# no race required) raised an unhandled IntegrityError -> 500. The two tests below cover
+# the everyday (non-forced) path for both cases; the forced-race test further down proves
+# the constraint-level backstop for the root case specifically.
+
+
+async def test_create_duplicate_root_folder_name_is_409_not_500(client: AsyncClient) -> None:
+    tokens = await _signup(client, "fm-rootdup@test.com", "OrgRootDup")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    await _mkfolder(client, headers, "Shared")
+
+    resp = await client.post("/documents/folders", headers=headers, json={"name": "Shared"})
+    assert resp.status_code == 409
+
+
+async def test_create_duplicate_sibling_folder_name_is_409_not_500(client: AsyncClient) -> None:
+    tokens = await _signup(client, "fm-siblingdup@test.com", "OrgSiblingDup")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    parent = await _mkfolder(client, headers, "Parent")
+    await _mkfolder(client, headers, "Child", parent["id"])
+
+    resp = await client.post(
+        "/documents/folders", headers=headers, json={"name": "Child", "parent_id": parent["id"]}
+    )
+    assert resp.status_code == 409
+
+
 # --- concurrent-move backstop: constraint violation -> 409, not a raw 500 --------------
 
 
@@ -265,12 +297,10 @@ async def test_concurrent_rename_constraint_violation_translated_to_409(
     unique constraint (``uq_folders_org_parent_name``) is the actual backstop — this
     proves the IntegrityError it raises is translated to FolderNameConflict, never a raw
     500, exactly as F12's checksum-dedupe race was handled."""
-    # Uses a real (non-null) parent_id deliberately: Postgres treats NULL != NULL for
-    # uniqueness purposes, so uq_folders_org_parent_name provides NO backstop between two
-    # ROOT-level folders sharing a name (parent_id IS NULL on both) — only the
-    # application-level check protects root-level names today. That's a pre-existing gap
-    # in the F11 constraint definition (not introduced by F25), flagged separately; this
-    # test exercises the backstop where it actually holds (a real parent_id).
+    # Uses a real (non-null) parent_id: exercises uq_folders_org_parent_name itself. The
+    # sibling test below (test_concurrent_root_create_constraint_violation_translated_to_409)
+    # exercises the partial unique index that now closes the root-level (parent_id IS NULL)
+    # gap this constraint alone never covered — see that test for detail.
     org_id = uuid.uuid4()
     async with session_factory() as session, session.begin():
         session.add(Organization(id=org_id, name="RaceOrg"))
@@ -292,6 +322,36 @@ async def test_concurrent_rename_constraint_violation_translated_to_409(
     ctx = TenantContext(org_id=org_id)
     with pytest.raises(FolderNameConflict):
         await rename_folder(ctx, mover_id, "Taken")
+
+
+async def test_concurrent_root_create_constraint_violation_translated_to_409(
+    session_factory, tenant_engine, monkeypatch
+) -> None:
+    """Closes the F25-flagged root-level gap: ``uq_folders_org_parent_name`` gives no
+    backstop between two ROOT-level folders sharing a name (Postgres treats
+    ``NULL != NULL`` for uniqueness), so a genuine concurrent race at root level had no
+    constraint to catch it — only the (non-concurrency-safe) application-level check did.
+    The new partial unique index (``uq_folders_org_root_name``, migration 0010, scoped to
+    ``parent_id IS NULL``) is the actual backstop now. Mirrors
+    ``test_concurrent_rename_constraint_violation_translated_to_409``: the application
+    check is forced to a false negative via monkeypatch (modeling two concurrent creates
+    each seeing a pre-collision state); the index is what turns the resulting
+    IntegrityError into a 409 instead of a raw 500."""
+    org_id = uuid.uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(Organization(id=org_id, name="RootRaceOrg"))
+        await session.flush()
+        session.add(Folder(org_id=org_id, parent_id=None, name="Taken", path="Taken"))
+        await session.flush()
+
+    async def _fake_no_conflict(self, *args, **kwargs) -> bool:
+        return False
+
+    monkeypatch.setattr(FolderRepository, "exists_name_conflict", _fake_no_conflict)
+
+    ctx = TenantContext(org_id=org_id)
+    with pytest.raises(FolderNameConflict):
+        await create_folder(ctx, FolderCreate(name="Taken"))
 
 
 # --- delete: block (default), cascade, reflow -------------------------------------------

@@ -36,11 +36,11 @@ class FolderRepository(BaseRepository[Folder]):
         return await self._db.scalar(stmt) is not None
 
     async def exists_name_conflict(
-        self, parent_id: uuid.UUID | None, name: str, *, exclude_id: uuid.UUID
+        self, parent_id: uuid.UUID | None, name: str, *, exclude_id: uuid.UUID | None = None
     ) -> bool:
-        stmt = self._scoped().where(
-            Folder.parent_id == parent_id, Folder.name == name, Folder.id != exclude_id
-        )
+        stmt = self._scoped().where(Folder.parent_id == parent_id, Folder.name == name)
+        if exclude_id is not None:
+            stmt = stmt.where(Folder.id != exclude_id)
         return await self._db.scalar(stmt) is not None
 
     async def list_subtree(self, folder_id: uuid.UUID) -> list[Folder]:
