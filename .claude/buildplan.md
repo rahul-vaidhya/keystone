@@ -70,6 +70,23 @@ mismatch now; expensive after Phase 3+ depends on it.
       embedding. If it does, that mismatch IS the finding — stop and fix the contract before F30.
     - One real document reaches `READY` on real-parser output; CI stays fake-only and green.
   - *Defer (do NOT build here):* semantic enrichment (V2), OCR tuning, multi-provider fallback.
+- **F24 Ingestion auto-dispatch (arq):** added late, **out of numeric order** — built in the
+  same session as F51's frontend recon (which is chronologically after F41), because that
+  recon surfaced that nothing had ever auto-advanced a document past `UPLOADED`: F20-F22's
+  stage endpoints were always manual-trigger only, and no arq task had ever been registered.
+  Without this, F51's upload UI would have nothing to observe — a document would sit at
+  `UPLOADED` forever. Upload enqueues the parsing stage's job; each stage's job, on success,
+  enqueues the next — server-side, resumable, independent of the uploading client (the
+  frontend was deliberately NOT made to drive this chain — see memory.md for why).
+  - *DoD:* a successful upload reaches `READY` (or `FAILED`) with no manual `/ingestion/*`
+    calls; a checksum-dedupe hit does not re-trigger the pipeline; redelivery of any stage's
+    job (arq is at-least-once) never double-enqueues the next stage, including under
+    concurrent redelivery (guaranteed via a deterministic arq `job_id`, not just an
+    application-level status check — see memory.md for a redelivery race this session found
+    and fixed).
+  - *Known, accepted gap (do NOT build here):* if the enqueue call itself fails — at upload
+    time or between stages — the chain silently stops and the document is stranded. No
+    sweeper/re-dispatch is built; a future re-dispatch endpoint or sweeper job would close it.
 
 ## Phase 3 — Knowledge + Retrieval
 - **F30 Notebooks:** create notebook; add/remove documents by reference (join table).
@@ -111,7 +128,12 @@ mismatch now; expensive after Phase 3+ depends on it.
   auth-adjacent slice landed as part of the F50 pull-forward: `UsersPage.tsx` (org user list +
   role management UI, calling F10's `/invite` / `/users` / `/users/{id}/role`) and `DocsPage.tsx`
   (placeholder panel, not yet wired to F11/F12 — those backend features don't exist yet).
-  Folders/tags/upload UI itself is **not started** — blocked on F11/F12 landing first.
+  Folders/tags/upload UI itself is **not started** — was blocked on F11/F12 landing first;
+  F11/F12 are done, and F24 (ingestion auto-dispatch) now also landed so an upload actually
+  advances to `READY` for the UI to observe. Also introducing a minimal Vitest+RTL test
+  harness as part of this feature (the first real data-fetching frontend feature) — tests
+  mock the typed API client, never the real backend, wired into CI alongside the backend
+  suite.
 - **F52 Notebook + chat UI with streaming + citations.** Not started — blocked on Phase 3/4.
   - *DoD:* a non-technical user completes the full core flow end-to-end.
 

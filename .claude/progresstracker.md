@@ -131,6 +131,30 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       per-page heading text) — both findings empirically confirmed, matching the documented
       expectations. Offsets manually spot-checked on two chunk groups, no corruption found.
       See memory.md "F23 empirical validation run" for full detail.
+- [x] F24 Ingestion auto-dispatch (arq) — **built out of numeric order, this session
+      (after F41), discovered as a gap during F51 frontend recon**: nothing had ever
+      auto-advanced a document past `UPLOADED` — F20-F22's stage endpoints were always
+      manual-trigger only, and no arq task had ever been registered (`WorkerSettings.
+      functions` was `[]` since F00). New `platform/queue.py` (`JobQueue` Protocol +
+      `ArqJobQueue`, same DI-not-a-seam treatment as `ObjectStore`) + new
+      `ingestion/tasks.py` (3 arq job functions, registered in `worker.py`). On a genuine
+      new upload (never a checksum-dedupe hit), `documents/router.py` calls
+      `ingestion_service.enqueue_pipeline` — composed at the ROUTER, not
+      `documents.service`, specifically to avoid a circular import (`ingestion.service`
+      already imports `documents.service`). Each stage's job enqueues the next stage's job
+      on success only; correctness under arq's at-least-once redelivery is guaranteed by a
+      deterministic `job_id` (`f"ingestion:{stage}:{document_id}"`) that arq itself dedupes
+      on — a before/after DB-status check alone was tried first and an independent review
+      caught that it cannot prevent a concurrent-redelivery double-enqueue (the before-read
+      happens in a separate transaction from the actual stage claim); fixed before this was
+      recorded as done. **Known, accepted, named gap**: a lost enqueue — at upload time OR
+      between stages — silently strands a document at whatever status it last reached; no
+      sweeper/re-dispatch exists in F24. DoD met: `tests/test_ingestion_dispatch.py` (upload
+      enqueues, dedupe doesn't re-enqueue, full chain advances via enqueue, sequential
+      redelivery no-ops, job_id dedup is the actual concurrency backstop, org-scoping
+      independent-backstop test). 105/105 suite green, ruff clean. Independent review:
+      one blocking finding (the redelivery race above) and one minor (HTTP-path pool
+      leaked per request) — both fixed.
 
 ## Phase 3 — Knowledge + Retrieval
 - [x] F30 Notebooks (reference join) (`a85138e`) — new `app/knowledge` module (`Notebook`/
@@ -296,7 +320,23 @@ markers dropped silently, logged, never fabricated. Every `/chat/ask` creates a 
 conversation+message pair (no reuse/multi-turn yet — deliberate, see memory.md). 99/99
 suite green, ruff clean, independent review: zero hard-rule violations. F4x (SSE) and
 F42 (admin debug bundle) not started.
-Next action: **either F4x SSE streaming, F42 admin debug bundle, or resume the rest of
-F51 (folders/tags/upload UI)** — ask the user which.
+**F24 Ingestion auto-dispatch (arq) DONE — built out of numeric order, THIS session,
+chronologically AFTER F41**, discovered as a real gap during F51 frontend recon: nothing
+had ever auto-advanced a document past `UPLOADED` (F20-F22 were always manual-trigger
+only; `WorkerSettings.functions` was `[]` since F00). New `platform/queue.py`
+(`JobQueue`/`ArqJobQueue`) + `ingestion/tasks.py` (3 chained arq jobs); upload triggers
+the chain via `documents/router.py` (composed at the router, not `documents.service`, to
+avoid a circular import); correctness under redelivery is guaranteed by a deterministic
+arq `job_id`, not the before/after status check alone (an independent review caught and
+this session fixed a real concurrent-redelivery double-enqueue race in the first draft).
+**Known, accepted gap**: a lost enqueue (upload time or mid-chain) strands a document
+silently — no sweeper/re-dispatch built. 105/105 suite green, ruff clean. See memory.md
+"F24 Ingestion auto-dispatch" for full detail.
+**A future cold-start reading dates: F24 lands after F41 in the commit timeline — this is
+intentional, not a mistake.** It exists because F51 (frontend) recon surfaced that upload
+alone never produced a queryable document.
+Next action: **F51's upload UI now against an actually-advancing pipeline** (folders/tags/
+upload, with a minimal Vitest+RTL harness introduced alongside it per this session's
+decision) — or F4x SSE streaming / F42 admin debug bundle, ask the user which to resume.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

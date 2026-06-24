@@ -4,6 +4,113 @@
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
 
+## F24 Ingestion auto-dispatch (2026-06-24, this session, built out of numeric order)
+- **Why this exists, and why it's dated after F41**: discovered as a real gap during F51
+  frontend recon (folders/tags/upload UI), not planned ahead of time. Confirmed by reading
+  the actual router code: nothing in the backend had ever auto-advanced a document past
+  `UPLOADED` — `WorkerSettings.functions` was `[]` since F00, F20-F22's stage endpoints
+  (`/ingestion/documents/{id}/{parse,structure,embed}`) were always manual-trigger only,
+  and F20's own memory entry had already named this as a deferred gap ("production
+  auto-dispatch... is left for whichever future feature actually needs it"). F51's upload
+  UI is that feature — without this, an uploaded document would sit at `UPLOADED` forever
+  with nothing for the UI to observe advancing.
+- **Explicit architectural rejection, by direct instruction**: the frontend was
+  deliberately NOT made to drive the parse→structure→embed chain (e.g. calling the 3
+  manual endpoints in sequence after upload). Reasoning: deciding a document auto-advances
+  through the pipeline is ingestion ORCHESTRATION, not UI orchestration — the browser is
+  the worst place to own it (a closed tab / navigation / network blip between steps would
+  strand a document half-processed with nothing to resume it, wasting the idempotent-
+  resumable design F20-F22 were built for, and breaking under two tabs/concurrent users).
+  Same shape as the F40 SSE-deferral precedent: don't build the wrong layer because the
+  right one doesn't exist yet. **F51's upload UI only observes status, never drives it.**
+- **New `platform/queue.py`** (`JobQueue` Protocol + `ArqJobQueue` + `get_job_queue()`) —
+  explicitly NOT a 4th seam (architecture.md: only Parser/Embedder/LLM), same DI-with-
+  override treatment as `platform/storage.py`'s `ObjectStore`. Real adapter lazily
+  resolves a process-wide cached pool for the HTTP path (mirrors `platform/db.py`'s
+  module-level engine pattern) but accepts an explicit pool too — the worker passes its
+  OWN pool (`ctx["redis"]`, arq's own connection) so it never opens a second one.
+- **New `ingestion/tasks.py`**: 3 arq job functions (`run_parsing_stage_job`/
+  `run_structuring_stage_job`/`run_embedding_stage_job`), registered in `worker.py`'s
+  `WorkerSettings.functions` (the first tasks ever registered there). Each reconstructs
+  `TenantContext` from the job payload's `org_id` (never trusts a passed-in context
+  object), calls the existing F20-F22 stage methods unchanged, and — on success only —
+  enqueues the next stage's job. The embedding job is terminal (no further enqueue).
+- **New `ingestion_service.enqueue_pipeline(ctx, document_id, job_queue)`** — single new
+  cross-module entrypoint, called once per genuine new upload.
+- **Composition deliberately lives in `documents/router.py`, not `documents/service.py`**:
+  `ingestion.service` already imports `documents.service` (F20), so the reverse import
+  would be circular. The router (the HTTP edge, not imported by any service module) is the
+  composition point instead — same module-boundary rule (call another module only through
+  its service) applied one layer up. `documents/router.py`'s upload handler calls
+  `documents_service.upload_document` (which commits internally), then — only if
+  `created=True` (never on a checksum-dedupe hit) — calls
+  `ingestion_service.enqueue_pipeline`. **Enqueue happens strictly after the upload's
+  transaction has already committed** — never before, or a rolled-back upload could leave
+  a job pointing at a row that doesn't exist.
+- **Redelivery correctness — a real bug found by independent review and fixed before this
+  was recorded as done.** First draft relied solely on each job reading the document's
+  status BEFORE calling its stage and comparing to the status AFTER (if unchanged, treat
+  as a no-op redelivery, don't re-enqueue). An independent code-review pass caught that
+  this is NOT sufficient under arq's at-least-once delivery: the "before" read happens in a
+  separate transaction from the actual stage claim (`begin_parsing` etc.), so two
+  deliveries running close together can both read the same "before" status and both decide
+  to enqueue — a genuine double-enqueue race, not just a theoretical one. **Fix**: every
+  next-stage enqueue now passes a deterministic `job_id`
+  (`f"ingestion:{stage}:{document_id}"`), and arq itself refuses to create a second job
+  sharing an already-queued/active `job_id` — this is the actual correctness guarantee, not
+  the before/after check (which is now documented as just an optimization that avoids the
+  redundant enqueue attempt in the common sequential-redelivery case).
+  **If a future feature copies this before/after-status pattern as a "redelivery safety"
+  precedent, it's wrong on its own — pair it with an idempotency key the queue itself
+  enforces, the same way this one was fixed.** `FakeJobQueue` (test double) models real
+  arq's `job_id` dedup (drops a second enqueue sharing a seen `job_id`); a dedicated test
+  (`test_job_id_dedup_is_the_correctness_backstop_under_concurrent_redelivery`) proves this
+  directly at the queue level, separate from the sequential-redelivery test (which alone
+  gave false confidence — it never actually exercised the race).
+- **Second review finding, also fixed**: the first draft's `ArqJobQueue` constructed a
+  brand-new Redis connection pool on every single HTTP request that enqueued a job (never
+  closed) — a real resource leak under load, worse than the `ObjectStore` per-request
+  pattern it was modeled on (since `create_pool` actually opens a connection; constructing
+  a boto3 client does not). Fixed: a module-level cached pool shared across requests
+  (`platform/queue.py`'s `_get_shared_pool`, guarded by an `asyncio.Lock`), used only when
+  no explicit pool is passed (the worker still passes its own).
+- **Org-scoping independent backstop, directly tested**: every job reconstructs
+  `TenantContext(org_id=uuid.UUID(org_id))` from the payload and reaches the DB only
+  through `documents_service`/`ingestion_service` (which scope every query). Directly
+  tested (`test_job_org_scoping_is_an_independent_backstop`): a job built from org B's
+  payload but org A's `document_id` raises `DocumentNotFound`, never touches org A's row —
+  same backstop-test shape as F31's `search_chunks`/F30's cross-org attach test.
+- **Known, accepted, explicitly-named gap (not built)**: if the enqueue call itself fails —
+  at upload time, or between stages — the chain silently stops and the document is
+  stranded at whatever status it last reached. This covers BOTH failure points (upload-time
+  AND mid-chain) under one gap, not just the upload-time case — a mid-chain stage can
+  succeed in the DB while its own next-stage enqueue then fails, and redelivery of that
+  same job would see "already past this stage" and not retry the enqueue either. No
+  sweeper/re-dispatch endpoint exists. A future feature closing this should be a deliberate
+  addition, not a silent assumption that F24 already handles it.
+- **Test-fixture changes**: `tests/conftest.py` gained `FakeJobQueue` (shared test double,
+  modeling arq's `job_id` dedup). The 3 existing test files whose `client` fixture hits
+  `/documents/upload` (`test_documents.py`, `test_ingestion.py`,
+  `test_real_parser_integration.py`) now also override `get_job_queue` — without this every
+  one of their upload calls would have tried to reach real Redis. New
+  `tests/test_ingestion_dispatch.py` (7 tests): upload enqueues, dedupe doesn't re-enqueue,
+  full chain advances via enqueue, sequential redelivery no-ops, job_id dedup is the actual
+  concurrency backstop (direct queue-level test), org-scoping independent backstop.
+  `tests/test_layout_smoke.py`'s `test_worker_has_redis_settings` updated (was asserting
+  `WorkerSettings.functions == []`, now asserts `len(...) == 3`).
+- **Gotcha (environmental, not a regression)**: one full-suite run this session took
+  71 minutes and failed one test (`test_structure_document_failure_sets_failed_status`,
+  `asyncio.TimeoutError`) immediately after an otherwise-identical run had passed
+  104/104 in 30 seconds. Re-running the single test in isolation (7s) and the full suite
+  again (105/105, 27s) both came back clean — confirmed as a one-off Docker/Testcontainers
+  flake (the Ryuk-reaper-on-Windows gotcha already documented below), not caused by any
+  F24 change. Don't re-investigate this specific failure if it's not reproducible.
+- 105/105 suite green, ruff clean. Independent code-review pass (separate subagent, given
+  only this session's diff + the hard rules): found the 2 issues above (1 blocking
+  redelivery race, 1 minor resource leak), both fixed; everything else (module boundary
+  composition via the router, org-scoping, seam usage, package-layout sizing) came back
+  clean.
+
 ## F41 Citations (2026-06-24, this session, feature commit pending)
 - **New `app/chat/models.py` + `repository.py`** (`Conversation`, `Message` — architecture's
   locked table names). Migration `0009_conversations_messages.py`. `chat/` stays flat (6
