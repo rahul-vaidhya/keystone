@@ -4,6 +4,89 @@
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
 
+## F40 Grounded generation (2026-06-24, this session, `1572fa8`)
+- **New `app/chat` module, stateless** (`schemas.py`/`service.py`/`router.py`/
+  `exceptions.py` only — no `models.py`/`repository.py`/`tasks.py`, no migration).
+  Buildplan's F40 DoD doesn't require persistence (`messages`/`conversations` are F41/F42's
+  job — F41 explicitly says "store in `messages.citations`," implying the table lands
+  there); building chat tables now would have been inventing scope, not following the DoD.
+- **Streaming deviation, deliberate, recorded as a buildplan amendment (not silent)**:
+  buildplan.md's original F40 line said "stream over SSE." This session built
+  **non-streaming** instead — `POST /chat/ask` returns a complete `ChatResponse`. Rationale
+  (direct instruction): no SSE consumer exists yet (F52 chat UI isn't built), F40's
+  substance (grounding discipline, retrieval wiring, retry/failure handling) is
+  transport-independent, and building the harder transport before anything needs it is
+  premature. **This is NOT scope-deletion** — buildplan.md now has an explicit new line,
+  **F4x SSE streaming for chat**, carrying the requirement forward as committed scope.
+  `chat/service.py`'s `generate_answer` is an async-generator core (`AsyncIterator[str]`)
+  that F40's retry wrapper consumes to completion; F4x should only need to change the
+  router (consume incrementally instead) and is justified as designing-for-a-committed-
+  roadmap-item, not speculative structure — if F4x ever needs more than a router change,
+  that's a signal this design call was wrong, revisit it then.
+- **Retry classification, the one place this session deviated from architecture's own
+  precedent on purpose**: `run_parsing_stage`/`run_embedding_stage` (F20/F22) catch broad
+  `except Exception` at their seam call because that's a TERMINAL stage boundary (the
+  document just goes to FAILED either way). `call_llm_with_retry` is INSIDE a retry loop,
+  where a broad catch would silently retry deterministic bugs (e.g. a `KeyError` in prompt
+  construction), wasting paid LLM calls and burying the real exception behind a 503 —
+  rejected explicitly, by direct instruction, as the wrong precedent to reuse here.
+  Resolution: a new `SeamTransientError` (`platform/seams/types.py`) is raised ONLY by
+  `RealLLM` (`platform/seams/real_llm.py`'s `_classify_transient`) for OpenAI
+  `APITimeoutError`/`APIConnectionError`/`RateLimitError`/`InternalServerError`, or any
+  exception carrying `status_code in (429,) or status_code >= 500`. `call_llm_with_retry`
+  catches ONLY `(TimeoutError, SeamTransientError)` — our own `asyncio.timeout` plus that
+  one typed signal — retries up to `LLM_MAX_RETRIES` (default 2) with exponential backoff
+  (`LLM_RETRY_BACKOFF_BASE_SECONDS * 2**attempt`), and raises `chat.exceptions
+  .GenerationFailed` (-> 503 via a new `platform/http.py` handler) on exhaustion. Anything
+  else (a bug, a validation error) propagates immediately, unretried, uncaught — keeps
+  vendor detail behind the seam (hard rule #4) while keeping the retry loop honest. **If a
+  future seam consumer is tempted to broad-catch inside a retry loop, this is the
+  counter-example — broad catch is fine at a terminal stage boundary, not inside retries.**
+- **`LLM` protocol gained a `.model` property** (`platform/seams/protocols.py`), mirroring
+  `Embedder.model` — `FakeLLM.model -> "fake-llm"`, `RealLLM.model -> settings.LLM_MODEL`.
+  Needed so `ChatResponse.model` and the `chat.llm_call_succeeded` log line have a real
+  value to report. Small, additive, same shape as the existing `Embedder.model` precedent.
+- **`FakeLLM` behavior change (breaking for its old contract, by design)**: it used to
+  always cite `[1]` regardless of input. Now it's minimally context-aware — checks whether
+  the latest user-turn message contains a numbered context marker (`"[1]"` substring); if
+  not, streams the fixed refusal string (`FakeLLM.REFUSAL`); if so, streams the old citing
+  template. This is the only way to test F40's core behavioral promise (refuse vs. ground)
+  against a deterministic fake with no network — every future LLM-seam consumer benefits
+  from a fake that can express both states. **Updated the one pre-existing F03 test**
+  (`tests/test_seams.py::test_fake_llm_streams_grounded_cited_answer`) to send a
+  context-bearing prompt explicitly, and added a sibling refusal test — this was a
+  deliberate, approved contract change, not an accidental break.
+- **`ContextBlock.distance: float` added to `retrieval/schemas.py`** (F31's previously
+  "locked" module) — `ChunkHit.distance` was already computed by F31's SQL and silently
+  dropped in `assemble_context`; this surfaces it unchanged. Justified ONLY by F40's own
+  logging need (chunk_ids + distances when available) — explicitly NOT justified by "F42
+  will want it later" (that's the speculative-structure pattern hard rule #8 forbids).
+  Purely additive (new trailing field, nothing renamed/removed) — confirmed F31's existing
+  `tests/test_retrieval.py` has no exact-equality/dict-comparison assertions on
+  `ContextBlock` that this would break; full suite stayed green (95/95, 1 pre-existing
+  skip) after the change, not just assumed safe.
+- **Correlation id**: minted per-request in `chat/router.py` (`uuid4`), bound via
+  `structlog.contextvars.bind_contextvars(correlation_id=...)`, unbound in `finally`. This
+  is the FIRST place request-id/correlation-id propagation exists anywhere in the repo —
+  `platform/logging.py`'s docstring had deferred it to "Phase 1," but Phase 1 shipped
+  without it (confirmed via a repo-wide grep before building this: zero prior references).
+  Deliberately scoped to chat's router only (no global middleware) rather than retrofitting
+  request-id propagation across every existing module — if a future feature wants it
+  elsewhere, copy this pattern, don't assume it's already wired in globally.
+- **Logging discipline**: `chat.context_assembled` logs `notebook_id`/`num_blocks`/
+  `chunk_ids`/`distances` but never the raw query text or chunk content — only
+  `answer_chars`/`latency_ms`/`model` are logged from the LLM call, never the answer text
+  itself. Matches the "don't log full document content or secrets" instruction.
+- **Manual acceptance gate added to buildplan.md/progresstracker.md, not yet exercised**:
+  F40's automated suite (95/95 green) only proves the plumbing and `FakeLLM`'s mechanical
+  contract — it cannot certify that a REAL LLM actually refuses on an unanswerable question
+  rather than inventing an answer, which is F40's actual product promise. A human must run
+  this manually against a real notebook + real LLM before F40 is "done," not just
+  green-and-reviewed. **Not done as of this entry — outstanding**, tracked explicitly so it
+  isn't silently treated as complete.
+- Independent code-review pass (separate subagent, given only this session's diff + the
+  hard rules) found zero violations against rules #1/#3/#4/#8 and the F40 DoD.
+
 ## Maintenance: package-layout refactor (2026-06-24, this session, 4 commits)
 - **Pure structural refactor of F00–F31, zero behavior/logic/schema/API/test-behavior
   change** — not a feature, requested by the reviewer to move from "flat files per module"
@@ -97,8 +180,15 @@ Notebooks (`a85138e`), F31 Flat retrieval (`c194b2b`)** (see entry below). **Mai
 package-layout refactor complete this session** (4 commits — `65845e1`/`8a72e41`/`fadbb07`/
 `f50bee4` — zero behavior change; convention locked for F40+, see entry below). No feature
 progress from the refactor itself.
-Next: **F40 Grounded generation (Phase 4), or resume the rest of F51 (folders/tags/upload UI)
-against the real F11/F12 backend — ask the user which.**
+**Phase 4 STARTED: F40 Grounded generation (`1572fa8`)** — non-streaming `POST /chat/ask`,
+stateless `app/chat` module, retrieval-only cross-module call, retry-only-on-transient LLM
+seam call (see entry above for full detail). 95/95 suite green, ruff clean, independent
+review clean against hard rules #1/#3/#4/#8. **Manual acceptance gate outstanding** (a
+human must confirm the REAL LLM refuses, not invents, on a real unanswerable question —
+not yet done).
+Next: **the F40 manual acceptance gate, F41 Citations, F4x SSE streaming, or resume the
+rest of F51 (folders/tags/upload UI) against the real F11/F12 backend — ask the user
+which.**
 
 ## F31 Flat retrieval (2026-06-23, this session, `c194b2b`)
 - **New `app/retrieval` module** (`router.py`/`service.py`/`schemas.py` only — no

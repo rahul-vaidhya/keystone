@@ -195,7 +195,28 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       and `retrieval/` (small modules, no padding, already correct).
 
 ## Phase 4 — Chat
-- [ ] F40 Grounded generation (SSE, refuses outside sources)
+- [x] F40 Grounded generation (`1572fa8`) — new `app/chat` module (`schemas.py`/
+      `service.py`/`router.py`/`exceptions.py` only — stateless, no `models.py`/
+      `repository.py`/`tasks.py`/migration; F41/F42 own persistence). `POST /chat/ask`:
+      `ChatService.ask` calls `retrieval_service.search` (hard rule #1 — the only
+      cross-module call; never reimplements scoping/embedding/kNN), builds a strict
+      grounding prompt (`build_messages`, pure function — numbered `[n]` context blocks +
+      a fixed refusal sentence instruction), calls the `LLM` seam via
+      `call_llm_with_retry`, returns `ChatResponse` carrying F31's `ContextBlock`s as
+      citations unchanged (citation *resolution* is F41, not built here). Non-streaming
+      this session (see buildplan.md's F40/F4x amendment + memory.md for the
+      streaming-deferral rationale) — `generate_answer` is an async-generator core so the
+      F4x SSE switch is router-only. Retry classification, the `LLM.model` seam addition,
+      and the additive `ContextBlock.distance` touch to F31 are all recorded in memory.md.
+      95/95 suite green (1 pre-existing skip), ruff clean. Independent code-review pass
+      against hard rules #1/#3/#4/#8 + the F40 DoD: zero violations.
+      **DoD's automated half met** (refuses on empty context — `tests/test_chat.py`,
+      enforced structurally by `_SYSTEM_PROMPT` and exercised against a now
+      context-aware `FakeLLM`). **DoD's manual acceptance gate is OUTSTANDING** — see
+      buildplan.md's F40 entry: a human must confirm the REAL LLM refuses (not invents)
+      on an unanswerable real question before F40 is considered fully done, not just
+      automated-green. Tracked here so it isn't silently treated as complete.
+- [ ] F4x SSE streaming for chat (deferred out of F40 — see buildplan.md)
 - [ ] F41 Citations (offset mapping + persisted)
 - [ ] F42 Admin debug bundle
 
@@ -230,10 +251,16 @@ empirical validation run and confirmed this session — real 36-page PDF reached
 (no migration — reads existing F21/F22 tables via `ingestion.service.search_chunks`).
 83/83 suite green, ruff clean — see memory.md "F30 Notebooks" / "F31 Flat retrieval" for
 full detail.
-**Maintenance (this session): structural package-layout refactor complete** (4 commits,
+**Maintenance (prior session): structural package-layout refactor complete** (4 commits,
 zero behavior change, convention now locked in architecture.md/orchestrator.md/review skill
-— see "Maintenance" section above). No feature progress; Phase 0–3 status unchanged.
-Next action: **F40 Grounded generation (Phase 4), or resume the rest of F51 (folders/tags/
-upload UI)** — ask the user which.
+— see "Maintenance" section above).
+**Phase 4 STARTED: F40 Grounded generation (`1572fa8`)** — non-streaming `POST /chat/ask`,
+stateless, retrieval-only cross-module call, retry-on-transient-only LLM seam call. 95/95
+suite green, ruff clean, independent review clean. **Manual acceptance gate outstanding**
+(real LLM must be confirmed to refuse, not invent, on a real unanswerable question — see
+F40 entry above and memory.md). F4x (SSE) and F41/F42 not started.
+Next action: **either the F40 manual acceptance gate (ask the real LLM an unanswerable
+question against real content and confirm refusal), or F41 Citations, or resume the rest
+of F51 (folders/tags/upload UI)** — ask the user which.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

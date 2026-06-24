@@ -79,8 +79,21 @@ mismatch now; expensive after Phase 3+ depends on it.
 
 ## Phase 4 — Chat
 - **F40 Grounded generation:** assemble numbered context, strict "answer only from context / else
-  say you don't know" prompt, stream over SSE.
+  say you don't know" prompt. Non-streaming for this feature — see F4x below for SSE (amended
+  2026-06-24: buildplan originally said "stream over SSE" here; deferred, see F4x).
   - *DoD:* answers never use outside knowledge; refuses when sources don't cover the question.
+  - **Manual acceptance gate (required, automated green ≠ done):** a human must ask the REAL LLM
+    (not the fake) a question the notebook's corpus cannot answer, against a real notebook with
+    real content, and confirm it refuses with the "I don't have that in the provided sources"
+    contract rather than inventing an answer from outside knowledge. This is the product's core
+    behavioral promise and the fake LLM cannot certify it (see memory.md "F40 Grounded
+    generation" for why).
+- **F4x SSE streaming for chat:** switch `POST /chat/ask` to Server-Sent Events, streaming the
+  answer token-by-token. Deferred out of F40 because no consumer exists yet (F52 chat UI isn't
+  built) and F40's substance (grounding discipline, retrieval wiring, retry/failure handling) is
+  transport-independent. F40's `chat.service` already exposes a streaming-ready async-generator
+  core (`generate_answer`) so this should be a router-only change, not a service rewrite.
+  - *DoD:* same grounding/citation contract as F40, delivered incrementally over SSE.
 - **F41 Citations:** map answer markers back to chunk offsets; store in `messages.citations`.
   - *DoD:* clicking a citation shows the exact source span.
 - **F42 Debug bundle (admin):** persist retrieved hits + scores + final prompt + raw output to
