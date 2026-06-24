@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.chat.router import router as chat_router
 from app.documents.router import router as documents_router
 from app.identity.router import router as auth_router
 from app.ingestion.router import router as ingestion_router
@@ -37,6 +38,7 @@ app.include_router(documents_router)
 app.include_router(ingestion_router)
 app.include_router(knowledge_router)
 app.include_router(retrieval_router)
+app.include_router(chat_router)
 
 
 @app.get("/health")

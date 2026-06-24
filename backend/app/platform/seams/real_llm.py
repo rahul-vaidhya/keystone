@@ -10,7 +10,22 @@ from collections.abc import AsyncIterator
 
 from app.platform.config import settings
 from app.platform.seams.protocols import EMBED_DIM
-from app.platform.seams.types import Message, SeamNotConfigured
+from app.platform.seams.types import Message, SeamNotConfigured, SeamTransientError
+
+
+def _classify_transient(exc: Exception) -> bool:
+    """True if `exc` (raised by the OpenAI SDK) signals a TRANSIENT failure — timeout,
+    connection error, HTTP 429, or HTTP 5xx — the only cases a retry loop above the seam
+    should ever retry. Anything else (bad request, auth failure, a bug) returns False so
+    it propagates immediately instead of being silently retried."""
+    try:
+        from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
+    except ImportError:  # pragma: no cover - only reachable if openai is somehow absent
+        return False
+    if isinstance(exc, (APITimeoutError, APIConnectionError, RateLimitError, InternalServerError)):
+        return True
+    status_code = getattr(exc, "status_code", None)
+    return status_code is not None and (status_code == 429 or status_code >= 500)
 
 
 def _openai_client():
@@ -57,14 +72,23 @@ class RealEmbedder:
 class RealLLM:
     """OpenAI-compatible streaming chat completion (default mini-class `LLM_MODEL`)."""
 
+    @property
+    def model(self) -> str:
+        return settings.LLM_MODEL
+
     async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
         client = _openai_client()
-        stream = await client.chat.completions.create(
-            model=settings.LLM_MODEL,
-            messages=[{"role": m.role, "content": m.content} for m in messages],
-            stream=True,
-        )
-        async for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        try:
+            stream = await client.chat.completions.create(
+                model=settings.LLM_MODEL,
+                messages=[{"role": m.role, "content": m.content} for m in messages],
+                stream=True,
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+        except Exception as exc:
+            if _classify_transient(exc):
+                raise SeamTransientError(str(exc)) from exc
+            raise

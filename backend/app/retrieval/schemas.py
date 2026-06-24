@@ -24,6 +24,7 @@ class ContextBlock(BaseModel):
     char_start: int
     char_end: int
     content: str
+    distance: float
 
 
 class RetrievalSearchResponse(BaseModel):

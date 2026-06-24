@@ -64,14 +64,28 @@ class FakeEmbedder:
 
 
 class FakeLLM:
-    """Streams a templated grounded answer that cites the provided context (``[1]``) — so
-    citation-mapping tests have a stable, source-referencing output."""
+    """Streams a templated answer that is context-aware in the one way F40's grounding
+    contract requires: if the prompt carries no numbered context block (no ``[1]``
+    anywhere in the latest user turn), it refuses with the same fixed string F40's system
+    prompt instructs a real model to use; otherwise it cites the provided context
+    (``[1]``). Deterministic, no network — lets tests assert refusal-SHAPED output on
+    empty context, not just plumbing."""
+
+    REFUSAL = "I don't have that in the provided sources."
+
+    @property
+    def model(self) -> str:
+        return "fake-llm"
 
     async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
-        question = next(
+        user_content = next(
             (m.content for m in reversed(messages) if m.role == "user"),
             "",
-        ).strip()
-        answer = f"Based on the provided sources, here is the answer to: {question[:80]} [1]"
+        )
+        if "[1]" not in user_content:
+            answer = self.REFUSAL
+        else:
+            question = user_content.rsplit("Question:", 1)[-1].strip()
+            answer = f"Based on the provided sources, here is the answer to: {question[:80]} [1]"
         for token in answer.split(" "):
             yield token + " "

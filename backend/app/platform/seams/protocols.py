@@ -35,6 +35,11 @@ class Embedder(Protocol):
 
 @runtime_checkable
 class LLM(Protocol):
-    """Stream a completion token-by-token (async-IO rule: streaming, not a blocking call)."""
+    """Stream a completion token-by-token (async-IO rule: streaming, not a blocking call).
+    Exposes `model` (mirrors `Embedder.model`) so callers can log/report which model
+    produced an answer without reaching past the seam for vendor config."""
+
+    @property
+    def model(self) -> str: ...
 
     def stream(self, messages: list[Message]) -> AsyncIterator[str]: ...

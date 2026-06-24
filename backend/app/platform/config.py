@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     PARSER_MODEL: str = "openai/gpt-4o-mini"
     PARSER_OCR_FALLBACK_MIN_CHARS_PER_PAGE: int = 20
 
+    # --- Chat (F40) ---
+    # The LLM seam call gets an explicit timeout + retry-with-backoff, but ONLY on
+    # transient failures (SeamTransientError from the seam, or our own timeout) — never on
+    # a bug, never as a broad except-Exception inside the retry loop.
+    LLM_TIMEOUT_SECONDS: float = 30.0
+    LLM_MAX_RETRIES: int = 2
+    LLM_RETRY_BACKOFF_BASE_SECONDS: float = 0.5
+
     # --- Cloudflare R2 (S3-compatible object store) ---
     R2_ENDPOINT_URL: str | None = None
     R2_ACCESS_KEY_ID: str | None = None

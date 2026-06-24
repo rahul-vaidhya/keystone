@@ -26,8 +26,11 @@ async def resolve_allowed_documents(ctx: TenantContext) -> list[uuid.UUID]:
 
 def assemble_context(query: str, hits: list[ChunkHit]) -> RetrievalSearchResponse:
     """Pure function — numbers hits into ``ContextBlock``s with source refs (document_id,
-    chunk_id, char offsets). This is the SHAPE F40 (chat) will consume; citation mapping
-    itself is F41 — not built here."""
+    chunk_id, char offsets, distance). This is the SHAPE F40 (chat) will consume; citation
+    mapping itself is F41 — not built here. ``distance`` was already computed by
+    ``EmbeddingRepository.search_chunks`` (F31) and is surfaced here unchanged — F40 needs
+    it for its retrieval-quality logging ("chunk_ids + distances if available"); this is
+    additive only, no new computation."""
     results = [
         ContextBlock(
             index=position,
@@ -36,6 +39,7 @@ def assemble_context(query: str, hits: list[ChunkHit]) -> RetrievalSearchRespons
             char_start=hit.char_start,
             char_end=hit.char_end,
             content=hit.content,
+            distance=hit.distance,
         )
         for position, hit in enumerate(hits, start=1)
     ]

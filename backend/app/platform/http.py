@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from app.chat.exceptions import GenerationFailed
 from app.documents.exceptions import DocumentNotFound, DocumentsError, FolderNotFound, TagNotFound
 from app.identity.exceptions import (
     AmbiguousLogin,
@@ -100,6 +101,13 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content=body.model_dump(mode="json"),
+        )
+
+    @app.exception_handler(GenerationFailed)
+    async def _generation_failed(_request: Request, exc: GenerationFailed) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": "The assistant is temporarily unavailable, please try again."},
         )
 
     @app.exception_handler(AuthError)

@@ -76,11 +76,49 @@ async def test_fake_parser_returns_parseddoc_with_valid_offsets() -> None:
 
 
 async def test_fake_llm_streams_grounded_cited_answer() -> None:
-    chunks = [c async for c in FakeLLM().stream([Message(role="user", content="What is Veratas?")])]
+    """A prompt carrying a numbered context block (``[1]``) gets a citing answer — F40's
+    grounding contract, exercised against the fake."""
+    prompt = "[1] Veratas is a knowledge base.\n\nQuestion: What is Veratas?"
+    chunks = [c async for c in FakeLLM().stream([Message(role="user", content=prompt)])]
     text = "".join(chunks)
     assert text.strip()
     assert "[1]" in text  # cites the provided context
     assert "What is Veratas?" in text
+
+
+async def test_fake_llm_refuses_when_no_context_present() -> None:
+    """No numbered context block in the prompt -> the fixed refusal string, deterministic
+    — lets F40's tests assert refusal-SHAPED output, not just that plumbing ran."""
+    prompt = "(no context was retrieved for this notebook)\n\nQuestion: What is Veratas?"
+    chunks = [c async for c in FakeLLM().stream([Message(role="user", content=prompt)])]
+    text = "".join(chunks).strip()
+    assert text == FakeLLM.REFUSAL
+
+
+def test_fake_llm_exposes_model_name() -> None:
+    assert FakeLLM().model == "fake-llm"
+
+
+def test_real_llm_exposes_configured_model_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config.settings, "LLM_MODEL", "some-model")
+    assert RealLLM().model == "some-model"
+
+
+# --- RealLLM transient-error classification --------------------------------------------
+
+
+def test_real_llm_classifies_rate_limit_and_server_errors_as_transient() -> None:
+    from app.platform.seams.real_llm import _classify_transient
+
+    class _FakeStatusError(Exception):
+        def __init__(self, status_code: int) -> None:
+            super().__init__("boom")
+            self.status_code = status_code
+
+    assert _classify_transient(_FakeStatusError(429)) is True
+    assert _classify_transient(_FakeStatusError(503)) is True
+    assert _classify_transient(_FakeStatusError(400)) is False
+    assert _classify_transient(ValueError("not a seam error")) is False
 
 
 # --- Protocol conformance -------------------------------------------------------------

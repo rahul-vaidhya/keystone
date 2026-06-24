@@ -13,6 +13,16 @@ class SeamNotConfigured(RuntimeError):
     """
 
 
+class SeamTransientError(RuntimeError):
+    """A seam call failed for a TRANSIENT reason (timeout, connection error, HTTP 5xx/429)
+    — the caller may retry. Raised by real adapters only, classifying their vendor-specific
+    exceptions into one vendor-agnostic signal so a retry loop above the seam (e.g. F40's
+    ``call_llm_with_retry``) never needs to know which vendor it's talking to (hard rule
+    #4). Anything NOT raised as this (a bug, a validation error, an auth failure) is not
+    transient and must propagate immediately, not be retried.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class OutlineNode:
     """One heading in a parsed document's outline, with structural offsets only.

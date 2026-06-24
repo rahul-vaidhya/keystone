@@ -46,7 +46,13 @@ from app.platform.seams.real_parser import (
     _is_negligible_text,
     _parse_markdown_outline,
 )
-from app.platform.seams.types import Message, OutlineNode, ParsedDoc, SeamNotConfigured
+from app.platform.seams.types import (
+    Message,
+    OutlineNode,
+    ParsedDoc,
+    SeamNotConfigured,
+    SeamTransientError,
+)
 
 __all__ = [
     "EMBED_DIM",
@@ -63,6 +69,7 @@ __all__ = [
     "RealLLM",
     "RealParser",
     "SeamNotConfigured",
+    "SeamTransientError",
     "_is_negligible_text",
     "_parse_markdown_outline",
     "get_embedder",
