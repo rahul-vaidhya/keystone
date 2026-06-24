@@ -17,7 +17,7 @@ from __future__ import annotations
 import uuid
 
 from app.documents.schemas import DocumentOut
-from app.ingestion.schemas import ChunkHit
+from app.ingestion.schemas import ChunkHit, ChunkRecord
 from app.ingestion.service import embedding as _embedding
 from app.ingestion.service import parsing as _parsing
 from app.ingestion.service import search as _search
@@ -70,6 +70,9 @@ class IngestionService:
         return await _search.search_chunks(
             ctx, query_vector=query_vector, document_ids=document_ids, model=model, k=k
         )
+
+    async def get_chunks(self, ctx: TenantContext, chunk_ids: list[uuid.UUID]) -> list[ChunkRecord]:
+        return await _search.get_chunks(ctx, chunk_ids)
 
 
 ingestion_service = IngestionService()

@@ -6,12 +6,16 @@ Uses the FAKE LLM/embedder seams exclusively — deterministic, no network, no A
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import AsyncIterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
+from app.chat.models import Conversation
+from app.chat.models import Message as MessageRow
 from app.documents.models import Document
 from app.ingestion.models import Chunk, Embedding
 from app.platform import config
@@ -49,6 +53,35 @@ class _BuggyLLM:
     async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
         raise ValueError("not a seam error")
         yield ""  # pragma: no cover - unreachable
+
+
+class _MultiCitingLLM:
+    """Cites every numbered block it was sent, e.g. ``[1] [2]`` — exercises
+    multi-citation resolution, which the default ``FakeLLM`` (always exactly ``[1]``)
+    cannot."""
+
+    @property
+    def model(self) -> str:
+        return "multi-citing"
+
+    async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
+        user_content = next((m.content for m in reversed(messages) if m.role == "user"), "")
+        markers = sorted({int(n) for n in re.findall(r"\[(\d+)\]", user_content)})
+        answer = "Answer citing " + " ".join(f"[{n}]" for n in markers)
+        for token in answer.split(" "):
+            yield token + " "
+
+
+class _OutOfRangeCitingLLM:
+    """Cites a marker that was never sent — exercises the drop-invalid-marker path."""
+
+    @property
+    def model(self) -> str:
+        return "out-of-range-citing"
+
+    async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
+        for token in "This cites a source that does not exist [99]".split(" "):
+            yield token + " "
 
 
 @pytest.fixture
@@ -153,10 +186,15 @@ async def test_ask_grounded_answer_cites_retrieved_context(
     assert "[1]" in body["answer"]
     assert body["answer"] != "I don't have that in the provided sources."
     assert len(body["citations"]) == 1
-    assert body["citations"][0]["index"] == 1
+    assert body["citations"][0]["marker"] == 1
     assert body["citations"][0]["document_id"] == str(doc_id)
+    assert body["citations"][0]["content"] == "alpha content about onboarding"
+    assert body["citations"][0]["char_start"] == 0
+    assert body["citations"][0]["char_end"] == len("alpha content about onboarding")
     assert body["model"] == "fake-llm"
     assert body["correlation_id"]
+    assert body["conversation_id"]
+    assert body["message_id"]
 
 
 async def test_ask_refuses_when_notebook_has_no_context(client: AsyncClient) -> None:
@@ -193,6 +231,10 @@ async def test_ask_cross_org_notebook_404s(client: AsyncClient) -> None:
 async def test_ask_multiple_chunks_numbered_citations_match_blocks(
     client: AsyncClient, session_factory
 ) -> None:
+    """Uses ``_MultiCitingLLM`` (not the default ``FakeLLM``, which only ever cites
+    ``[1]``) so this genuinely exercises resolving more than one marker — citations come
+    back ordered by marker, one per ``[n]`` the model actually cited, not "every block
+    retrieval happened to return"."""
     tokens = await _signup(client, "chat-multi@test.com", "Multi")
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
     org_id = await _org_id(client, headers)
@@ -207,12 +249,109 @@ async def test_ask_multiple_chunks_numbered_citations_match_blocks(
     notebook_id = created.json()["id"]
     await client.post(f"/notebooks/{notebook_id}/documents/{doc_id}", headers=headers)
 
+    app.dependency_overrides[get_llm] = lambda: _MultiCitingLLM()
     resp = await client.post(
         "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "q", "k": 8}
     )
     body = resp.json()
-    indices = [c["index"] for c in body["citations"]]
-    assert indices == list(range(1, len(indices) + 1))
+    markers = [c["marker"] for c in body["citations"]]
+    assert markers == [1, 2]
+
+
+async def test_ask_citation_provenance_round_trip_matches_stored_chunk(
+    client: AsyncClient, session_factory
+) -> None:
+    """The F41 behavioral gate: a resolved citation's char span/content must match the
+    SAME chunk row an independent direct DB read returns — not just whatever
+    ``ContextBlock`` self-reported during retrieval."""
+    tokens = await _signup(client, "chat-prov@test.com", "Prov")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "provenance content span"
+    )
+
+    resp = await client.post(
+        "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "provenance"}
+    )
+    body = resp.json()
+    citation = body["citations"][0]
+
+    async with session_factory() as session:
+        stored_chunk = (
+            await session.execute(select(Chunk).where(Chunk.id == uuid.UUID(citation["chunk_id"])))
+        ).scalar_one()
+
+    assert citation["document_id"] == str(stored_chunk.document_id)
+    assert citation["char_start"] == stored_chunk.char_start
+    assert citation["char_end"] == stored_chunk.char_end
+    assert citation["content"] == stored_chunk.content
+    span = stored_chunk.content[citation["char_start"] : citation["char_end"]]
+    assert span == citation["content"]
+
+
+async def test_ask_out_of_range_marker_is_dropped_not_fabricated(
+    client: AsyncClient, session_factory
+) -> None:
+    tokens = await _signup(client, "chat-oor@test.com", "OOR")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "only one chunk here"
+    )
+
+    app.dependency_overrides[get_llm] = lambda: _OutOfRangeCitingLLM()
+    resp = await client.post(
+        "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "q"}
+    )
+    body = resp.json()
+    assert "[99]" in body["answer"]  # the malformed reference survives in the answer text
+    assert body["citations"] == []  # but is never resolved into a fabricated citation
+
+
+async def test_ask_persists_conversation_and_message_with_citations(
+    client: AsyncClient, session_factory
+) -> None:
+    tokens = await _signup(client, "chat-persist@test.com", "Persist")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "persisted content"
+    )
+
+    resp = await client.post(
+        "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "persisted"}
+    )
+    body = resp.json()
+
+    async with session_factory() as session:
+        conversation = (
+            await session.execute(
+                select(Conversation).where(Conversation.id == uuid.UUID(body["conversation_id"]))
+            )
+        ).scalar_one()
+        assert conversation.org_id == org_id
+        assert str(conversation.knowledge_base_id) == notebook_id
+
+        messages = (
+            (
+                await session.execute(
+                    select(MessageRow)
+                    .where(MessageRow.conversation_id == conversation.id)
+                    .order_by(MessageRow.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert [m.role for m in messages] == ["user", "assistant"]
+    assert messages[0].content == "persisted"
+    assert messages[0].citations is None
+    assistant_message = messages[1]
+    assert str(assistant_message.id) == body["message_id"]
+    assert assistant_message.content == body["answer"]
+    assert assistant_message.citations == body["citations"]
 
 
 async def test_ask_llm_transient_failure_retries_then_returns_clean_503(

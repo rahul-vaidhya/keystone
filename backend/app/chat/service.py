@@ -1,17 +1,23 @@
-"""F40 grounded generation: notebook-scoped query -> F31 retrieval -> grounded prompt ->
-LLM seam -> answer + carried citation data. Owns no table (stateless; see schemas.py).
-Reaches retrieval ONLY through ``retrieval_service.search`` (module-boundary rule) — never
-reimplements scoping/embedding/kNN search.
+"""F40 grounded generation + F41 citations: notebook-scoped query -> F31 retrieval ->
+grounded prompt -> LLM seam -> answer -> citation resolution -> persisted
+conversation+message pair. Reaches retrieval ONLY through ``retrieval_service.search`` and
+chunk re-resolution ONLY through ``ingestion_service.get_chunks`` (module-boundary rule) —
+never reimplements scoping/embedding/kNN search, never imports ingestion's models/repository.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 import time
+import uuid
 from collections.abc import AsyncIterator
 
 from app.chat.exceptions import GenerationFailed
-from app.chat.schemas import ChatRequest, ChatResponse
+from app.chat.repository import ConversationRepository, MessageRepository
+from app.chat.schemas import ChatRequest, ChatResponse, ResolvedCitation
+from app.ingestion.service import ingestion_service
+from app.platform import db as db_mod
 from app.platform.config import settings
 from app.platform.context import TenantContext
 from app.platform.logging import get_logger
@@ -20,6 +26,8 @@ from app.retrieval.schemas import ContextBlock, RetrievalSearchRequest
 from app.retrieval.service import retrieval_service
 
 logger = get_logger(__name__)
+
+_CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
 
 _SYSTEM_PROMPT = (
     "You are a knowledge-base assistant. Answer ONLY using the numbered context blocks "
@@ -94,6 +102,73 @@ async def call_llm_with_retry(messages: list[Message], *, llm: LLM, correlation_
         return answer
 
 
+def parse_citation_markers(answer: str) -> list[int]:
+    """Pure function — extracts ``[n]`` markers from the model's answer, in order of
+    first appearance, deduplicated. Malformed brackets (non-digit content, e.g. ``[abc]``)
+    never match the digit-only regex, so they are simply absent from the result — not an
+    error case to special-case."""
+    seen: set[int] = set()
+    markers: list[int] = []
+    for match in _CITATION_MARKER_RE.finditer(answer):
+        n = int(match.group(1))
+        if n not in seen:
+            seen.add(n)
+            markers.append(n)
+    return markers
+
+
+async def resolve_citations(
+    ctx: TenantContext,
+    *,
+    answer: str,
+    blocks: list[ContextBlock],
+    correlation_id: str,
+) -> list[ResolvedCitation]:
+    """Maps the answer's ``[n]`` markers back to the ``ContextBlock``s actually sent in
+    the prompt, then rebuilds each resolved citation from a FRESH
+    ``ingestion_service.get_chunks`` read of the chunk row — the source-of-truth table —
+    rather than trusting ``ContextBlock``'s self-reported fields. A marker that doesn't
+    map to a block that was actually sent (out of range, or no blocks at all) is dropped
+    silently from the result (logged, never raised, never fabricated) — same for a marker
+    whose chunk no longer exists by the time of resolution."""
+    markers = parse_citation_markers(answer)
+    valid_markers = [m for m in markers if 1 <= m <= len(blocks)]
+    invalid_markers = [m for m in markers if m not in valid_markers]
+
+    block_by_marker = {m: blocks[m - 1] for m in valid_markers}
+    chunk_ids = [block.chunk_id for block in block_by_marker.values()]
+    records = await ingestion_service.get_chunks(ctx, chunk_ids)
+    record_by_chunk_id = {record.chunk_id: record for record in records}
+
+    resolved: list[ResolvedCitation] = []
+    dropped_missing_chunk: list[int] = []
+    for marker, block in block_by_marker.items():
+        record = record_by_chunk_id.get(block.chunk_id)
+        if record is None:
+            dropped_missing_chunk.append(marker)
+            continue
+        resolved.append(
+            ResolvedCitation(
+                marker=marker,
+                document_id=record.document_id,
+                chunk_id=record.chunk_id,
+                char_start=record.char_start,
+                char_end=record.char_end,
+                content=record.content,
+            )
+        )
+
+    logger.info(
+        "chat.citations_resolved",
+        correlation_id=correlation_id,
+        num_markers_parsed=len(markers),
+        num_resolved=len(resolved),
+        num_dropped_out_of_range=len(invalid_markers),
+        num_dropped_missing_chunk=len(dropped_missing_chunk),
+    )
+    return resolved
+
+
 class ChatService:
     async def ask(
         self,
@@ -120,15 +195,57 @@ class ChatService:
 
         messages = build_messages(req.query, retrieval_response.results)
         answer = await call_llm_with_retry(messages, llm=llm, correlation_id=correlation_id)
+        citations = await resolve_citations(
+            ctx,
+            answer=answer,
+            blocks=retrieval_response.results,
+            correlation_id=correlation_id,
+        )
+
+        conversation_id, message_id = await self._persist(
+            ctx, req=req, answer=answer, citations=citations
+        )
 
         return ChatResponse(
             correlation_id=correlation_id,
+            conversation_id=conversation_id,
+            message_id=message_id,
             notebook_id=req.notebook_id,
             query=req.query,
             answer=answer,
-            citations=retrieval_response.results,
+            citations=citations,
             model=llm.model,
         )
+
+    async def _persist(
+        self,
+        ctx: TenantContext,
+        *,
+        req: ChatRequest,
+        answer: str,
+        citations: list[ResolvedCitation],
+    ) -> tuple[uuid.UUID, uuid.UUID]:
+        """Every ``/chat/ask`` call creates a FRESH conversation and its user/assistant
+        message pair — no reuse across calls yet. Reuse only earns its place alongside
+        multi-turn history-threading (a future feature); building append-to-conversation
+        with no read side yet would be speculative storage (hard rule #8)."""
+        async with db_mod.sessionmaker() as session, session.begin():
+            conversation = await ConversationRepository(session, ctx).create(
+                knowledge_base_id=req.notebook_id, user_id=ctx.user_id
+            )
+            await MessageRepository(session, ctx).create(
+                conversation_id=conversation.id,
+                role="user",
+                content=req.query,
+                citations=None,
+            )
+            assistant_message = await MessageRepository(session, ctx).create(
+                conversation_id=conversation.id,
+                role="assistant",
+                content=answer,
+                citations=[c.model_dump(mode="json") for c in citations],
+            )
+        return conversation.id, assistant_message.id
 
 
 chat_service = ChatService()

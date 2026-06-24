@@ -23,3 +23,18 @@ class ChunkHit(BaseModel):
     distance: float
 
     model_config = {"from_attributes": True}
+
+
+class ChunkRecord(BaseModel):
+    """A chunk row fetched directly by id (no kNN, no distance) — the shape
+    ``ingestion.service.get_chunks`` returns for citation resolution (F41): the
+    source-of-truth row a caller re-confirms a citation's span against, rather than
+    trusting a copy made earlier in the request (e.g. ``retrieval``'s ``ContextBlock``)."""
+
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    content: str
+    char_start: int
+    char_end: int
+
+    model_config = {"from_attributes": True}

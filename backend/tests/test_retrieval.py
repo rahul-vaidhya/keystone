@@ -216,6 +216,35 @@ async def test_search_chunks_org_id_is_an_independent_backstop(
     assert [hit.chunk_id for hit in control_hits] == [chunk_id]
 
 
+async def test_get_chunks_org_id_is_an_independent_backstop(session_factory, tenant_engine) -> None:
+    """``ingestion_service.get_chunks`` (F41's citation-resolution entry point) is a
+    by-id fetch, not a scope-derived search — exactly where a missing org filter would
+    leak cross-tenant chunk content into another org's citations. Calls it directly with
+    org A's TenantContext but org B's chunk_id, mirroring
+    ``test_search_chunks_org_id_is_an_independent_backstop`` above."""
+    org_a, org_b = uuid.uuid4(), uuid.uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(Organization(id=org_a, name="OrgA"))
+        session.add(Organization(id=org_b, name="OrgB"))
+        await session.flush()
+        doc_b = uuid.uuid4()
+        session.add(Document(id=doc_b, org_id=org_b, title="B"))
+
+    chunk_id = await _seed_chunk_with_embedding(
+        session_factory, org_id=org_b, document_id=doc_b, ordinal=0, content="org b secret"
+    )
+
+    ctx_a = TenantContext(org_id=org_a)
+    records = await ingestion_service.get_chunks(ctx_a, [chunk_id])
+    assert records == []
+
+    # control: org B's own context CAN see it, proving the absence above is the filter,
+    # not e.g. a query bug that returns nothing for anyone.
+    ctx_b = TenantContext(org_id=org_b)
+    control_records = await ingestion_service.get_chunks(ctx_b, [chunk_id])
+    assert [record.chunk_id for record in control_records] == [chunk_id]
+
+
 async def test_active_model_filter_excludes_other_models(session_factory, tenant_engine) -> None:
     """Re-embedding the same chunk under a second model name (same upsert idempotency
     contract as F22) must not produce a duplicate/cross-model hit when searching under the

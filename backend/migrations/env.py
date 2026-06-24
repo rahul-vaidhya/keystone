@@ -16,8 +16,8 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Import every module's models here or autogenerate will miss their tables. Each import is
 # for its side effect only: registering that module's tables on Base.metadata so
-# target_metadata / autogenerate sees the whole schema. Uncomment each as its feature
-# lands — app.chat.models (F40–F42: conversations/messages/message_traces).
+# target_metadata / autogenerate sees the whole schema.
+import app.chat.models  # noqa: F401
 import app.documents.models  # noqa: F401
 import app.identity.models  # noqa: F401
 import app.ingestion.models  # noqa: F401

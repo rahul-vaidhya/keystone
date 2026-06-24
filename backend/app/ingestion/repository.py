@@ -56,6 +56,16 @@ class ChunkRepository(BaseRepository[Chunk]):
         )
         return list(await self._db.scalars(stmt))
 
+    async def get_by_ids(self, chunk_ids: list[uuid.UUID]) -> list[Chunk]:
+        """F41 citation resolution's input: re-fetches chunk rows by id, scoped to the
+        caller's org — an independent backstop (not merely relying on the caller having
+        already resolved these ids through an org-scoped notebook elsewhere), same
+        reasoning as ``EmbeddingRepository.search_chunks``'s own ``org_id`` filter."""
+        if not chunk_ids:
+            return []
+        stmt = select(Chunk).where(Chunk.org_id == self._ctx.org_id, Chunk.id.in_(chunk_ids))
+        return list(await self._db.scalars(stmt))
+
 
 class EmbeddingRepository(BaseRepository[Embedding]):
     model = Embedding
