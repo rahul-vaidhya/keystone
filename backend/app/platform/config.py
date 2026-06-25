@@ -75,7 +75,14 @@ class Settings(BaseSettings):
     LLM_MAX_RETRIES: int = 2
     LLM_RETRY_BACKOFF_BASE_SECONDS: float = 0.5
 
-    # --- Cloudflare R2 (S3-compatible object store) ---
+    # --- Object store (F05) ---
+    # r2 | local. Default r2 (production), mirroring the seam *_MODE fake-default pattern:
+    # local is opt-in, selects LocalDiskObjectStore so the full product (API + arq worker)
+    # runs with zero cloud creds. STORAGE_LOCAL_ROOT is only used when STORAGE_MODE=local.
+    STORAGE_MODE: str = "r2"
+    STORAGE_LOCAL_ROOT: str = "./.localstorage"
+
+    # --- Cloudflare R2 (S3-compatible object store; used when STORAGE_MODE=r2) ---
     R2_ENDPOINT_URL: str | None = None
     R2_ACCESS_KEY_ID: str | None = None
     R2_SECRET_ACCESS_KEY: str | None = None
