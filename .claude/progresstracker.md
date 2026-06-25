@@ -30,6 +30,26 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       + pytest on a real pgvector Testcontainers container, push/PR, `TESTCONTAINERS_RYUK_DISABLED=true`,
       seams on fakes. DoD: pipeline runs the full suite (verified green locally — 27 tests, ruff clean;
       GH Actions green on first push pending).
+- [x] F05 LocalDiskObjectStore (offline-first storage) (`8c44c75`, code; docs this session) —
+      **built out of order**, surfaced now to unblock the F51 manual gate (no R2 creds in this dev
+      env → real upload 500s in boto3; a `dependency_overrides` shim can't help because the arq
+      worker calls `get_object_store()` directly and never sees the override — its parse/structure
+      storage calls would still build real R2 and 500 mid-walk). New `LocalDiskObjectStore` in
+      `app/platform/storage.py`: a second implementation of the **existing** `ObjectStore` put/get
+      port (no `exists`/`delete` — Option A, those ride with the future orphan-sweep feature),
+      selected by new `STORAGE_MODE=r2|local` config (default `r2`, mirroring the seam `*_MODE`
+      fake-default — production unchanged) via `STORAGE_LOCAL_ROOT`. `get_object_store()` is the
+      single selection point, so the API process and the worker share one store and the same blobs.
+      Keys map 1:1 to nested dirs (byte-identical round-trip across parse→structure→embed); `get`
+      raises `FileNotFoundError` on a missing key — the real parity property, since the ingestion
+      callers catch `except Exception` broadly so local `FileNotFoundError` and boto3 `ClientError`
+      take the same not-found branch (verified at `parsing.py:67/78`, `structuring.py:217`).
+      Deliberately not production-durable (no multipart/concurrency/fsync — noted in code so it
+      isn't over-built). DoD met: `tests/test_storage.py` (round-trip, nested-key-dir creation,
+      get-raises-on-missing, factory selects local, default stays r2, unknown-mode rejected) — fully
+      offline, no creds, CI-offline invariant preserved. 135/135 suite green (1 real_parser
+      deselected), new files ruff clean (the 3 standing `scripts/inspect_document.py` findings are
+      pre-existing, untouched).
 
 ## Phase 1 — Identity + Documents
 - [x] F10 Auth + org creation + invites (`8940dd1`) — `app/identity/{router,service,repository,

@@ -4,6 +4,66 @@
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
 
+## F05 LocalDiskObjectStore — offline-first object storage (2026-06-25, this session, `8c44c75`)
+- **Why it exists, and why now (out of order, after Phase 1–5):** built solely to unblock the
+  F51 manual acceptance gate. This dev environment has no R2 creds, so a real
+  `POST /documents/upload` 500s inside `boto3.client(...)` construction (the recurring gap F40's
+  and F51's manual-validation entries already documented, previously worked around with a
+  throwaway, never-committed `dev_main.py` shim). This feature replaces that shim with a real,
+  tracked storage backend — storage impls should not diverge informally between dev and prod.
+- **The decisive finding that killed the shim approach (record this — it's the whole reason this
+  is a feature, not a `dependency_overrides` hack):** a FastAPI `app.dependency_overrides[
+  get_object_store]` shim CANNOT unblock the full upload→READY walk, because **the arq worker is a
+  separate process that calls `get_object_store()` directly** (`ingestion/tasks.py:45,63`) and never
+  sees FastAPI's dependency_overrides. A shim would fix the API-process upload `put` but the
+  worker's parse/structure `get`/`put` would still construct real `R2ObjectStore()` and 500
+  mid-walk. The blob round-trips across the two processes (parse writes the artifact, structuring
+  reads it back), so **both** must share the same store — which only a config-selected factory
+  (not a per-process DI override) gives you. **If a future "just override the store for local" idea
+  comes up, this is why it doesn't work across the worker boundary.**
+- **What was built:** `LocalDiskObjectStore` in `app/platform/storage.py` — a SECOND implementation
+  of the EXISTING `ObjectStore` put/get port (NOT a new abstraction). Selected by new
+  `STORAGE_MODE=r2|local` config (default `r2`, `STORAGE_LOCAL_ROOT=./.localstorage`), mirroring the
+  seam `*_MODE` fake-default exactly: production/CI unchanged, local is opt-in. `get_object_store()`
+  is the single selection point so API + worker resolve the same store. This **completes the DI'd
+  storage abstraction** (it had one hardcoded `R2ObjectStore` impl before) and **extends the
+  offline-first principle** (seam fakes default, suite runs offline) to storage, so the full product
+  runs with zero cloud creds.
+- **Port surface decision — Option A, put/get only, NO `exists`/`delete` (locked):** the real
+  `ObjectStore` port is exactly `put(key, data, content_type)` + `get(key) -> bytes`, and the only
+  callers (`documents/service`, `ingestion parsing`, `ingestion structuring`) call only those.
+  Adding `exists`/`delete` to the port + `R2ObjectStore` with zero production callers would be the
+  same speculative/unused-code pattern this project audits out every session (F20 cut `get_document`,
+  F21 cut `list_for_document`). **`delete` rides with the future orphan-sweep feature** (librarydocs
+  "Object storage") that actually needs it — don't add it here.
+- **Missing-key parity is REAL via the existing broad catches, not a new exception type:** local
+  `get` raises `FileNotFoundError` on an absent key (R2 raises boto3 `ClientError`). The parity that
+  matters is the resumable-parse "artifact exists? → skip vs parse fresh" decision
+  (`parsing.py:65-68`), which catches `except Exception` broadly — so `FileNotFoundError` and
+  `ClientError` take the SAME not-found branch. The other two `get` sites (`parsing.py:78`,
+  `structuring.py:217`) also catch `except Exception` → `fail_stage`. So no shared port-level
+  NotFound type was needed. **Gotcha for the future: if any of those catches is ever narrowed to a
+  store-specific exception, THAT silently breaks cross-store parity** — a local `FileNotFoundError`
+  would slip through unhandled where a `ClientError` was caught. The local store's docstring flags
+  this.
+- **Path-safety check (confirmed clean):** the only user-derived component of any storage key is the
+  file extension via `Path(filename).suffix` in `build_storage_key` — and `.suffix` returns only the
+  dotted suffix of the final path component, which can't contain `/` or `..`. Everything else in the
+  key is UUIDs + fixed literals. No traversal reaches the key, so no traversal hardening was built
+  (correct minimal scope, not a gap).
+- **Explicitly NOT production-durable** (noted in the class docstring so it isn't over-built): no
+  multipart, no concurrency hardening, no fsync — just correct put (mkdir-parents + write_bytes) /
+  get (read_bytes, raises on missing), via `asyncio.to_thread` around the blocking FS I/O (mirrors
+  R2's `to_thread` pattern, since the port is async). For local dev / future offline integration
+  runs only.
+- 7 new offline tests (`tests/test_storage.py`): round-trip write→read (byte-identical), nested-key
+  dir creation, get-raises-on-missing, factory selects local on `STORAGE_MODE=local`, default stays
+  `r2` (asserted via pure `Settings()`, NOT by constructing a boto3 client — an empty
+  `R2_ENDPOINT_URL` raises at construction, so instantiating R2 in a test is environment-fragile;
+  the r2 branch is verified instead by monkeypatching `R2ObjectStore` to a sentinel), unknown-mode
+  rejected with `ValueError`. 135/135 suite green (1 real_parser deselected), new files ruff clean
+  (the 3 standing `scripts/inspect_document.py` findings are pre-existing, untouched).
+
 ## F51 Repository UI: folder tree + document list + upload (2026-06-24, this session)
 - **Completes F51** — the feature F24 (auto-dispatch) and F25 (move/rename/delete) unblocked.
   Built via a fresh-recon architect pass in THIS session, not trusted from an unrecorded

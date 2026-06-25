@@ -21,6 +21,23 @@ one's DoD is met. Keep features small enough for one focused session.
   - *DoD:* the whole suite runs with fakes, no API keys.
 - **F04 CI:** test suite runs against an ephemeral Testcontainers Postgres on every push.
   - *DoD:* green pipeline on a trivial PR.
+- **F05 LocalDiskObjectStore (offline-first storage) — DONE (built out of order).** Surfaced now,
+  well after Phase 1–5, to unblock the F51 manual acceptance gate: this dev environment has no R2
+  creds, so a real upload 500s in boto3, and a FastAPI `dependency_overrides` shim can't fix it —
+  the arq worker calls `get_object_store()` directly and never sees the override, so its
+  parse/structure storage calls would still build real R2 and 500 mid-walk. Adds a filesystem
+  implementation of the existing `ObjectStore` put/get port (NOT a new abstraction — second impl of
+  an existing port; no `exists`/`delete`, those ride with the future orphan-sweep feature that needs
+  them) selected by `STORAGE_MODE=r2|local` (default `r2` — production unchanged, mirroring the seam
+  `*_MODE` fake-default). `get_object_store()` is the single selection point, so API + worker share
+  one store. Deliberately not production-durable (no multipart/concurrency/fsync). Completes the
+  DI'd storage abstraction (one hardcoded impl before) and extends the offline-first principle
+  (seam fakes default, tests run offline) to storage, so the full product runs with zero cloud creds.
+  - *DoD:* `LocalDiskObjectStore` satisfies the same put/get contract as R2 — an offline temp-dir test
+    proves write→read round-trip + nested-key-dir creation + **get-raises-on-missing** (the real
+    parity property: the ingestion callers catch `except Exception`, so local `FileNotFoundError` and
+    boto3 `ClientError` take the same not-found branch); factory selects on `STORAGE_MODE`, default
+    stays `r2`; CI-offline invariant preserved (no creds, no Docker). (`8c44c75`.)
 
 ## Phase 1 — Identity + Documents
 - **F10 Auth — DONE.** signup (creates org + owner), login (multi-org aware), refresh, logout,
