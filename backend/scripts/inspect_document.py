@@ -39,9 +39,7 @@ def _gap_overlap_report(sections, chunks) -> list[str]:
     parent_ids = {s.parent_section_id for s in sections if s.parent_section_id}
     leaves = [s for s in sections if s.id not in parent_ids]
     for section in leaves:
-        own = sorted(
-            (c for c in chunks if c.section_id == section.id), key=lambda c: c.char_start
-        )
+        own = sorted((c for c in chunks if c.section_id == section.id), key=lambda c: c.char_start)
         if not own:
             if section.char_end > section.char_start:
                 issues.append(f"[{section.path}] leaf has no chunks but a non-empty range")
