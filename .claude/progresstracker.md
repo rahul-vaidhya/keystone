@@ -333,7 +333,17 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       memory.md "F40 manual acceptance gate" for full detail, including the
       fake-embedder-can't-prove-the-positive-case finding and the one-OpenRouter-key-feeds-
       all-3-seams architectural note).
-- [ ] F4x SSE streaming for chat (deferred out of F40 — see buildplan.md)
+- [x] F4x SSE streaming for chat (`e0d67df`) — new `POST /chat/stream` endpoint alongside
+      the existing `POST /chat/ask` (JSON endpoint preserved, all 99+ tests untouched).
+      New `ChatService.stream_ask` async generator in `service.py`: yields
+      `{"type":"token","content":"..."}` events as the LLM produces output, then a final
+      `{"type":"done",...}` event carrying the persisted `conversation_id`/`message_id`/
+      `citations` (identical persistence logic to `ask`). No mid-stream retry — once tokens
+      are flowing the client has partial output; errors after first token yield
+      `{"type":"error"}` via a broad `except` in the router's `event_generator`. The
+      F40-era prediction ("F4x SSE switch is router-only") was confirmed: `generate_answer`
+      and `call_llm_with_retry` were untouched; only a new `stream_ask` method was added
+      to `ChatService`, and the router adds a new endpoint to iterate and yield SSE lines.
 - [x] F41 Citations (offset mapping + persisted) — new `app/chat/models.py`/`repository.py`
       (`Conversation`/`Message`, migration `0009_conversations_messages.py`). Citations are
       now derived from the model's `[n]` markers actually present in the answer
@@ -385,13 +395,26 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       3 explicitly-flagged points (proxy scoping, no-optimistic-updates, auth survives the
       FormData fix); 2 minor findings fixed (StatusBadge unsafe type cast; uiregistry.md
       updated via Imprint). See memory.md for full detail.
-- [ ] F52 Notebook + chat UI (streaming + citations)
+- [x] F52 Notebook + chat UI (`e0d67df`) — four new components: `NotebookList`
+      (card list, inline create with Enter key, delete with confirm), `NotebookPage`
+      (three-column layout: w-72 docs panel + `ChatPanel` (flex-1) + `CitationPanel`
+      (w-80, conditional)), `ChatPanel` (streamed bubbles, typing indicator ●●●, inline
+      `[n]` citation markers as buttons), `CitationPanel` (source span viewer with
+      `border-l-2 border-accent` quote style). New `notebooksApi` and `chatApi` namespaces
+      added to `lib/api.ts`. `chatApi.streamAsk` uses `fetch`+`ReadableStream`+`TextDecoder`
+      (NOT `EventSource`, which only supports GET); returns cleanup `() => void` stored in
+      `abortRef` for unmount/re-submit cancellation. `accumulated` local variable pattern
+      captures tokens without stale closure. `citations?: ResolvedCitation[]` sentinel:
+      `undefined` = streaming, defined (even `[]`) = final. Proxy entries for `/notebooks`
+      and `/chat` added to `vite.config.ts`. 15 new Vitest+RTL tests (30/30 total); `tsc -b`
+      + `vite build` clean. No separate manual gate run (requires real backend + Docker);
+      component logic tested via mocked `chatApi.streamAsk`.
 
 ## Phase 6 — Security Hardening (after MVP validated, before real customer data)
 - [ ] F60 Enforced RLS (RLS_ENABLED on; app_user/migrator split; FORCE RLS; teeth-having isolation test)
 
 ---
-**Demoable milestone reached:** [ ] end of Phase 4
+**Demoable milestone reached:** [x] end of Phase 4 (`e0d67df` — F4x SSE + F52 Notebook/Chat UI complete)
 
 ## Current status
 Phase: **0 COMPLETE** (F00–F04, F03+F04 = c35ee11). **Phase 1 (Identity + Documents) COMPLETE**
@@ -464,7 +487,11 @@ path server-side); document list polls only while non-terminal. First-ever front
 runner introduced (Vitest+RTL) plus a new independent `frontend` CI job. Manually verified
 end-to-end against the real backend via Playwright. See memory.md "F51 Repository UI" for
 full detail, including a real `apiFetch` multipart-Content-Type bug found and fixed.
-Next action: **F4x SSE streaming for chat, or F42 admin debug bundle, or F52 notebook+chat
-UI** — ask the user which to resume.
+**F4x SSE streaming + F52 Notebook/Chat UI DONE — this session (`e0d67df`).** Backend:
+new `POST /chat/stream` SSE endpoint + `ChatService.stream_ask` async generator, keeping
+`POST /chat/ask` JSON endpoint intact. Frontend: `notebooksApi` + `chatApi` namespaces,
+four new components (NotebookList/NotebookPage/ChatPanel/CitationPanel), Vitest+RTL tests
+30/30 green, `tsc -b` + `vite build` clean.
+Next action: **F42 admin debug bundle, or F60 RLS hardening** — ask the user which to resume.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".
