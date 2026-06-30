@@ -59,7 +59,7 @@ export function Sidebar() {
       <nav className="flex-1 px-2 space-y-1">
         <NavItem to="/app" label="Home" />
         <NavItem to="/app/repository" label="Repository" />
-        <NavItem to="" label="New chat" disabled />
+        <NavItem to="/app/notebooks" label="Notebooks" />
         <NavItem to="" label="Search" disabled />
       </nav>
 

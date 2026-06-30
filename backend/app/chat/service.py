@@ -247,5 +247,58 @@ class ChatService:
             )
         return conversation.id, assistant_message.id
 
+    async def stream_ask(
+        self,
+        ctx: TenantContext,
+        req: ChatRequest,
+        *,
+        embedder: Embedder,
+        llm: LLM,
+        correlation_id: str,
+    ) -> AsyncIterator[dict]:
+        """SSE streaming variant of ``ask``: yields ``{"type":"token","content":"..."}``
+        events as the LLM generates output, then a final ``{"type":"done",...}`` event
+        carrying the persisted conversation/citations. No mid-stream retry — once tokens
+        are flowing the client has partial output and a restart would confuse it."""
+        retrieval_response = await retrieval_service.search(
+            ctx,
+            RetrievalSearchRequest(notebook_id=req.notebook_id, query=req.query, k=req.k),
+            embedder=embedder,
+        )
+        logger.info(
+            "chat.stream_context_assembled",
+            correlation_id=correlation_id,
+            notebook_id=str(req.notebook_id),
+            num_blocks=len(retrieval_response.results),
+        )
+        messages = build_messages(req.query, retrieval_response.results)
+
+        tokens: list[str] = []
+        async for token in generate_answer(messages, llm=llm):
+            tokens.append(token)
+            yield {"type": "token", "content": token}
+
+        answer = "".join(tokens).strip()
+        citations = await resolve_citations(
+            ctx,
+            answer=answer,
+            blocks=retrieval_response.results,
+            correlation_id=correlation_id,
+        )
+        conversation_id, message_id = await self._persist(
+            ctx, req=req, answer=answer, citations=citations
+        )
+        yield {
+            "type": "done",
+            "correlation_id": correlation_id,
+            "conversation_id": str(conversation_id),
+            "message_id": str(message_id),
+            "notebook_id": str(req.notebook_id),
+            "query": req.query,
+            "answer": answer,
+            "citations": [c.model_dump(mode="json") for c in citations],
+            "model": llm.model,
+        }
+
 
 chat_service = ChatService()

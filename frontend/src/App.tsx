@@ -4,6 +4,8 @@ import { AdminRoute, ProtectedRoute } from "./components/ProtectedRoute";
 import { AppShell } from "./features/app/AppShell";
 import { HomePage } from "./features/app/HomePage";
 import { DocumentsPage } from "./features/documents/DocumentsPage";
+import { NotebookList } from "./features/notebooks/NotebookList";
+import { NotebookPage } from "./features/notebooks/NotebookPage";
 import { LoginPage } from "./features/auth/LoginPage";
 import { SignupPage } from "./features/auth/SignupPage";
 import { UsersPage } from "./features/users/UsersPage";
@@ -24,6 +26,8 @@ export default function App() {
               <Route path="/app" element={<AppShell />}>
                 <Route index element={<HomePage />} />
                 <Route path="repository" element={<DocumentsPage />} />
+                <Route path="notebooks" element={<NotebookList />} />
+                <Route path="notebooks/:notebookId" element={<NotebookPage />} />
                 <Route element={<AdminRoute />}>
                   <Route path="users" element={<UsersPage />} />
                 </Route>
