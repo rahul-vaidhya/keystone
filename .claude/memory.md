@@ -6,6 +6,36 @@
 
 ---
 
+## MVC refactor cross-verification + commit (2026-07-01, this session)
+
+**The MVC refactor is now COMMITTED (`6ff4be7`) and independently re-verified.** Before
+committing, ran a swarm of 7 Haiku agents (Opus as orchestrator; all reads/writes done by
+agents) auditing every slice against `docs/mvc-refactor-prompt.md`: models/schemas,
+controllers/platform/entrypoints, services/repositories + both boundary rules,
+exceptions/tasks/migrations/scripts, a repo-wide stale-import sweep, the frontend
+model/controller/view split, and a docs self-audit. **Codebase verdict: fully correct
+layer-first MVC — zero code issues.** Confirmed: no SQL outside repositories, cross-domain
+calls via services only, the ingestion→documents one-way dep + controller-composed pipeline
+circular-guard intact, universal `org_id` scoping via `BaseRepository._scoped()`, all 13
+tables register, migration history untouched, no code-breaking stale references anywhere,
+all old domain dirs + `src/features/` deleted.
+
+- **Two doc-staleness fixes made** (only findings): (1) added a historical-path disclaimer
+  block at the top of `progresstracker.md` (it lacked memory.md's disclaimer despite stale
+  domain-first paths in its completed-feature entries) pointing to the old→new mapping table
+  here; (2) corrected `architecture.md` `_parse_markdown_outline` reference from `seams.py`
+  to `seams/real_parser.py` (seams is now a package). All other docs (codestandards,
+  librarydocs, orchestrator, root CLAUDE.md, the refactor prompt itself) were already clean.
+- **Green at commit time:** 135 backend tests vs real Testcontainers pgvector (1 real_parser
+  deselected), 30/30 frontend vitest, `tsc -b`/`vite build` clean, ruff check clean except
+  the 3 standing `scripts/inspect_document.py` findings, ruff format clean.
+- **Gitignore hardened:** `.localstorage/` (LocalDiskObjectStore dev blobs), `.playwright-mcp/`,
+  and `/pdf/` (5MB copyrighted `kech104.pdf` — manual-validation asset, never a fixture) are
+  now ignored, NOT committed. `docs/` (mvc-refactor-prompt.md + er-diagram.md) IS committed as
+  the in-repo historical record. Commit is on `main` (consistent with the whole project history).
+
+---
+
 ## MVC layout refactor (2026-07-01, this session)
 
 **Pure structural refactor — zero logic/schema/API change.** Backend went from

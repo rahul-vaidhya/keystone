@@ -324,7 +324,7 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       steps) + the `review` skill — applies to F40 onward. Reference module: `knowledge/`
       and `retrieval/` (small modules, no padding, already correct).
 
-- [x] **MVC layout refactor (2026-07-01, uncommitted)** — backend restructured from
+- [x] **MVC layout refactor (2026-07-01, `6ff4be7`)** — backend restructured from
       domain-first (`app/identity/`, `app/documents/`, `app/ingestion/`, `app/knowledge/`,
       `app/retrieval/`, `app/chat/`) to layer-first (`app/models/`, `app/schemas/`,
       `app/controllers/`, `app/services/`, `app/repositories/`, `app/exceptions/`,
@@ -342,7 +342,10 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       against real Testcontainers Postgres — 135 passed, 1 skipped (opt-in `real_parser`
       test needing a live API key, unrelated to Docker), 0 failures. Confirms the
       refactor is a true zero-logic-change. See memory.md "MVC layout refactor" for
-      the full old→new path mapping table.
+      the full old→new path mapping table. **Committed `6ff4be7` (2026-07-01)** after
+      an independent 7-Haiku-agent re-audit against `docs/mvc-refactor-prompt.md` (all
+      layers, both module-boundary rules, stale-import sweep, frontend split, docs) came
+      back clean; re-ran green at commit time (135 backend / 30 frontend, ruff clean).
 
 ## Phase 4 — Chat
 - [x] F40 Grounded generation (`1572fa8`) — new `app/chat` module (`schemas.py`/
@@ -533,7 +536,7 @@ new `POST /chat/stream` SSE endpoint + `ChatService.stream_ask` async generator,
 `POST /chat/ask` JSON endpoint intact. Frontend: `notebooksApi` + `chatApi` namespaces,
 four new components (NotebookList/NotebookPage/ChatPanel/CitationPanel), Vitest+RTL tests
 30/30 green, `tsc -b` + `vite build` clean.
-**MVC layout refactor DONE — this session (2026-07-01, uncommitted).** Backend moved
+**MVC layout refactor DONE + COMMITTED `6ff4be7` (2026-07-01).** Backend moved
 domain-first → layer-first (`app/models/`,`schemas/`,`controllers/`,`services/`,
 `repositories/`,`exceptions/`,`tasks/`); frontend moved `features/` → `views/` +
 split `lib/api.ts` into `models/`+`controllers/`. Zero logic change. Old dirs deleted.
@@ -543,6 +546,7 @@ API key), 0 failures. `ruff check .` re-confirmed unchanged (3 pre-existing find
 only). MVC refactor now fully verified end to end. See memory.md "MVC layout refactor"
 for the path-mapping table.
 Next action: **F42 admin debug bundle, or F60 RLS hardening** — ask the user which to resume.
-(Also: commit the MVC refactor — still uncommitted, 97 tracked-file changes in the working tree.)
+(MVC refactor committed `6ff4be7`; working tree clean. Verified clean by a 7-Haiku-agent
+cross-audit before commit — see memory.md "MVC refactor cross-verification".)
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".
