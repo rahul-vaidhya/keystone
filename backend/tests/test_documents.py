@@ -7,7 +7,7 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.documents.models import Document
+from app.models.documents import Document
 from app.platform.queue import get_job_queue
 from app.platform.storage import get_object_store
 from main import app

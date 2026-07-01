@@ -16,35 +16,66 @@ run as **backfill jobs over already-ingested data** — never a re-parse, never 
 
 ---
 
-## Folder map (modular monolith)
+## Folder map (layer-first MVC — locked 2026-07-01 refactor)
+
+**Backend is layer-first, not domain-first**: code is grouped by role (model / schema /
+controller / service / repository) and each layer package holds one file per **domain**
+(auth, documents, ingestion, knowledge, retrieval, chat). A "module" in the boundary rules
+below now means a domain **name**, not a folder — its logic is spread horizontally across
+the layer packages under that same file stem.
 
 ```
 backend/
   app/
-    platform/        # config, db session, TenantContext, logging, the 3 seam Protocols + fakes
-    identity/        # orgs, users, auth
-    documents/       # folders, tags, documents, upload, dedupe, object storage
-    ingestion/       # staged pipeline + arq tasks
-    knowledge/       # notebooks (the reference join)
-    retrieval/       # query embed, search, context assembly (strategy behind flags)
-    chat/            # conversations, grounded generation, citation mapping, debug bundle
+    platform/          # config, db session, TenantContext, logging, storage, queue,
+                        #   the 3 seam Protocols + fakes (platform/seams/)
+    models/             # ORM models, one file per domain: identity.py, documents.py,
+                        #   ingestion.py, knowledge.py, chat.py  (retrieval owns no table)
+    schemas/            # Pydantic request/response types, one file per domain: auth.py,
+                        #   documents.py, ingestion.py, knowledge.py, retrieval.py, chat.py
+    controllers/        # HTTP routers (thin), one file per domain: auth.py, documents.py,
+                        #   ingestion.py, notebooks.py (= knowledge domain), retrieval.py,
+                        #   chat.py, + deps.py (current_user/get_ctx/require_admin)
+    services/            # use cases / business logic, one file OR subpackage per domain:
+                        #   auth.py, documents/ (subpackage), ingestion/ (subpackage),
+                        #   knowledge.py, retrieval.py, chat.py
+    repositories/        # ALL SQL, one file OR subpackage per domain: auth.py,
+                        #   documents/ (subpackage), ingestion.py, knowledge.py, chat.py
+    exceptions/          # domain exception hierarchies: auth.py, documents.py,
+                        #   knowledge.py, chat.py
+    tasks/               # arq task functions: ingestion.py
   tests/
-  migrations/        # alembic
-  worker.py          # arq entrypoint
-  main.py            # FastAPI entrypoint
+  migrations/           # alembic
+  worker.py             # arq entrypoint
+  main.py               # FastAPI entrypoint
 frontend/
-  src/{features,components,lib(api client),...}
-context/             # these files
+  src/{views,components,lib(api client),models,controllers,...}
+context/                # these files
 ```
 
-Each backend module has the SAME shape:
-`router.py` (HTTP only) · `service.py` (use cases / logic) · `repository.py` (ALL SQL) ·
-`schemas.py` (Pydantic + domain types) · `tasks.py` (its background work).
+**Domain-naming note (read the file name, not the folder, to find a domain's home):**
+the "identity" domain (orgs/users/auth) is named `auth` in `controllers/`, `services/`,
+`repositories/`, `schemas/`, `exceptions/` but keeps `models/identity.py` (its ORM file
+never got renamed to `auth.py` — this is deliberate, carried verbatim from the refactor
+spec). The "knowledge" domain (notebooks) is named `notebooks` only in
+`controllers/notebooks.py` (matches the public "Notebook" API terminology); every other
+layer keeps the internal `knowledge` name (`schemas/knowledge.py`, `services/knowledge.py`,
+`repositories/knowledge.py`, `exceptions/knowledge.py`, `models/knowledge.py`) — locked
+since F30, unchanged by the MVC refactor. Full old-path → new-path table: memory.md "MVC
+layout refactor".
+
+Each domain's logic is spread across:
+`app/controllers/<domain>.py` (HTTP only) · `app/services/<domain>.py` or
+`services/<domain>/` (use cases / logic) · `app/repositories/<domain>.py` or
+`repositories/<domain>/` (ALL SQL) · `app/schemas/<domain>.py` (Pydantic + domain types) ·
+`app/models/<domain>.py` (ORM) · `app/tasks/<domain>.py` (background work — only where a
+domain has one, currently ingestion only).
 
 ### Package-layout convention (locked, F00–F31 structural refactor)
 
-Each of those files starts flat. A flat file is **promoted to a subpackage of the same
-name** (e.g. `service.py` → `service/__init__.py` + submodules) only when **both** hold:
+Each domain's layer file starts flat. A flat file is **promoted to a subpackage of the same
+name** (e.g. `services/documents.py` → `services/documents/__init__.py` + submodules) only
+when **both** hold:
 
 1. It exceeds roughly **200 lines**, **and**
 2. It contains **2+ genuinely independent responsibility groups** — different tables,
@@ -53,49 +84,65 @@ name** (e.g. `service.py` → `service/__init__.py` + submodules) only when **bo
 
 A file that's long but is one class/one concern with many small methods is **not**
 promoted. A file with multiple small classes but no real logic (e.g. several plain ORM
-declarations in one `models.py`) is **not** promoted either — declaring data classes
-together is normal, not drift. **Do not pad**: a module that legitimately owns no table
-keeps no empty `models.py`/`repository.py` (`retrieval/` is correct as-is). Over-splitting
-to satisfy "one folder per module" is itself a violation of this convention, not a
-stricter reading of it.
+declarations in one `models/<domain>.py`) is **not** promoted either — declaring data
+classes together is normal, not drift. **Do not pad**: a domain that legitimately owns no
+table keeps no `models/retrieval.py`/`repositories/retrieval.py` file at all (`retrieval`
+is correct as-is — no models/repository file, `schemas/retrieval.py` and
+`services/retrieval.py` only). Over-splitting to satisfy "one file per domain, always" is
+itself a violation of this convention, not a stricter reading of it.
 
-When a `service.py`/`repository.py` is split, the original public surface (the module-level
-class/singleton/function names other modules and tests import) **must resolve at the exact
-same import path afterward**, via the subpackage's `__init__.py` re-exporting everything a
-real call site uses today — including any private (underscore-prefixed) names a test file
-imports directly (debug-only scripts are not load-bearing the same way: fix their one-line
-import instead of promoting a deliberately-private helper to the package's public API).
-Composition inside a split `service.py` is **always delegation to free functions taking
-explicit arguments** (the same shape `ingestion/service/` and `documents/service/` use) —
-**never mixins**. If a clean free-function split would need many self-like positional args
-threaded through every call, that's evidence the responsibilities aren't actually
-separable; leave the file flat rather than force a bad split.
+When `services/<domain>.py`/`repositories/<domain>.py` is split, the original public
+surface (the module-level class/singleton/function names other modules and tests import)
+**must resolve at the exact same import path afterward**, via the subpackage's
+`__init__.py` re-exporting everything a real call site uses today — including any private
+(underscore-prefixed) names a test file imports directly (debug-only scripts are not
+load-bearing the same way: fix their one-line import instead of promoting a
+deliberately-private helper to the package's public API). Composition inside a split
+`services/<domain>/` is **always delegation to free functions taking explicit arguments**
+(the same shape `services/ingestion/` and `services/documents/` use) — **never mixins**.
+If a clean free-function split would need many self-like positional args threaded through
+every call, that's evidence the responsibilities aren't actually separable; leave the file
+flat rather than force a bad split.
 
 **The ORM registration rule:** every ORM model class must still be imported, by name, at
-metadata-assembly time (today: `migrations/env.py`'s side-effect imports of each module's
-`models.py`). If a `models.py` is ever promoted to a `models/` package, its
-`models/__init__.py` **must import every model class** (not just re-export the ones other
-modules happen to use) — Alembic only sees a table if its class has been imported
-somewhere on the path to `Base.metadata`; a model class that's merely defined in an
-unimported submodule silently vanishes from autogenerate/migrations with no error. No
-`models.py` has been promoted yet (none crossed the 200-line/independent-responsibility
-threshold as of F31) — this rule is recorded now, before it's needed, so the first module
-that does cross it doesn't relearn this the hard way.
+metadata-assembly time (today: `migrations/env.py`'s side-effect imports of each domain's
+`models/<domain>.py`). If a `models/<domain>.py` is ever promoted to a `models/<domain>/`
+subpackage, its `__init__.py` **must import every model class** (not just re-export the
+ones other modules happen to use) — Alembic only sees a table if its class has been
+imported somewhere on the path to `Base.metadata`; a model class that's merely defined in
+an unimported submodule silently vanishes from autogenerate/migrations with no error. No
+`models/<domain>.py` has been promoted yet (none crossed the 200-line/independent-
+responsibility threshold as of F41) — this rule is recorded now, before it's needed, so the
+first domain that does cross it doesn't relearn this the hard way.
 
-**Reference module:** `knowledge/` and `retrieval/` — every file is one cohesive concern at
-a sane size, and `retrieval/` correctly has no `models.py`/`repository.py` since it owns no
-table. Hold new modules to this, not to "more files is more structured."
+**Reference domain:** `knowledge` and `retrieval` — every layer file is one cohesive
+concern at a sane size, and `retrieval` correctly has no `models/retrieval.py`/
+`repositories/retrieval.py` since it owns no table. Hold new domains to this, not to "more
+files is more structured."
 
 This convention was applied retroactively to F00–F31 as a pure structural refactor (zero
-logic/behavior/schema/API change): `platform/seams.py` → `platform/seams/`,
-`ingestion/service.py` → `ingestion/service/`, `documents/repository.py` →
-`documents/repository/`, `documents/service.py` → `documents/service/`. See memory.md for
-the file-by-file map. Applies to every feature from F40 onward.
+logic/behavior/schema/API change), back when the codebase was still domain-first:
+`platform/seams.py` → `platform/seams/`, `ingestion/service.py` → `ingestion/service/`,
+`documents/repository.py` → `documents/repository/`, `documents/service.py` →
+`documents/service/`. The **2026-07-01 MVC layout refactor** then relocated every file by
+layer (domain-first `app/<domain>/service.py` → layer-first `app/services/<domain>.py`,
+same for schemas/controllers/repositories/exceptions/models) with **zero further
+logic/behavior/schema/API change** — the two subpackages that had already been split
+(`ingestion/service/`, `documents/repository/`, `documents/service/`) kept their split
+shape, just moved wholesale to `services/ingestion/`, `repositories/documents/`,
+`services/documents/`. See memory.md "MVC layout refactor" for the full old→new path
+table. This convention applies to every feature from F40 onward, under the new layer-first
+paths.
 
 ## Boundaries (HARD RULES)
-1. A module calls another module **only through its `service`** — never its repository or tables.
-   Example: `chat` asks `retrieval.service` for context; it never touches `chunks` directly.
-2. **No SQL outside `repository.py`.** **No business logic in `router.py`.** Routers validate + call services.
+1. A module calls another module **only through its `service`** — never its repository or
+   tables. Under the layer-first layout this means: a domain's `services/<domain>.py`
+   imports another domain's `services/<other>.py`, never `repositories/<other>.py` or its
+   ORM models. Example: `app/services/chat.py` asks `app/services/retrieval.py` for
+   context; it never imports `app/repositories/ingestion.py` (which owns `chunks`/
+   `embeddings`) directly.
+2. **No SQL outside `repositories/<domain>.py`.** **No business logic in
+   `controllers/<domain>.py`.** Controllers validate + call services.
 3. **Every query is scoped by `org_id`.** A `TenantContext` carries it; the base repository applies
    the app-level `WHERE org_id = :org` filter on **every** query, **always** (independent of any flag).
    Postgres **RLS** is the backstop — but it is **deferred to Phase 6 (Security Hardening), gated by
@@ -174,7 +221,7 @@ each seam's mode is selected, not how many seams exist or their Protocol shapes.
   future adapter branch, not built in F23.
 - **Heading structure is recovered from the provider's markdown output, never fabricated.**
   Both engines return markdown; `#`/`##`/`###` lines are parsed into the `OutlineNode` tree
-  (`_parse_markdown_outline` in `seams.py`), with each heading's range extended to the next
+  (`_parse_markdown_outline` in `seams/real_parser.py`), with each heading's range extended to the next
   heading at the same-or-shallower level (not just the next heading in the flat list), so a
   parent's range still covers its children. If a document's output has no markdown headings,
   the outline is `[]` and F21's degenerate-outline contract (one root section) takes over —
@@ -201,9 +248,11 @@ each seam's mode is selected, not how many seams exist or their Protocol shapes.
 
 ## Ingestion pipeline (staged, idempotent, resumable)
 
-**Authoritative status enum** lives in `documents/status.py` and is referenced everywhere
-(router responses, repository writes, worker transitions, UI color mapping). There is exactly
-one source of truth — do not invent ad-hoc states (there is no `parsed` state):
+**Authoritative status enum** (`DocumentStatus`) lives in `app/models/documents.py` (merged
+in during the MVC refactor — it was `documents/status.py` pre-refactor) and is referenced
+everywhere (controller responses, repository writes, worker transitions, UI color mapping).
+There is exactly one source of truth — do not invent ad-hoc states (there is no `parsed`
+state):
 ```
 UPLOADED → PARSING → STRUCTURING → EMBEDDING → READY        (+ FAILED, with failed_stage)
 ```

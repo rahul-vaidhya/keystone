@@ -9,7 +9,8 @@ web-search the current official docs (versions move). Focus here is "the way we 
   async def get_ctx(user = Depends(current_user)) -> TenantContext:
       return TenantContext(org_id=user.org_id, user_id=user.id, role=user.role)
   ```
-- Routers are thin (see codestandards). One global exception handler maps domain errors → HTTP.
+- Controllers (`app/controllers/<domain>.py`) are thin (see codestandards). One global
+  exception handler maps domain errors → HTTP.
 - OpenAPI at `/docs` is free; the SPA uses a hand-written typed fetch wrapper (no SDK codegen).
 
 ## SQLAlchemy (async) + Alembic
@@ -72,15 +73,17 @@ web-search the current official docs (versions move). Focus here is "the way we 
     a full `k`. Filtered-recall tuning is flagged as a **V2 revisit**.
 
 ## arq (background workers)
-- `worker.py` defines the task functions; enqueue from a service. Tasks are thin and call the
-  module's `service`. Pass the `request_id` and `org_id` in the job payload for tracing + scoping.
+- Task functions live in `app/tasks/<domain>.py`; `worker.py` only imports and registers
+  them in `WorkerSettings.functions`. Enqueue from a service. Tasks are thin and call the
+  domain's `services/<domain>.py`. Pass the `request_id` and `org_id` in the job payload for
+  tracing + scoping.
 - **A worker opens its DB work via `tenant_session(org_id)` using the `org_id` from the job payload**
   — the same helper the request path uses — so background writes are tenant-scoped exactly like
   request writes (no HTTP `TenantContext` required).
 - Ingestion stages are separate task functions chained on success; each is idempotent so retries
   are safe and a `FAILED` doc resumes from its last good stage.
 
-## The 3 seams (our wrappers, in `platform/`)
+## The 3 seams (our wrappers, in `app/platform/seams/`)
 - Real adapters wrap the vendor APIs; **fakes** are the default in tests/local:
   - `FakeEmbedder`: deterministic vector from `sha256(text)` → reproducible retrieval assertions.
   - `FakeLLM`: streams back a templated answer citing the provided context → tests citation mapping.
@@ -106,7 +109,8 @@ web-search the current official docs (versions move). Focus here is "the way we 
 
 ## Parser / OCR vendor
 - **Resolved F23: OpenRouter's file-parser plugin**, called directly over HTTP from inside
-  `RealParser` (`platform/seams.py`) — never hand-rolled OCR, never leaks outside the seam.
+  `RealParser` (`app/platform/seams/real_parser.py`) — never hand-rolled OCR, never leaks
+  outside the seam.
 - Send the PDF as a base64 `file` content part on a `/chat/completions` call, with
   `plugins: [{"id": "file-parser", "pdf": {"engine": ...}}]`. The model/generated text is
   incidental (`max_tokens=1`) — only `choices[0].message.annotations[].file.content[]`

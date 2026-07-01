@@ -1,14 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AdminRoute, ProtectedRoute } from "./components/ProtectedRoute";
-import { AppShell } from "./features/app/AppShell";
-import { HomePage } from "./features/app/HomePage";
-import { DocumentsPage } from "./features/documents/DocumentsPage";
-import { NotebookList } from "./features/notebooks/NotebookList";
-import { NotebookPage } from "./features/notebooks/NotebookPage";
-import { LoginPage } from "./features/auth/LoginPage";
-import { SignupPage } from "./features/auth/SignupPage";
-import { UsersPage } from "./features/users/UsersPage";
+import { AppShell } from "./views/app/AppShell";
+import { HomePage } from "./views/app/HomePage";
+import { DocumentsPage } from "./views/documents/DocumentsPage";
+import { NotebookList } from "./views/notebooks/NotebookList";
+import { NotebookPage } from "./views/notebooks/NotebookPage";
+import { LoginPage } from "./views/auth/LoginPage";
+import { SignupPage } from "./views/auth/SignupPage";
+import { UsersPage } from "./views/users/UsersPage";
 import { AuthProvider } from "./lib/auth";
 
 const queryClient = new QueryClient();

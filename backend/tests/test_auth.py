@@ -7,9 +7,9 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.identity.constants import ROLE_MEMBER, ROLE_OWNER
-from app.identity.models import Organization, User
-from app.identity.passwords import hash_password
+from app.models.identity import Organization, User
+from app.platform.constants import ROLE_MEMBER, ROLE_OWNER
+from app.platform.passwords import hash_password
 from main import app
 
 

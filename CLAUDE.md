@@ -2,7 +2,8 @@
 
 Private, source-grounded company knowledge base (NotebookLM-style), multi-tenant.
 Stack: **FastAPI + async workers + Postgres/pgvector** backend, **Vite React** SPA.
-Architecture: **modular monolith**. Full detail in `.claude/context/architecture.md`.
+Architecture: **layer-first MVC monolith** (was a domain-first modular monolith before the
+2026-07-01 refactor). Full detail in `.claude/context/architecture.md`.
 
 This file is the entry point Claude Code reads automatically every session. The
 actual project instructions, workflows, and context live under `.claude/` and are

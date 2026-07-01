@@ -7,13 +7,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import {
-  ApiError,
-  authApi,
-  getStoredAccessToken,
-  setStoredAccessToken,
-  type User,
-} from "./api";
+import { authApi } from "../controllers/authController";
+import { ApiError, type User } from "../models/auth";
+import { getStoredAccessToken, setStoredAccessToken } from "./api";
 
 type AuthState = {
   user: User | null;

@@ -6,7 +6,9 @@ loaded **first, every session**.
 
 > Project: a private, source-grounded company knowledge base (NotebookLM-style).
 > Stack: **FastAPI + async workers + Postgres/pgvector** backend, **Vite React** SPA.
-> Architecture: **modular monolith**, ports only for 3 seams (parser/embedder/llm),
+> Architecture: **layer-first MVC monolith** (`app/{models,schemas,controllers,services,
+> repositories,exceptions,tasks}/`, one file per domain inside each layer — locked
+> 2026-07-01 refactor, was domain-first before), ports only for 3 seams (parser/embedder/llm),
 > staged ingestion pipeline, flag-gated V2/V3 retrieval. See `.claude/context/architecture.md`.
 
 ---
@@ -52,8 +54,8 @@ These are procedures, not code. They are language-agnostic.
   convention (`architecture.md` "Package-layout convention"): start each layer file flat; promote to
   a subpackage only when it exceeds ~200 lines AND mixes 2+ genuinely independent responsibilities —
   never pad a module that doesn't need the split. Land tests with the code.
-- **review** (`/review`, after implementing): verify — no SQL outside `repository.py`; no business logic
-  in `router.py`; every query scoped by `org_id`; external calls go through a seam; the feature's
+- **review** (`/review`, after implementing): verify — no SQL outside `repositories/<domain>.py`; no
+  business logic in `controllers/<domain>.py`; every query scoped by `org_id`; external calls go through a seam; the feature's
   Definition of Done is met; **any layer file that has crossed the package-layout trigger (>200 lines
   AND 2+ independent responsibilities) has been promoted to a subpackage, and no module has been
   padded with files it doesn't need.** Report violations, **do not auto-fix** without confirmation.
@@ -71,8 +73,9 @@ boxes in `.claude/progresstracker.md` with the commit ref. Never end a session w
 
 ## 5. Hard rules (the non-negotiables — full list in `.claude/context/architecture.md`)
 
-1. A module may call another module **only through its `service`**, never its repository/tables.
-2. **No SQL outside `repository.py`.** No business logic in `router.py`.
+1. A domain may call another domain **only through its `services/<domain>.py`**, never its
+   repository or tables.
+2. **No SQL outside `repositories/<domain>.py`.** No business logic in `controllers/<domain>.py`.
 3. **Every query is scoped by `org_id`.** RLS is the backstop, not the excuse to skip it.
 4. External services (LLM, embeddings, parser) are reached **only through a seam interface**.
 5. Ingestion stages are **idempotent and resumable**; intermediate artifacts are persisted.
@@ -80,9 +83,10 @@ boxes in `.claude/progresstracker.md` with the commit ref. Never end a session w
    designed-for now but populated later behind a flag.** Never break this split.
 7. MVP retrieval is flat vector search. Hierarchical (V2) and graph (V3) are additive,
    behind flags, with **no schema rewrite**.
-8. **Package-layout convention (locked F31 refactor):** a layer file (`service.py`/
-   `repository.py`/etc.) is promoted to a subpackage only when it exceeds ~200 lines AND
-   mixes 2+ independent responsibilities — never speculatively, never to pad a module that
-   doesn't need it (`retrieval/` having no `models.py`/`repository.py` is correct, not a
-   gap). Full rule + the ORM metadata-registration caveat: `architecture.md` "Package-layout
+8. **Package-layout convention (locked F31 refactor, paths updated by the 2026-07-01 MVC
+   refactor):** a layer file (`services/<domain>.py`/`repositories/<domain>.py`/etc.) is
+   promoted to a subpackage only when it exceeds ~200 lines AND mixes 2+ independent
+   responsibilities — never speculatively, never to pad a domain that doesn't need it
+   (`retrieval` having no `models/retrieval.py`/`repositories/retrieval.py` is correct, not
+   a gap). Full rule + the ORM metadata-registration caveat: `architecture.md` "Package-layout
    convention".

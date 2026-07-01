@@ -1,0 +1,58 @@
+"""``tags`` + ``document_tags`` tables — all SQL for tags and the document-tag join
+(codestandards "Layering")."""
+
+from __future__ import annotations
+
+import uuid
+
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from app.models.documents import DocumentTag, Tag
+from app.platform.repository import BaseRepository
+
+
+class TagRepository(BaseRepository[Tag]):
+    model = Tag
+
+    async def list(self) -> list[Tag]:
+        stmt = self._scoped().order_by(Tag.name)
+        return list(await self._db.scalars(stmt))
+
+    async def get_by_id(self, tag_id: uuid.UUID) -> Tag | None:
+        stmt = self._scoped().where(Tag.id == tag_id)
+        return await self._db.scalar(stmt)
+
+    async def get_by_name(self, name: str) -> Tag | None:
+        stmt = self._scoped().where(Tag.name == name)
+        return await self._db.scalar(stmt)
+
+    async def create(self, *, name: str) -> Tag:
+        tag = Tag(org_id=self._ctx.org_id, name=name)
+        self._db.add(tag)
+        await self._db.flush()
+        return tag
+
+    async def delete(self, tag: Tag) -> None:
+        await self._db.delete(tag)
+
+
+class DocumentTagRepository(BaseRepository[DocumentTag]):
+    model = DocumentTag
+
+    async def attach(self, document_id: uuid.UUID, tag_id: uuid.UUID) -> None:
+        """Idempotent: attaching an already-attached tag is a no-op."""
+        stmt = (
+            pg_insert(DocumentTag)
+            .values(org_id=self._ctx.org_id, document_id=document_id, tag_id=tag_id)
+            .on_conflict_do_nothing(index_elements=["document_id", "tag_id"])
+        )
+        await self._db.execute(stmt)
+
+    async def detach(self, document_id: uuid.UUID, tag_id: uuid.UUID) -> None:
+        """Idempotent: detaching a tag that isn't attached is a no-op."""
+        stmt = self._scoped().where(
+            DocumentTag.document_id == document_id, DocumentTag.tag_id == tag_id
+        )
+        link = await self._db.scalar(stmt)
+        if link is not None:
+            await self._db.delete(link)

@@ -7,7 +7,7 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.documents.models import Document
+from app.models.documents import Document
 from main import app
 
 

@@ -3,6 +3,15 @@
 Updated by the **Remember** skill after every successful Review. Tick a box only when its
 Definition of Done (see `buildplan.md`) is met. Add the commit ref next to completed items.
 
+---
+
+> **Note:** The backend was refactored (2026-07-01) from domain-first (`app/<domain>/`) to
+> layer-first MVC (`app/{models,schemas,controllers,services,repositories,exceptions,tasks}/`).
+> The frontend went from `src/features/` to `src/views/` + split `lib/api.ts` into `src/models/`
+> and `src/controllers/`. **Every `app/<domain>/...` and `src/features/...` path referenced
+> in the entries below describes the layout at the time that work was done and is STALE.**
+> The authoritative old→new mapping lives in `.claude/memory.md` ("MVC layout refactor" section).
+
 ## Foundation
 - [x] Foundation review + resolution pass (context docs only; 2026-06-21) — C1–C3, M1–M5, L1–L6 resolved.
 
@@ -210,12 +219,24 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       **DoD's "one real document reaches READY on real-parser output" now met**: ran the
       opt-in test against a real 36-page PDF (`pdf/kech104.pdf`) with a live
       `OPENROUTER_API_KEY` — passed first try, no code changes needed. `cloudflare-ai`
-      engine used (no OCR fallback triggered); document reached `READY`; heading recovery
-      confirmed yes (39 sections, genuine 3-level tree, 110 chunks); page-level provenance
-      confirmed does NOT survive (`page_start`/`page_end` stay document-wide despite
-      per-page heading text) — both findings empirically confirmed, matching the documented
-      expectations. Offsets manually spot-checked on two chunk groups, no corruption found.
-      See memory.md "F23 empirical validation run" for full detail.
+      engine used (no OCR fallback triggered); document reached `READY` (39 sections,
+      110 chunks); page-level provenance confirmed does NOT survive (`page_start`/
+      `page_end` stay document-wide). Offsets manually spot-checked on two chunk groups,
+      no corruption found. **Correction (2026-07-01, re-validated with real embedder+LLM
+      this session): the "39 sections" are NOT a genuine chapter/subsection tree** —
+      re-running end to end and inspecting the raw parsing artifact directly showed every
+      section is literally `document.pdf > Metadata > Contents > Page N` (one leaf
+      section per PDF page); real headings (e.g. "4.1 Kössel-Lewis Approach") are fused
+      into the page's body text with zero markdown/whitespace separator, so
+      `_parse_markdown_outline`'s regex has nothing to detect — `cloudflare-ai` simply
+      never emits `#`-style markers for genuine document headings on this class of
+      (two-column academic) PDF, only page boundaries. Confirmed this is a vendor/engine
+      characteristic, not a parsing bug: 5 different documents (this PDF plus 4 synthetic
+      reportlab PDFs with real bold/large-font headings) all produced the exact same
+      `Page N` wrapper. Per the locked "never fabricate" contract this is the CORRECT
+      behavior, not a defect — see memory.md "Real-embedder retrieval validation" for
+      full detail and the retrieval-quality implications (retrieval stays correct
+      regardless, since F31 keys off chunk-content embeddings, not section labels).
 - [x] F24 Ingestion auto-dispatch (arq) — **built out of numeric order, this session
       (after F41), discovered as a gap during F51 frontend recon**: nothing had ever
       auto-advanced a document past `UPLOADED` — F20-F22's stage endpoints were always
@@ -302,6 +323,26 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       ("Package-layout convention") + `orchestrator.md` (hard rule #8 + Implement/Review
       steps) + the `review` skill — applies to F40 onward. Reference module: `knowledge/`
       and `retrieval/` (small modules, no padding, already correct).
+
+- [x] **MVC layout refactor (2026-07-01, uncommitted)** — backend restructured from
+      domain-first (`app/identity/`, `app/documents/`, `app/ingestion/`, `app/knowledge/`,
+      `app/retrieval/`, `app/chat/`) to layer-first (`app/models/`, `app/schemas/`,
+      `app/controllers/`, `app/services/`, `app/repositories/`, `app/exceptions/`,
+      `app/tasks/`); frontend restructured `src/features/` → `src/views/` with types/api
+      namespaces split out of `lib/api.ts` into `src/models/` and `src/controllers/`.
+      ZERO logic/schema/API/behavior change — pure import-path + file-location refactor,
+      full spec in `docs/mvc-refactor-prompt.md` (kept in-repo as the historical record).
+      Old domain dirs and `src/features/` fully deleted. `documents/service`,
+      `documents/repository`, `ingestion/service` kept their subpackage shape (just
+      moved). DoD met: `ruff check`/`ruff format --check` clean (only 3 pre-existing
+      `scripts/inspect_document.py` findings remain), all new-path import smoke checks
+      pass, `Base.metadata` registers all 13 tables, `GET /health`→200, 43/43 non-DB
+      pytest tests pass, 30/30 frontend vitest tests pass, `tsc -b`/`vite build` clean.
+      **Docker-gated verification CLOSED (2026-07-01, follow-up)**: full suite re-run
+      against real Testcontainers Postgres — 135 passed, 1 skipped (opt-in `real_parser`
+      test needing a live API key, unrelated to Docker), 0 failures. Confirms the
+      refactor is a true zero-logic-change. See memory.md "MVC layout refactor" for
+      the full old→new path mapping table.
 
 ## Phase 4 — Chat
 - [x] F40 Grounded generation (`1572fa8`) — new `app/chat` module (`schemas.py`/
@@ -492,6 +533,16 @@ new `POST /chat/stream` SSE endpoint + `ChatService.stream_ask` async generator,
 `POST /chat/ask` JSON endpoint intact. Frontend: `notebooksApi` + `chatApi` namespaces,
 four new components (NotebookList/NotebookPage/ChatPanel/CitationPanel), Vitest+RTL tests
 30/30 green, `tsc -b` + `vite build` clean.
+**MVC layout refactor DONE — this session (2026-07-01, uncommitted).** Backend moved
+domain-first → layer-first (`app/models/`,`schemas/`,`controllers/`,`services/`,
+`repositories/`,`exceptions/`,`tasks/`); frontend moved `features/` → `views/` +
+split `lib/api.ts` into `models/`+`controllers/`. Zero logic change. Old dirs deleted.
+**Docker-gated re-run CLOSED (2026-07-01, follow-up):** full `pytest` against real
+Testcontainers Postgres — 135 passed, 1 skipped (opt-in `real_parser`, needs a live
+API key), 0 failures. `ruff check .` re-confirmed unchanged (3 pre-existing findings
+only). MVC refactor now fully verified end to end. See memory.md "MVC layout refactor"
+for the path-mapping table.
 Next action: **F42 admin debug bundle, or F60 RLS hardening** — ask the user which to resume.
+(Also: commit the MVC refactor — still uncommitted, 97 tracked-file changes in the working tree.)
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

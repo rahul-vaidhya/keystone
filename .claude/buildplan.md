@@ -46,8 +46,10 @@ one's DoD is met. Keep features small enough for one focused session.
   - Session mechanism: credential → **short-lived JWT access token + httpOnly refresh cookie**,
     validated by the `current_user` dependency → `TenantContext`.
   - *DoD met:* a user signs up, creates an org (becomes `owner`), logs in; sessions scoped to org;
-    an invited teammate joins as `member`. See `app/identity/*`, migration `0003_auth_password_hash`,
-    `tests/test_auth.py` (217 lines).
+    an invited teammate joins as `member`. See `app/identity/*` (pre-MVC-refactor path —
+    now spread across `app/{models,schemas,controllers,services,repositories,exceptions}/`
+    under the `auth` domain name; see memory.md "MVC layout refactor"), migration
+    `0003_auth_password_hash`, `tests/test_auth.py` (217 lines).
 - **F11 Folders + tags:** CRUD for the folder tree (materialized path) and tags.
   - *DoD:* create nested folders; tag a document; list by folder/tag.
 - **F12 Upload + dedupe:** upload to object store, checksum, `unique(org_id, checksum)`, status=`uploaded`.

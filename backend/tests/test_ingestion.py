@@ -9,7 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from app.ingestion.models import Chunk, Embedding, Section
+from app.models.ingestion import Chunk, Embedding, Section
 from app.platform.queue import get_job_queue
 from app.platform.seams import ParsedDoc, get_embedder, get_parser
 from app.platform.storage import build_artifact_key, get_object_store

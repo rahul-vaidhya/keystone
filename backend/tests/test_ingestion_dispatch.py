@@ -12,14 +12,14 @@ from __future__ import annotations
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.documents.exceptions import DocumentNotFound
-from app.ingestion.tasks import (
+from app.exceptions.documents import DocumentNotFound
+from app.platform.queue import get_job_queue
+from app.platform.storage import get_object_store
+from app.tasks.ingestion import (
     run_embedding_stage_job,
     run_parsing_stage_job,
     run_structuring_stage_job,
 )
-from app.platform.queue import get_job_queue
-from app.platform.storage import get_object_store
 from main import app
 from tests.conftest import FakeJobQueue
 
@@ -102,7 +102,7 @@ async def test_dedupe_upload_does_not_re_enqueue(
 async def test_job_chain_advances_through_all_stages_via_enqueue(
     client: AsyncClient, store: _InMemoryObjectStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("app.ingestion.tasks.get_object_store", lambda: store)
+    monkeypatch.setattr("app.tasks.ingestion.get_object_store", lambda: store)
 
     tokens = await _signup(client, "dispatch-up3@test.com", "DispatchThree")
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
@@ -138,7 +138,7 @@ async def test_sequentially_redelivered_job_does_not_double_enqueue(
     guarantee — see ``ingestion/tasks.py``'s module docstring) handles the common,
     sequential-redelivery case: a job that runs again after the document has already
     advanced is a clean no-op."""
-    monkeypatch.setattr("app.ingestion.tasks.get_object_store", lambda: store)
+    monkeypatch.setattr("app.tasks.ingestion.get_object_store", lambda: store)
 
     tokens = await _signup(client, "dispatch-up4@test.com", "DispatchFour")
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
@@ -185,7 +185,7 @@ async def test_job_org_scoping_is_an_independent_backstop(
 ) -> None:
     """A job built from org A's payload must never touch org B's document — independent of
     whatever enqueued it, same backstop pattern as F31's ``search_chunks`` isolation test."""
-    monkeypatch.setattr("app.ingestion.tasks.get_object_store", lambda: store)
+    monkeypatch.setattr("app.tasks.ingestion.get_object_store", lambda: store)
 
     tokens_a = await _signup(client, "dispatch-orga@test.com", "DispatchOrgA")
     headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}

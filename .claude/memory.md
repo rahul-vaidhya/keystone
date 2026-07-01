@@ -6,6 +6,140 @@
 
 ---
 
+## MVC layout refactor (2026-07-01, this session)
+
+**Pure structural refactor — zero logic/schema/API change.** Backend went from
+domain-first (`app/identity/`, `app/documents/`, `app/ingestion/`, `app/knowledge/`,
+`app/retrieval/`, `app/chat/`) to layer-first MVC: `app/models/`, `app/schemas/`,
+`app/controllers/`, `app/services/`, `app/repositories/`, `app/exceptions/`,
+`app/tasks/`. Frontend went from `src/features/` to `src/models/` (types split out of
+`lib/api.ts`), `src/controllers/` (api namespaces split out of `lib/api.ts`), and
+`src/views/` (former `features/**` components, same relative depth to `lib/`/
+`components/`). Full mapping: `docs/mvc-refactor-prompt.md` §3 (still in the repo as
+the historical spec). **Every `app/<domain>/...` and `src/features/...` path
+referenced anywhere below in this file is STALE** — see the table for the new
+location. Old domain dirs and `src/features/` are fully deleted.
+
+| Old (domain-first) | New (layer-first) |
+|---|---|
+| `app/<domain>/models.py` | `app/models/<domain>.py` |
+| `app/<domain>/schemas.py` | `app/schemas/<domain>.py` |
+| `app/<domain>/router.py` | `app/controllers/<domain>.py` (knowledge→`notebooks.py`) |
+| `app/<domain>/service.py` (or `service/`) | `app/services/<domain>.py` (or `services/<domain>/`) |
+| `app/<domain>/repository.py` (or `repository/`) | `app/repositories/<domain>.py` (or `repositories/<domain>/`) |
+| `app/<domain>/exceptions.py` | `app/exceptions/<domain>.py` |
+| `app/identity/{tokens,passwords,constants}.py` | `app/platform/{tokens,passwords,constants}.py` |
+| `app/identity/deps.py` | `app/controllers/deps.py` |
+| `app/ingestion/tasks.py` | `app/tasks/ingestion.py` |
+| `app/documents/status.py` (`DocumentStatus`) | merged into `app/models/documents.py` |
+| `src/features/<area>/*` | `src/views/<area>/*` |
+| types in `src/lib/api.ts` | `src/models/{auth,documents,knowledge,chat}.ts` |
+| api namespaces in `src/lib/api.ts` | `src/controllers/{auth,documents,notebooks,chat}Controller.ts` |
+
+- `documents/service`, `documents/repository`, `ingestion/service` KEPT their
+  subpackage shape (just moved: `services/documents/`, `repositories/documents/`,
+  `services/ingestion/`) — package-layout convention untouched, only the parent
+  namespace changed.
+- Each new top-level package (`models/`, `schemas/`, `controllers/`, `services/`,
+  `repositories/`, `exceptions/`, `tasks/`) got an `__init__.py` that re-exports
+  everything from that layer — cross-domain imports still work via either the
+  specific submodule or the package root.
+- `main.py`/`worker.py`/`migrations/env.py` import lists updated to the new paths;
+  `migrations/versions/*.py` untouched (immutable history).
+- All fake/offline tests, `ruff check`/`ruff format --check` (only the 3 pre-existing
+  `scripts/inspect_document.py` findings remain), every new-path import smoke test,
+  `Base.metadata` table registration (13/13 tables), and `GET /health` all passed.
+  Frontend: 30/30 vitest, `tsc -b` clean, `vite build` clean.
+- **Docker-gated verification CLOSED (2026-07-01, same session, follow-up):** initial
+  pass had Docker Desktop refuse to launch in-sandbox (93 Testcontainers-Postgres tests
+  skipped, `pytest`: 43 passed / 93 skipped). Docker came up on retry; full suite re-run
+  against real Postgres: **135 passed, 1 skipped** (the skip is the opt-in `real_parser`
+  test, needs a live `OPENROUTER_API_KEY` — unrelated to Docker). Confirms the refactor
+  is a true zero-logic-change: every previously-skipped DB-backed test now passes
+  unchanged. `ruff check .` re-confirmed still exactly the 3 pre-existing findings.
+
+---
+
+## Real-embedder retrieval validation (2026-07-01, this session)
+
+**Ask:** verify embeddings + retrieval work correctly with the real API key now in
+`.env`, then exercise retrieval across documents with different section-hierarchy
+shapes and fix the codebase if anything was wrong. **Result: retrieval/grounding is
+fully correct; nothing in the codebase needed fixing.** One real, load-bearing finding
+about heading recovery — corrected a stale claim in `progresstracker.md`'s F23 entry.
+
+- **Real key wiring note:** `.env` only had `OPENROUTER_API_KEY` set. `RealEmbedder`/
+  `RealLLM` (`app/platform/seams/real_llm.py`) read `OPENAI_API_KEY`/`OPENAI_BASE_URL`
+  — a SEPARATE config pair from `OPENROUTER_API_KEY`/`OPENROUTER_BASE_URL` (used only by
+  `RealParser`). Ran with `OPENAI_API_KEY=<the OpenRouter key>` and
+  `OPENAI_BASE_URL=https://openrouter.ai/api/v1` set as process env (not written to
+  `.env`) — same one-key-feeds-all-3-seams pattern as F40's manual gate, just made
+  explicit here since it silently FAILED (`FAILED`/`EMBEDDING`, "OPENAI_API_KEY is not
+  set") the first attempt.
+- **Test method:** in-process `httpx` + `ASGITransport` against `main.app` (same pattern
+  as `tests/test_real_parser_integration.py`), `FakeJobQueue` override to drive ingestion
+  stages manually, `STORAGE_MODE=local` (no R2 creds). One notebook, multiple documents,
+  real `/documents/upload` → `/ingestion/.../parse|structure|embed` → `/notebooks/{id}/
+  documents/{doc_id}` → `/retrieval/search` + `/chat/ask`. Scripts were throwaway
+  (scratchpad only, never committed, per the F51 precedent for manual validation
+  scripts).
+- **Generated 3 synthetic PDFs via reportlab** with deliberately different heading
+  shapes (flat/no-headings, shallow 2-level, deep 3-level with a repeated H2 name
+  "Diet" under two different H1 parents "Lions"/"Tigers" — to stress path/content
+  disambiguation) to test hierarchy variation in a controlled way.
+- **FINDING — `cloudflare-ai` (OpenRouter's file-parser plugin) does not recover
+  semantic headings for these documents; it only marks page boundaries.** All 3
+  synthetic PDFs AND a re-run of the known-good `pdf/kech104.pdf` (36-page real
+  textbook, previously recorded in `progresstracker.md`'s F23 entry as "39 sections,
+  genuine 3-level tree") produced the IDENTICAL wrapper structure: `document.pdf >
+  Metadata > Contents > Page N` (one leaf section per page, `heading='Page N'`)
+  regardless of the actual document content or visual heading styling (bold/large
+  font). Directly inspected the raw parsing artifact JSON for `kech104.pdf`: the real
+  heading text ("4.1 KÖSSEL-LEWIS APPROACH...") IS present in the extracted text but
+  fused directly into the surrounding paragraph with ZERO markdown or even whitespace
+  separating it (`"...MOLE CULAR S T R U CTURE4.1 K◌SSEL-LEwiS AppROACH tOCHEMiCAL
+  BOnDinGIn order to explain..."`) — there is no signal of any kind
+  (`#`-markdown/bold/newline) for `_parse_markdown_outline`'s regex to detect. **This is
+  a vendor/engine characteristic on two-column academic PDFs, not a parsing bug** — per
+  the locked "never fabricate" design (`real_parser.py`), the code correctly does NOT
+  invent heading structure that isn't signaled. The prior "genuine 3-level tree"
+  description in `progresstracker.md` was corrected — it was technically 3 levels deep
+  (root > Metadata/Contents > Page N) but never reflected the document's real
+  chapter/subsection structure. **No code change made** — broadening the heading regex
+  would not help (there is no alternate signal to detect) and inventing headings via
+  NLP heuristics would violate the locked contract; this is a documentation fix, not a
+  code fix.
+- **Retrieval + grounded generation stayed fully correct despite the coarse (page-level)
+  hierarchy** — confirmed this is because F31 retrieval keys off chunk-CONTENT
+  embeddings, not section labels/paths, so hierarchy quality has no bearing on
+  retrieval correctness at the MVP (flat) stage. Verified across two separate multi-doc
+  notebook runs (real API key throughout):
+  - 3-doc notebook (flat crocodile fact-sheet, shallow Acme-Corp-handbook-style,
+    deep Lions/Tigers guide with the repeated "Diet" H2 name under different parents):
+    every targeted question retrieved the correct document and correct fact, correctly
+    disambiguating "Diet > Hunting Behavior" (lions) from "Diet > Preferred Prey"
+    (tigers) purely via chunk-content embedding similarity — no section-path confusion
+    even though both docs' sections collapsed to the same generic wrapper shape.
+  - 2-doc notebook (flat crocodile doc + the real 36-page/110-chunk `kech104.pdf`):
+    a chemistry question ("Kossel-Lewis approach... octet rule") correctly retrieved
+    tight-distance (0.35–0.49) chunks from `kech104.pdf` with a rich, correctly-cited
+    `[1][2][3][4]` grounded answer; the crocodile question correctly retrieved the flat
+    doc instead (not confused despite both docs sharing a notebook); a follow-up
+    chemistry question (octet-rule exceptions) also correctly grounded with citations.
+  - Both runs: an out-of-scope question ("2022 FIFA World Cup") correctly triggered the
+    exact refusal behavior ("I don't have that in the provided sources.", zero
+    citations) even with multiple unrelated documents in the notebook — first time this
+    was verified with >1 document present (F40's original gate used a single document).
+- **Open question surfaced for future V2 hierarchical retrieval design:** if
+  `cloudflare-ai` typically degrades to page-level granularity on real multi-column
+  PDFs, V2's planned hierarchical retrieval will often only have "page" as its
+  practical section granularity for this vendor/engine, not true chapter/subsection
+  structure — worth a deliberate design conversation (try `mistral-ocr` engine instead?
+  a different `PARSER_MODEL`? an LLM heading-detection post-pass?) before building V2,
+  not something to solve reactively then.
+
+---
+
 ## Current phase / what is done
 
 **Phase 0–3 COMPLETE. Phase 4 COMPLETE. Phase 5 mostly done.**
@@ -48,11 +182,11 @@
 - **`dependency_overrides` shim CANNOT unblock the full upload→READY walk** because the arq worker never sees it. Storage impl must be config-selected (`STORAGE_MODE`), not DI-overridden per-process.
 - **`ObjectStore` port is exactly `put` + `get`; no `exists`/`delete`.** Delete rides with the future orphan-sweep feature.
 - **`path` on Folder is a non-authoritative DISPLAY CACHE**, rebuilt synchronously in-tx on every move/rename via `_rebuild_subtree_paths` (derives path from parent_id+name only — never slices the old path string, which would risk false-matching a sibling sharing a name prefix like "HR" vs "HR-Archive").
-- **F24 pipeline composed at `documents/router.py`**, not `documents.service`, to avoid a circular import (`ingestion.service` already imports `documents.service`).
+- **F24 pipeline composed at `app/controllers/documents.py`** (was `documents/router.py` pre-MVC-refactor), not `app.services.documents`, to avoid a circular import (`app.services.ingestion` already imports `app.services.documents`).
 - **Deterministic arq `job_id` (`f"ingestion:{stage}:{document_id}"`)** is the REAL concurrency guarantee against double-enqueue under redelivery — a before/after DB status check alone is NOT sufficient (two concurrent deliveries can both read the same "before" status in separate transactions before either writes).
 - **F41 citations persist every call as a fresh Conversation + user Message + assistant Message** — no conversation reuse/multi-turn threading until a future feature builds history-threading alongside reuse (they must arrive together).
 - **`resolve_allowed_documents(ctx)`** is the ONLY hook where V2 groups/grants permission logic slots in — MVP returns all org docs.
-- **Chat module (`app/chat/`):** stateless was F40; F41 added models/repository (migration 0009). `chat/` is still flat (one cohesive pipeline, <200 lines each).
+- **Chat (`app/services/chat.py` + `app/repositories/chat.py` + `app/models/chat.py`, was `app/chat/` pre-MVC-refactor):** stateless was F40; F41 added the repository/models (migration 0009). Each layer file stays flat (one cohesive pipeline, <200 lines each) — the MVC refactor only changed which top-level package each file lives under, not this internal shape.
 
 ---
 

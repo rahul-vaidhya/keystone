@@ -14,14 +14,17 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import app.models.chat  # noqa: F401
+import app.models.documents  # noqa: F401
+
 # Import every module's models here or autogenerate will miss their tables. Each import is
 # for its side effect only: registering that module's tables on Base.metadata so
-# target_metadata / autogenerate sees the whole schema.
-import app.chat.models  # noqa: F401
-import app.documents.models  # noqa: F401
-import app.identity.models  # noqa: F401
-import app.ingestion.models  # noqa: F401
-import app.knowledge.models  # noqa: F401
+# target_metadata / autogenerate sees the whole schema. Import order does NOT matter:
+# every FK in this codebase is a string table-name reference, never a class-level
+# relationship(), so there's no load-time dependency between model modules.
+import app.models.identity  # noqa: F401
+import app.models.ingestion  # noqa: F401
+import app.models.knowledge  # noqa: F401
 from app.platform.config import settings
 from app.platform.db import Base
 

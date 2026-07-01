@@ -5,16 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
-from app.chat.exceptions import GenerationFailed
-from app.documents.exceptions import (
-    DocumentNotFound,
-    DocumentsError,
-    FolderNameConflict,
-    FolderNotEmpty,
-    FolderNotFound,
-    TagNotFound,
-)
-from app.identity.exceptions import (
+from app.exceptions.auth import (
     AmbiguousLogin,
     AuthError,
     EmailTaken,
@@ -22,8 +13,17 @@ from app.identity.exceptions import (
     InvalidCredentials,
     TargetUserNotFound,
 )
-from app.identity.schemas import LoginAmbiguousResponse, OrgChoice
-from app.knowledge.exceptions import KnowledgeError, NotebookNotFound
+from app.exceptions.chat import GenerationFailed
+from app.exceptions.documents import (
+    DocumentNotFound,
+    DocumentsError,
+    FolderNameConflict,
+    FolderNotEmpty,
+    FolderNotFound,
+    TagNotFound,
+)
+from app.exceptions.knowledge import KnowledgeError, NotebookNotFound
+from app.schemas.auth import LoginAmbiguousResponse, OrgChoice
 
 
 def register_exception_handlers(app: FastAPI) -> None:

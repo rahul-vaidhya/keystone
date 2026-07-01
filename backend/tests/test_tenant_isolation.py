@@ -19,10 +19,10 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.identity.models import Organization, User
-from app.identity.repository import UserRepository
+from app.models.identity import Organization, User
 from app.platform.context import TenantContext
 from app.platform.db import tenant_session
+from app.repositories.auth import UserRepository
 
 
 async def _seed_two_orgs(

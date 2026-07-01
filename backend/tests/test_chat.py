@@ -14,10 +14,10 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from app.chat.models import Conversation
-from app.chat.models import Message as MessageRow
-from app.documents.models import Document
-from app.ingestion.models import Chunk, Embedding
+from app.models.chat import Conversation
+from app.models.chat import Message as MessageRow
+from app.models.documents import Document
+from app.models.ingestion import Chunk, Embedding
 from app.platform import config
 from app.platform.seams import EMBED_DIM, Message, SeamTransientError, get_llm
 from main import app
@@ -395,8 +395,8 @@ async def test_ask_llm_non_transient_error_propagates_without_retry(
 
 
 def test_build_messages_includes_grounding_instruction_and_numbered_context() -> None:
-    from app.chat.service import build_messages
-    from app.retrieval.schemas import ContextBlock
+    from app.schemas.retrieval import ContextBlock
+    from app.services.chat import build_messages
 
     block = ContextBlock(
         index=1,
@@ -416,7 +416,7 @@ def test_build_messages_includes_grounding_instruction_and_numbered_context() ->
 
 
 def test_build_messages_empty_context_has_no_numbered_block() -> None:
-    from app.chat.service import build_messages
+    from app.services.chat import build_messages
 
     messages = build_messages("q", [])
     assert "[1]" not in messages[1].content

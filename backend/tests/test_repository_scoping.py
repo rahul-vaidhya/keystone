@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import uuid
 
-from app.identity.repository import UserRepository
 from app.platform.context import TenantContext
+from app.repositories.auth import UserRepository
 
 
 def test_scoped_select_includes_org_filter() -> None:

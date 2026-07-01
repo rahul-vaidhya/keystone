@@ -26,3 +26,12 @@ Thumbs.db
 # Node
 node_modules/
 *.tsbuildinfo
+
+# Local dev object store (LocalDiskObjectStore blobs — STORAGE_MODE=local)
+.localstorage/
+
+# Playwright MCP session artifacts
+.playwright-mcp/
+
+# Manual-validation PDFs (large binaries / copyrighted, not test fixtures)
+/pdf/
