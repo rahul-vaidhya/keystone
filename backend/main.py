@@ -9,15 +9,15 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.controllers.auth import router as auth_router
-from app.controllers.chat import router as chat_router
-from app.controllers.documents import router as documents_router
-from app.controllers.ingestion import router as ingestion_router
-from app.controllers.notebooks import router as knowledge_router
-from app.controllers.retrieval import router as retrieval_router
-from app.platform.config import settings
-from app.platform.http import register_exception_handlers
-from app.platform.logging import configure_logging
+from app.config.logging import configure_logging
+from app.config.settings import settings
+from app.routes.auth import router as auth_router
+from app.routes.chat import router as chat_router
+from app.routes.documents import router as documents_router
+from app.routes.ingestion import router as ingestion_router
+from app.routes.notebooks import router as knowledge_router
+from app.routes.retrieval import router as retrieval_router
+from app.utils.http import register_exception_handlers
 
 configure_logging()
 

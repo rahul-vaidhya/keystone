@@ -9,15 +9,14 @@ import json
 import uuid
 from dataclasses import dataclass, field
 
-from app.models.documents import DocumentStatus
+from app.config import db as db_mod
+from app.config.logging import get_logger
+from app.middleware.context import TenantContext
+from app.models.documents import DocumentOut, DocumentStatus
 from app.models.ingestion import Chunk, Section
-from app.platform import db as db_mod
-from app.platform.context import TenantContext
-from app.platform.logging import get_logger
-from app.platform.storage import ObjectStore
-from app.repositories.ingestion import ChunkRepository, SectionRepository
-from app.schemas.documents import DocumentOut
 from app.services.documents import documents_service
+from app.services.ingestion.repository import ChunkRepository, SectionRepository
+from app.services.storage import ObjectStore
 
 logger = get_logger(__name__)
 

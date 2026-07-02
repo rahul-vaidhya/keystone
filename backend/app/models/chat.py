@@ -1,5 +1,7 @@
-"""Chat domain models: conversations + messages (architecture.md "chat"). F41 creates a
-fresh ``Conversation`` + its ``user``/``assistant`` ``Message`` pair on every ``/chat/ask``
+"""Chat domain models and Pydantic schemas.
+
+ORM models: conversations + messages (architecture.md "chat"). F41 creates a fresh
+``Conversation`` + its ``user``/``assistant`` ``Message`` pair on every ``/chat/ask``
 call — no conversation reuse yet (see chat/service.py docstring on ``ChatService.ask`` for
 why: reuse only earns its place alongside multi-turn history-threading, a future feature).
 """
@@ -9,11 +11,12 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, ForeignKey, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.platform.db import Base
+from app.config.db import Base
 
 
 class Conversation(Base):
@@ -66,3 +69,37 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+# ---- API schemas ----
+
+
+class ChatRequest(BaseModel):
+    notebook_id: uuid.UUID
+    query: str = Field(min_length=1)
+    k: int = Field(default=8, ge=1, le=50)
+
+
+class ResolvedCitation(BaseModel):
+    """One ``[n]`` marker from the model's answer, resolved to its source span — rebuilt
+    from a fresh ``ingestion.service.get_chunks`` read of the chunk row (the
+    source-of-truth table), not from the ``ContextBlock`` retrieval already had in hand.
+    ``marker`` is the literal number the model cited (e.g. ``2`` for ``[2]``)."""
+
+    marker: int
+    document_id: uuid.UUID
+    chunk_id: uuid.UUID
+    char_start: int
+    char_end: int
+    content: str
+
+
+class ChatResponse(BaseModel):
+    correlation_id: str
+    conversation_id: uuid.UUID
+    message_id: uuid.UUID
+    notebook_id: uuid.UUID
+    query: str
+    answer: str
+    citations: list[ResolvedCitation]
+    model: str

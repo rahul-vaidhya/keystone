@@ -3,8 +3,8 @@ tenant-scoped table carries org_id directly (no scope-via-parent)."""
 
 from __future__ import annotations
 
-import app.models.identity  # noqa: F401  (registers tables on Base.metadata)
-from app.platform.db import Base
+import app.models.auth  # noqa: F401  (registers tables on Base.metadata)
+from app.config.db import Base
 
 # `organizations` IS the tenancy root — it keys on `id`, so it is the only table exempt
 # from carrying an `org_id` column. Every other table registered on Base.metadata is

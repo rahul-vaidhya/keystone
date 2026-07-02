@@ -9,8 +9,8 @@ import uuid
 
 import pytest
 
-from app.platform.config import Settings
-from app.platform.storage import (
+from app.config.settings import Settings
+from app.services.storage import (
     LocalDiskObjectStore,
     build_artifact_key,
     build_storage_key,
@@ -54,7 +54,7 @@ async def test_local_store_get_missing_key_raises(tmp_path) -> None:
 
 
 def test_factory_selects_local_when_mode_local(monkeypatch) -> None:
-    monkeypatch.setattr("app.platform.storage.settings.STORAGE_MODE", "local")
+    monkeypatch.setattr("app.services.storage.settings.STORAGE_MODE", "local")
     assert isinstance(get_object_store(), LocalDiskObjectStore)
 
 
@@ -68,12 +68,12 @@ def test_storage_mode_defaults_to_r2() -> None:
 def test_factory_selects_r2_branch(monkeypatch) -> None:
     # Verify the r2 branch returns the R2 store without building a live boto3 client.
     sentinel = object()
-    monkeypatch.setattr("app.platform.storage.R2ObjectStore", lambda: sentinel)
-    monkeypatch.setattr("app.platform.storage.settings.STORAGE_MODE", "r2")
+    monkeypatch.setattr("app.services.storage.R2ObjectStore", lambda: sentinel)
+    monkeypatch.setattr("app.services.storage.settings.STORAGE_MODE", "r2")
     assert get_object_store() is sentinel
 
 
 def test_factory_rejects_unknown_mode(monkeypatch) -> None:
-    monkeypatch.setattr("app.platform.storage.settings.STORAGE_MODE", "s3-direct")
+    monkeypatch.setattr("app.services.storage.settings.STORAGE_MODE", "s3-direct")
     with pytest.raises(ValueError, match="unknown STORAGE_MODE"):
         get_object_store()

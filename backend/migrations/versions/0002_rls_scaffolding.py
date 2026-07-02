@@ -23,7 +23,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-from app.platform.config import settings
+from app.config.settings import settings
 
 # revision identifiers, used by Alembic.
 revision: str = "0002"

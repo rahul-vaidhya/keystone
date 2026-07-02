@@ -8,26 +8,38 @@
 
 ## Layering (enforced — this is what prevents drift)
 
-Layer-first MVC: code is grouped by role into `app/{models,schemas,controllers,services,
-repositories,exceptions,tasks}/`, with one file (or subpackage) per domain inside each
-layer package. Full layout + domain-naming quirks: `architecture.md` "Folder map."
+Single-MVC (Express-style backend + React SPA): backend code is grouped by domain,
+with each domain having routes (HTTP wiring), controllers (handlers), services (business
+logic + repository classes), and models (ORM + schemas). Full layout + domain-naming quirks:
+`architecture.md` "Folder map."
 
-- `controllers/<domain>.py`: HTTP only — parse/validate request (Pydantic), call a
+- `routes/<domain>.py`: HTTP path wiring only — FastAPI `APIRouter` + `@router.post` definitions.
+  **No validation, no logic.**
+- `controllers/<domain>.py`: thin handlers — parse/validate request (Pydantic), call a
   `services/<domain>.py` function, shape the response. **No SQL. No business logic.**
-- `services/<domain>.py` (or `services/<domain>/`): use cases and business rules. Knows
-  nothing about FastAPI or raw SQL. Reaches other domains **only via their
+- `services/<domain>.py` (or `services/<domain>/`): use cases, business rules, AND repository
+  classes (SQL). Knows nothing about FastAPI or raw HTTP. Reaches other domains **only via their
   `services/<other>.py`**, and external systems **only via a seam**.
-- `repositories/<domain>.py` (or `repositories/<domain>/`): **all SQL lives here.** Every
-  method takes/uses the tenant's `org_id`. Returns domain objects, not ORM rows leaking
-  upward.
-- `tasks/<domain>.py`: arq task functions; thin — they call into the domain's
-  `services/<domain>.py`.
+- `models/<domain>.py`: ORM model classes **and** Pydantic request/response schemas (merged).
+- `services/<domain>/tasks.py` (if needed, currently ingestion only): arq task functions; thin — they
+  call into the domain's service layer.
 
 ```python
-# RIGHT — controller delegates, service holds logic, repo holds SQL
-@router.post("/documents")
-async def upload(req: DocumentCreate, ctx: TenantContext = Depends(get_ctx)):
+# RIGHT — routes wire, controller delegates, service holds logic
+# routes/documents.py: (wiring only)
+router = APIRouter(prefix="/documents", tags=["documents"])
+@router.post("")
+async def upload_document(req: DocumentCreate, ctx: TenantContext = Depends(get_ctx)):
+    return await upload_handler(ctx, req)
+
+# controllers/documents.py: (thin handler)
+async def upload_handler(ctx: TenantContext, req: DocumentCreate) -> DocumentOut:
     return await documents_service.upload(ctx, req)
+
+# services/documents.py: (business logic + SQL)
+async def upload(ctx: TenantContext, req: DocumentCreate) -> DocumentOut:
+    doc = await repository.create(ctx.org_id, req)  # repository is part of services/documents
+    return DocumentOut.from_orm(doc)
 
 # WRONG — SQL + business logic in the controller
 @router.post("/documents")

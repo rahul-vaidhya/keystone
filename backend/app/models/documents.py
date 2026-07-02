@@ -1,6 +1,6 @@
-"""Documents domain models: folders, tags, document_tags, and documents.
+"""Documents domain models and Pydantic schemas: folders, tags, document_tags, and documents.
 
-F11 built folders + tags, with ``Document`` landing as a minimal anchor
+ORM models: F11 built folders + tags, with ``Document`` landing as a minimal anchor
 (id/org_id/folder_id/title) so ``document_tags`` had something to FK to. F12 (upload +
 dedupe) ALTERs that same table here to add the storage/checksum/pipeline-status columns —
 no new table.
@@ -12,11 +12,12 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
+from pydantic import BaseModel, Field
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.platform.db import Base
+from app.config.db import Base
 
 
 class DocumentStatus(StrEnum):
@@ -133,3 +134,62 @@ class DocumentTag(Base):
     tag_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True, index=True
     )
+
+
+# ---- API schemas ----
+
+
+class FolderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    parent_id: uuid.UUID | None = None
+
+
+class FolderOut(BaseModel):
+    id: uuid.UUID
+    org_id: uuid.UUID
+    parent_id: uuid.UUID | None
+    name: str
+    path: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class FolderRename(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class FolderMove(BaseModel):
+    parent_id: uuid.UUID | None = None
+
+
+class TagCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class TagOut(BaseModel):
+    id: uuid.UUID
+    org_id: uuid.UUID
+    name: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DocumentOut(BaseModel):
+    id: uuid.UUID
+    org_id: uuid.UUID
+    folder_id: uuid.UUID | None
+    title: str
+    storage_key: str | None
+    mime_type: str | None
+    byte_size: int | None
+    checksum: str | None
+    page_count: int | None
+    language: str | None
+    status: str
+    failed_stage: str | None
+    error_detail: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

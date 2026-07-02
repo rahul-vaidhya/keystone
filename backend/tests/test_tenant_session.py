@@ -15,8 +15,8 @@ import uuid
 import pytest
 from sqlalchemy import TextClause, text
 
-from app.platform import config as config_mod
-from app.platform.db import tenant_session
+from app.config.db import tenant_session
+from app.config.settings import settings as app_settings
 
 
 def _read_guc() -> TextClause:
@@ -26,7 +26,7 @@ def _read_guc() -> TextClause:
 
 async def test_guc_unset_when_flag_off(tenant_engine: None) -> None:
     org_id = uuid.uuid4()
-    assert config_mod.settings.RLS_ENABLED is False  # MVP default
+    assert app_settings.RLS_ENABLED is False  # MVP default
     async with tenant_session(org_id) as session:
         got = await session.scalar(_read_guc())
     # Unset GUC reads back as NULL or empty string — never the org_id.
@@ -37,7 +37,7 @@ async def test_guc_set_and_transaction_scoped_when_flag_on(
     tenant_engine: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(config_mod.settings, "RLS_ENABLED", True)
+    monkeypatch.setattr(app_settings, "RLS_ENABLED", True)
     org_id = uuid.uuid4()
 
     async with tenant_session(org_id) as session:

@@ -6,7 +6,126 @@
 
 ---
 
-## MVC refactor cross-verification + commit (2026-07-01, this session)
+## Single-MVC re-refactor (2026-07-02, this session)
+
+**Pure structural re-refactor — zero logic/schema/API change.** Yesterday's layer-first MVC
+(2026-07-01, backend ONLY) was itself re-refactored into a single unified MVC: Express-style
+backend (JSON-only, no view layer) + conventional React SPA frontend as the unified view
+layer. **Every path reference in older sections below describing 2026-07-01 layer-first
+layouts is now STALE** — this table and the old→new mappings below are the new
+authoritative record. Work is UNCOMMITTED (staged via `git mv`).
+
+**Owner decisions:** (a) literal `routes/` + `controllers/` split on backend (express-style);
+(b) full collapse of `repositories/` and `exceptions/` into `services/`, and `schemas/`
+into `models/` (accepting warned trade-off of less separation); (c) frontend types in
+`src/types/`.
+
+### Backend old→new mapping (layer-first MVC 2026-07-01 → single-MVC 2026-07-02)
+
+| Old (layer-first) | New (Express-style, single MVC) |
+|---|---|
+| `app/models/<d>.py` + `app/schemas/<d>.py` | `app/models/<d>.py` (merged, "# ---- API schemas ----" section marker) |
+| `app/controllers/<d>.py` | `app/routes/<d>.py` (APIRouter wiring, decorator-call form `router.post(path, **kwargs)(handler)`) + `app/controllers/<d>.py` (plain handler functions) |
+| `app/repositories/<d>.py` (or `repositories/<d>/`) | merged into `app/services/<d>.py` ("# ---- exceptions ----"/"# ---- repository ----"/"# ---- service ----" sections) |
+| `app/exceptions/<d>.py` | merged into `app/services/<d>.py` likewise |
+| `app/tasks/<d>.py` | `app/services/<d>/tasks.py` (under the domain service subpackage) |
+| `app/controllers/deps.py` | `app/middleware/deps.py` |
+| `app/platform/context.py` | `app/middleware/context.py` |
+| `app/platform/{config,db,logging}.py` | `app/config/{settings,db,logging}.py` |
+| `app/platform/{tokens,passwords,constants,http}.py` | `app/utils/` |
+| `app/platform/repository.py` (BaseRepository) | `app/services/base.py` |
+| `app/platform/seams/` | `app/services/seams/` |
+| `app/platform/{storage,queue}.py` | `app/services/` |
+| `app/models/identity.py` | `app/models/auth.py` (renamed 2026-07-02 to match the auth domain naming used by routes/controllers/services) |
+| `app/models/retrieval.py` (was schemas only) | `app/models/retrieval.py` (new; schemas only) |
+| DELETED entire top-level dirs | `app/platform/`, `app/schemas/`, `app/repositories/`, `app/exceptions/`, `app/tasks/` |
+
+### Frontend old→new mapping (2026-07-01 layer-first views → 2026-07-02 conventional SPA)
+
+| Old (2026-07-01) | New (2026-07-02) |
+|---|---|
+| `src/models/` (types split from lib/api.ts) | `src/types/` |
+| `src/controllers/<x>Controller.ts` (api namespaces split from lib/api.ts) | `src/services/<x>Service.ts` (exported symbol names unchanged: authApi, etc.) |
+| `src/lib/api.ts` | `src/services/http.ts` |
+| `src/lib/auth.tsx` | `src/context/AuthContext.tsx` + extracted `src/hooks/useAuth.ts` |
+| `src/views/app/{AppShell,Sidebar}.tsx` | `src/layouts/` |
+| routed screens (HomePage, LoginPage, SignupPage, DocumentsPage, NotebookPage, UsersPage) | `src/pages/` |
+| component tree (ChatPanel, CitationPanel, DocumentList, FolderTree, ProtectedRoute, StatusBadge) | `src/components/` |
+| `index.css` | `src/styles/` |
+| DELETED entire dirs | `src/views/`, `src/controllers/`, `src/models/`, `src/lib/` |
+
+### Verification record
+
+**Verification (this session, agent-driven):** 4 sequential backend slices (models+schemas,
+controllers+routes, services+repositories, exceptions+tasks+middleware+config+utils) + 1
+frontend slice + fixups. Each slice individually green; full codebase state at end:
+- **Route table proven byte-identical to pre-refactor HEAD** — OpenAPI paths+methods
+  diffed against a temporary git worktree of HEAD (commit `6ff4be7`).
+- **Backend offline suite at baseline:** 42 passed / 93 skipped (Docker was DOWN during
+  the refactor phase). After `pip install openai` (v2.44.0) in `backend/.venv` and a
+  follow-up Docker-gated full-suite re-run: **135 passed, 1 skipped, 0 failures** — exact
+  match to the 2026-07-01 MVC refactor baseline. The 1 skip is the opt-in `real_parser`
+  test needing a live `OPENROUTER_API_KEY` (unrelated to this refactor). Confirms the
+  refactor is a true zero-logic-change: every previously-skipped DB-backed test now passes
+  unchanged.
+- **3 refactor-fallout bugs in TEST FILES ONLY (all fixed during Docker-gated re-run):**
+  a. `tests/conftest.py` + `tests/test_tenant_session.py`: `from app.config import settings as config_mod`
+     bound the Settings OBJECT, not the module — `config_mod.settings.X` raised AttributeError on
+     all 92 DB-backed tests. Root cause: **`app/config/__init__.py`'s re-export of
+     `from app.config.settings import settings` SHADOWS the `app.config.settings` submodule
+     as a package attribute** — even `import app.config.settings as X` binds the object
+     (import-as resolves via getattr on the package). Fixed by binding directly:
+     `from app.config.settings import settings`.
+  b. `tests/test_ingestion_dispatch.py`: three monkeypatch STRING literals still said
+     `"app.tasks.ingestion.get_object_store"` — dotted-path strings are invisible to import
+     sweeps. Updated to `"app.services.ingestion.tasks.get_object_store"`.
+  c. `migrations/versions/0002_rls_scaffolding.py`: import WAS updated (app.platform.config →
+     app.config.settings) during the refactor — a deliberate exception to "never touch migrations".
+     The migration imports settings at runtime; without the edit every fresh-DB migration run would
+     crash. Schema operations untouched. Validated by the full suite applying the whole chain on a
+     fresh Testcontainers container.
+- **`ruff check`:** only the 3 pre-existing `scripts/inspect_document.py` findings; `ruff format` clean.
+- **Frontend:** `tsc -b` clean, 30/30 vitest, `vite build` clean.
+- **Live end-to-end smoke PASSED** (docker compose up pg+redis; alembic at head 0010; uvicorn boot):
+  GET /health 200, POST /auth/signup 201 (real JWT), POST /auth/login → GET /auth/me 200,
+  authed GET /documents 200. The new routes/→controllers/ split serves real traffic.
+- **All work UNCOMMITTED** in the working tree (staged via `git mv`), on main.
+
+### Gotchas (new or updated for 2026-07-02)
+
+- **`app/config/__init__.py`'s re-export SHADOWS the submodule.** The line
+  `from app.config.settings import settings` inside `app/config/__init__.py` re-exports
+  the `settings` object. But this ALSO shadows `app.config.settings` (the submodule) as
+  a package attribute — `import app.config.settings as X` binds the object, not the module
+  (import-as resolves via getattr). Any code that needs the settings singleton must bind
+  directly: `from app.config.settings import settings`, never via a module alias.
+- **Dotted-path STRING LITERALS in monkeypatch/patch targets are invisible to import sweeps.**
+  After any module move, grep for dotted module paths inside string literals
+  (e.g., `monkeypatch.setattr("app.tasks.ingestion.get_object_store", ...)`), not just
+  import statements.
+- **Migrations/versions/*.py are immutable EXCEPT when a migration itself imports a module
+  that no longer exists.** If a migration's `def upgrade()` imports from a domain that was
+  refactored away (e.g., `from app.platform.config import settings` after `app.platform`
+  was deleted), the migration will crash on every fresh-DB run — fix the import in the
+  migration file itself. Schema operations and Alembic directives stay untouched.
+- **`services/chat.py`:** seam `Message` type imported as `SeamMessage` to avoid colliding
+  with the `Message` ORM model now that repo+service+models share the same import space
+  (post-collapse).
+- **`services/documents/documents.py`:** `FolderRepository` is imported function-locally inside
+  `upload_document()` to avoid a documents↔folders circular import (local import defers the
+  cycle until inside the function body).
+- **`register_exception_handlers` was removed from `app/utils/__init__.py` re-exports** —
+  an import-time cycle emerges if it's re-exported; `main.py` imports it directly from
+  `app.utils.http` instead.
+- **Stale `*.tsbuildinfo` can make `npx tsc -b` a false no-op** — delete before trusting it
+  (this bit us during frontend restructure; a prior `.tsbuildinfo` file lied about what was
+  built).
+- **`EMBED_DIM` in `models/ingestion.py`** imports from `app.services.seams.protocols` (was
+  hardcoded temporarily during refactor, restored after).
+
+---
+
+## MVC refactor cross-verification + commit (2026-07-01, this session — SUPERSEDED 2026-07-02)
 
 **The MVC refactor is now COMMITTED (`6ff4be7`) and independently re-verified.** Before
 committing, ran a swarm of 7 Haiku agents (Opus as orchestrator; all reads/writes done by
@@ -36,19 +155,18 @@ all old domain dirs + `src/features/` deleted.
 
 ---
 
-## MVC layout refactor (2026-07-01, this session)
+## MVC layout refactor (2026-07-01, this session — SUPERSEDED by 2026-07-02 single-MVC re-refactor)
 
-**Pure structural refactor — zero logic/schema/API change.** Backend went from
-domain-first (`app/identity/`, `app/documents/`, `app/ingestion/`, `app/knowledge/`,
-`app/retrieval/`, `app/chat/`) to layer-first MVC: `app/models/`, `app/schemas/`,
-`app/controllers/`, `app/services/`, `app/repositories/`, `app/exceptions/`,
-`app/tasks/`. Frontend went from `src/features/` to `src/models/` (types split out of
-`lib/api.ts`), `src/controllers/` (api namespaces split out of `lib/api.ts`), and
-`src/views/` (former `features/**` components, same relative depth to `lib/`/
-`components/`). Full mapping: `docs/mvc-refactor-prompt.md` §3 (still in the repo as
-the historical spec). **Every `app/<domain>/...` and `src/features/...` path
-referenced anywhere below in this file is STALE** — see the table for the new
-location. Old domain dirs and `src/features/` are fully deleted.
+**HISTORICAL RECORD.** This was a pure structural refactor (zero logic/schema/API change)
+from domain-first to layer-first MVC, committed 2026-07-01 as `6ff4be7`. Backend went from
+`app/<domain>/` to `app/{models,schemas,controllers,services,repositories,exceptions,tasks}/`.
+Frontend went from `src/features/` to `src/{models,controllers,views}/`. **This layout was
+itself re-refactored 2026-07-02 into a single-MVC backend (routes+controllers, services
+collapsed) + conventional SPA frontend (types, services, pages, components).** Every
+2026-07-01 path below in this file is STALE. The authoritative old→new mapping (domain-first
+→ layer-first → single-MVC) lives in the new "Single-MVC re-refactor" section at the top of
+this file. Full 2026-07-01 spec: `docs/mvc-refactor-prompt.md` §3 (kept in repo as
+historical spec). Old domain dirs and `src/features/` are fully deleted.
 
 | Old (domain-first) | New (layer-first) |
 |---|---|

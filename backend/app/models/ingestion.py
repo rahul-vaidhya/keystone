@@ -1,12 +1,12 @@
-"""Ingestion domain models: sections, chunks, and embeddings (architecture.md "sections
-tree — the key future-proofing" / "embeddings — polymorphic, multi-granularity index").
-Owned by ``ingestion`` because its stages (structuring, embedding) are what produce them.
-``retrieval`` (F31) reads this data only through ``IngestionService.search_chunks`` — it
-does NOT import these ORM classes directly; the join SQL lives in
-``ingestion/repository.py`` per the module-boundary rule (a module's tables stay behind its
-own service/repository, even for read-only cross-module access). Structural fields only —
-``summary``/``topics`` on ``Section`` are [later] V2 enrichment columns, populated by a
-backfill job behind a flag, never by F21.
+"""Ingestion domain models and Pydantic schemas: sections, chunks, and embeddings
+(architecture.md "sections tree — the key future-proofing" / "embeddings — polymorphic,
+multi-granularity index"). ORM models are owned by ``ingestion`` because its stages
+(structuring, embedding) are what produce them. ``retrieval`` (F31) reads this data only
+through ``IngestionService.search_chunks`` — it does NOT import these ORM classes directly;
+the join SQL lives in ``ingestion/repository.py`` per the module-boundary rule (a module's
+tables stay behind its own service/repository, even for read-only cross-module access).
+Structural fields only — ``summary``/``topics`` on ``Section`` are [later] V2 enrichment
+columns, populated by a backfill job behind a flag, never by F21.
 """
 
 from __future__ import annotations
@@ -15,12 +15,13 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
+from pydantic import BaseModel
 from sqlalchemy import DateTime, ForeignKey, Integer, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.platform.db import Base
-from app.platform.seams import EMBED_DIM
+from app.config.db import Base
+from app.services.seams.protocols import EMBED_DIM
 
 
 class Section(Base):
@@ -129,3 +130,36 @@ class Embedding(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+# ---- API schemas ----
+
+
+class ChunkHit(BaseModel):
+    """One flat_vector search hit — the row shape ``EmbeddingRepository.search_chunks``
+    produces from its embeddings/chunks join. ``distance`` is cosine distance (smaller =
+    closer), per the ``vector_cosine_ops`` HNSW index from migration 0007."""
+
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    content: str
+    char_start: int
+    char_end: int
+    distance: float
+
+    model_config = {"from_attributes": True}
+
+
+class ChunkRecord(BaseModel):
+    """A chunk row fetched directly by id (no kNN, no distance) — the shape
+    ``ingestion.service.get_chunks`` returns for citation resolution (F41): the
+    source-of-truth row a caller re-confirms a citation's span against, rather than
+    trusting a copy made earlier in the request (e.g. ``retrieval``'s ``ContextBlock``)."""
+
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    content: str
+    char_start: int
+    char_end: int
+
+    model_config = {"from_attributes": True}

@@ -1,4 +1,4 @@
-"""Chat HTTP routes. Thin (all logic in service) — also where the per-request
+"""Chat HTTP handlers. Thin (all logic in service) — also where the per-request
 correlation_id is minted and bound into structlog's contextvars, so every log line
 emitted anywhere during this request (service, retrieval, ingestion's search_chunks)
 carries it automatically, and unbound again in `finally` so it never leaks into an
@@ -11,21 +11,19 @@ import uuid
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends
+from fastapi import Depends
 from fastapi.responses import StreamingResponse
 
-from app.controllers.deps import get_ctx
-from app.platform.context import TenantContext
-from app.platform.logging import get_logger
-from app.platform.seams import LLM, Embedder, get_embedder, get_llm
-from app.schemas.chat import ChatRequest, ChatResponse
+from app.config.logging import get_logger
+from app.middleware.context import TenantContext
+from app.middleware.deps import get_ctx
+from app.models.chat import ChatRequest, ChatResponse
 from app.services.chat import chat_service
+from app.services.seams import LLM, Embedder, get_embedder, get_llm
 
-router = APIRouter(prefix="/chat", tags=["chat"])
 logger = get_logger(__name__)
 
 
-@router.post("/ask", response_model=ChatResponse)
 async def ask(
     req: ChatRequest,
     ctx: Annotated[TenantContext, Depends(get_ctx)],
@@ -42,7 +40,6 @@ async def ask(
         structlog.contextvars.unbind_contextvars("correlation_id")
 
 
-@router.post("/stream")
 async def stream_ask(
     req: ChatRequest,
     ctx: Annotated[TenantContext, Depends(get_ctx)],

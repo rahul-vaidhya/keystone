@@ -13,20 +13,69 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 
-from app.exceptions.chat import GenerationFailed
-from app.platform import db as db_mod
-from app.platform.config import settings
-from app.platform.context import TenantContext
-from app.platform.logging import get_logger
-from app.platform.seams import LLM, Embedder, Message, SeamTransientError
-from app.repositories.chat import ConversationRepository, MessageRepository
-from app.schemas.chat import ChatRequest, ChatResponse, ResolvedCitation
-from app.schemas.retrieval import ContextBlock, RetrievalSearchRequest
+from app.config import db as db_mod
+from app.config.logging import get_logger
+from app.config.settings import settings
+from app.middleware.context import TenantContext
+from app.models.chat import ChatRequest, ChatResponse, Conversation, Message, ResolvedCitation
+from app.models.retrieval import ContextBlock, RetrievalSearchRequest
+from app.services.base import BaseRepository
 from app.services.ingestion import ingestion_service
 from app.services.retrieval import retrieval_service
+from app.services.seams import LLM, Embedder, SeamTransientError
+from app.services.seams import Message as SeamMessage
 
 logger = get_logger(__name__)
 
+
+# ---- exceptions ----
+class GenerationFailed(RuntimeError):
+    """The LLM seam call failed and retries were exhausted. Mapped to a 503 by
+    `platform/http.py` — a clean, defined failure path (no uncaught exception), mirroring
+    the ingestion stage failure-model discipline. Raised before any persistence happens
+    (`ChatService.ask` calls the LLM before `_persist`), so there's no partial
+    conversation/message row left behind on this failure path."""
+
+
+# ---- repository ----
+class ConversationRepository(BaseRepository[Conversation]):
+    model = Conversation
+
+    async def create(
+        self, *, knowledge_base_id: uuid.UUID, user_id: uuid.UUID | None
+    ) -> Conversation:
+        conversation = Conversation(
+            org_id=self._ctx.org_id, knowledge_base_id=knowledge_base_id, user_id=user_id
+        )
+        self._db.add(conversation)
+        await self._db.flush()
+        return conversation
+
+
+class MessageRepository(BaseRepository[Message]):
+    model = Message
+
+    async def create(
+        self,
+        *,
+        conversation_id: uuid.UUID,
+        role: str,
+        content: str,
+        citations: list[dict] | None,
+    ) -> Message:
+        message = Message(
+            org_id=self._ctx.org_id,
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            citations=citations,
+        )
+        self._db.add(message)
+        await self._db.flush()
+        return message
+
+
+# ---- service ----
 _CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
 
 _SYSTEM_PROMPT = (
@@ -38,7 +87,7 @@ _SYSTEM_PROMPT = (
 )
 
 
-def build_messages(query: str, blocks: list[ContextBlock]) -> list[Message]:
+def build_messages(query: str, blocks: list[ContextBlock]) -> list[SeamMessage]:
     """Pure function — no DB, no seam. Formats the numbered context blocks (or none) into
     the prompt the grounding instruction above refers to."""
     if blocks:
@@ -47,19 +96,19 @@ def build_messages(query: str, blocks: list[ContextBlock]) -> list[Message]:
         context_text = "(no context was retrieved for this notebook)"
     user_content = f"{context_text}\n\nQuestion: {query}"
     return [
-        Message(role="system", content=_SYSTEM_PROMPT),
-        Message(role="user", content=user_content),
+        SeamMessage(role="system", content=_SYSTEM_PROMPT),
+        SeamMessage(role="user", content=user_content),
     ]
 
 
-async def generate_answer(messages: list[Message], *, llm: LLM) -> AsyncIterator[str]:
+async def generate_answer(messages: list[SeamMessage], *, llm: LLM) -> AsyncIterator[str]:
     """The streaming-ready core: F40 consumes this to completion; a future SSE router
     (F4x) consumes it incrementally instead, with no change to this function."""
     async for token in llm.stream(messages):
         yield token
 
 
-async def call_llm_with_retry(messages: list[Message], *, llm: LLM, correlation_id: str) -> str:
+async def call_llm_with_retry(messages: list[SeamMessage], *, llm: LLM, correlation_id: str) -> str:
     """Retries ONLY transient failures: our own timeout (`asyncio.timeout`) or
     `SeamTransientError` (raised by a real adapter for connection errors/5xx/429 — see
     `platform/seams/real_llm.py`). Anything else (a bug in prompt construction, an

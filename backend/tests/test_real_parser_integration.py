@@ -25,9 +25,9 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.models.ingestion import Chunk, Section
-from app.platform.queue import get_job_queue
-from app.platform.seams import RealParser, get_embedder, get_parser
-from app.platform.storage import get_object_store
+from app.services.queue import get_job_queue
+from app.services.seams import RealParser, get_embedder, get_parser
+from app.services.storage import get_object_store
 from main import app
 from tests.conftest import FakeJobQueue
 

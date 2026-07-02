@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import uuid
 
-from app.platform.context import TenantContext
-from app.platform.seams import Embedder
-from app.schemas.ingestion import ChunkHit
-from app.schemas.retrieval import ContextBlock, RetrievalSearchRequest, RetrievalSearchResponse
+from app.middleware.context import TenantContext
+from app.models.ingestion import ChunkHit
+from app.models.retrieval import ContextBlock, RetrievalSearchRequest, RetrievalSearchResponse
 from app.services.documents import documents_service
 from app.services.ingestion import ingestion_service
 from app.services.knowledge import knowledge_service
+from app.services.seams import Embedder
 
 
 async def resolve_allowed_documents(ctx: TenantContext) -> list[uuid.UUID]:

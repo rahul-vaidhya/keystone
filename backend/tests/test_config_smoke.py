@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.platform.config import Settings, settings
+from app.config.settings import Settings, settings
 
 
 def test_defaults() -> None:

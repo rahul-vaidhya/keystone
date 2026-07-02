@@ -49,8 +49,19 @@ This is where AI drift most commonly happens. The feature works, but it violates
 
 Check:
 
-- **Architecture boundaries** — does code in the right place own the right responsibilities? No UI logic in API routes. No DB calls in components. Whatever the project's boundaries are — are they respected?
-- **File/package layout convention** (if the project has one — check its architecture/codestandards docs) — has any layer file crossed that project's promote-to-subpackage trigger without being split? Has any module been padded with a folder or file it doesn't structurally need, just to look "more organized"? Both directions are drift: under-splitting a file that's grown into several real responsibilities, and over-splitting a module that's still one cohesive concern.
+- **Architecture boundaries** — does code in the right place own the right responsibilities? No UI logic in routes. No DB calls in components. Whatever the project's boundaries are — are they respected?
+
+  **For this project (Veratas — single-MVC backend + React SPA frontend):**
+  - Backend: no SQL outside repository classes (`# ---- repository ----` sections in `services/<domain>.py`, `services/documents/{documents,folders,tags}.py`, `services/ingestion/repository.py`)
+  - Backend: no business logic in `routes/` (routes wire paths) or `controllers/` (controllers are thin handlers)
+  - Backend: cross-domain calls only through `services/<domain>.py` entry points
+  - Backend: every DB query scoped by `org_id` at call site AND inside repository methods
+  - Backend: external services (parser/embedder/LLM) only reached through seams in `app/services/seams/`
+  - Frontend: no backend API calls outside `services/` modules (not in components, pages, or hooks directly)
+
+- **File/package layout convention** (if the project has one — check its architecture/codestandards docs) — has any file crossed that project's promote-to-subpackage trigger without being split? Has any module been padded with a folder or file it doesn't structurally need, just to look "more organized"? Both directions are drift: under-splitting a file that's grown into several real responsibilities, and over-splitting a module that's still one cohesive concern.
+  
+  **For this project:** trigger is >200 lines AND 2+ independent responsibilities. Example: `models/retrieval.py` containing only API schemas with no table ownership is correct, not a gap.
 - **Design system** — are the correct tokens, classes, and patterns used? Any hardcoded values that should be variables? Any raw color classes that should use the design system?
 - **Code standards** — naming conventions, file organisation, TypeScript strictness, error handling patterns — do they match what the project established?
 - **Existing patterns** — does this feature introduce a new pattern when an existing one should have been used?

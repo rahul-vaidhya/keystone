@@ -14,12 +14,12 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from app.config import settings
 from app.models.chat import Conversation
 from app.models.chat import Message as MessageRow
 from app.models.documents import Document
 from app.models.ingestion import Chunk, Embedding
-from app.platform import config
-from app.platform.seams import EMBED_DIM, Message, SeamTransientError, get_llm
+from app.services.seams import EMBED_DIM, Message, SeamTransientError, get_llm
 from main import app
 
 FAKE_MODEL = f"fake-embed-{EMBED_DIM}"
@@ -357,7 +357,7 @@ async def test_ask_persists_conversation_and_message_with_citations(
 async def test_ask_llm_transient_failure_retries_then_returns_clean_503(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config.settings, "LLM_RETRY_BACKOFF_BASE_SECONDS", 0.01)
+    monkeypatch.setattr(settings, "LLM_RETRY_BACKOFF_BASE_SECONDS", 0.01)
     tokens = await _signup(client, "chat-fail@test.com", "Fail")
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
     notebook_id = (await client.post("/notebooks", headers=headers, json={"name": "NB2"})).json()[
@@ -395,7 +395,7 @@ async def test_ask_llm_non_transient_error_propagates_without_retry(
 
 
 def test_build_messages_includes_grounding_instruction_and_numbered_context() -> None:
-    from app.schemas.retrieval import ContextBlock
+    from app.models.retrieval import ContextBlock
     from app.services.chat import build_messages
 
     block = ContextBlock(

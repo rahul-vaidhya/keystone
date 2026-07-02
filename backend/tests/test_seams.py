@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.platform import config
-from app.platform.seams import (
+from app.config import settings
+from app.services.seams import (
     EMBED_DIM,
     LLM,
     Embedder,
@@ -100,7 +100,7 @@ def test_fake_llm_exposes_model_name() -> None:
 
 
 def test_real_llm_exposes_configured_model_name(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config.settings, "LLM_MODEL", "some-model")
+    monkeypatch.setattr(settings, "LLM_MODEL", "some-model")
     assert RealLLM().model == "some-model"
 
 
@@ -108,7 +108,7 @@ def test_real_llm_exposes_configured_model_name(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_real_llm_classifies_rate_limit_and_server_errors_as_transient() -> None:
-    from app.platform.seams.real_llm import _classify_transient
+    from app.services.seams.real_llm import _classify_transient
 
     class _FakeStatusError(Exception):
         def __init__(self, status_code: int) -> None:
@@ -150,21 +150,21 @@ def test_factory_returns_real_adapters_independently_per_seam(
 ) -> None:
     # Each seam's mode is its own switch (F23) — flipping PARSER_MODE must not affect the
     # others, validating the whole point of the per-seam refinement.
-    monkeypatch.setattr(config.settings, "PARSER_MODE", "real")
+    monkeypatch.setattr(settings, "PARSER_MODE", "real")
     assert isinstance(get_parser(), RealParser)
     assert isinstance(get_embedder(), FakeEmbedder)
     assert isinstance(get_llm(), FakeLLM)
 
-    monkeypatch.setattr(config.settings, "PARSER_MODE", "fake")
-    monkeypatch.setattr(config.settings, "EMBEDDER_MODE", "real")
-    monkeypatch.setattr(config.settings, "LLM_MODE", "real")
+    monkeypatch.setattr(settings, "PARSER_MODE", "fake")
+    monkeypatch.setattr(settings, "EMBEDDER_MODE", "real")
+    monkeypatch.setattr(settings, "LLM_MODE", "real")
     assert isinstance(get_parser(), FakeParser)
     assert isinstance(get_embedder(), RealEmbedder)
     assert isinstance(get_llm(), RealLLM)
 
 
 def test_factory_rejects_unknown_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config.settings, "EMBEDDER_MODE", "bogus")
+    monkeypatch.setattr(settings, "EMBEDDER_MODE", "bogus")
     with pytest.raises(SeamNotConfigured):
         get_embedder()
 
@@ -173,19 +173,19 @@ def test_factory_rejects_unknown_mode(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_real_embedder_raises_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config.settings, "OPENAI_API_KEY", None)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
     with pytest.raises(SeamNotConfigured):
         await RealEmbedder().embed(["x"])
 
 
 async def test_real_parser_raises_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config.settings, "OPENROUTER_API_KEY", None)
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", None)
     with pytest.raises(SeamNotConfigured):
         await RealParser().extract(b"x", "application/pdf")
 
 
 async def test_real_parser_rejects_non_pdf_mime(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config.settings, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "test-key")
     docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     with pytest.raises(ValueError, match="PDF only"):
         await RealParser().extract(b"x", docx_mime)
@@ -195,7 +195,7 @@ async def test_real_parser_rejects_non_pdf_mime(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_negligible_text_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config.settings, "PARSER_OCR_FALLBACK_MIN_CHARS_PER_PAGE", 20)
+    monkeypatch.setattr(settings, "PARSER_OCR_FALLBACK_MIN_CHARS_PER_PAGE", 20)
     assert _is_negligible_text("", page_count=1) is True
     assert _is_negligible_text("x" * 5, page_count=1) is True
     assert _is_negligible_text("x" * 25, page_count=1) is False

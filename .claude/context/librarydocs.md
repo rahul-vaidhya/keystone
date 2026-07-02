@@ -5,19 +5,21 @@ web-search the current official docs (versions move). Focus here is "the way we 
 
 ## FastAPI
 - One `TenantContext` dependency resolves the authenticated user → `org_id`, injected everywhere.
+  Defined in `app/middleware/deps.py`.
   ```python
   async def get_ctx(user = Depends(current_user)) -> TenantContext:
       return TenantContext(org_id=user.org_id, user_id=user.id, role=user.role)
   ```
-- Controllers (`app/controllers/<domain>.py`) are thin (see codestandards). One global
-  exception handler maps domain errors → HTTP.
+- Routes (`app/routes/<domain>.py`) wire paths only; controllers (`app/controllers/<domain>.py`)
+  are thin (see codestandards). One global exception handler maps domain errors → HTTP.
 - OpenAPI at `/docs` is free; the SPA uses a hand-written typed fetch wrapper (no SDK codegen).
 
 ## SQLAlchemy (async) + Alembic
-- Async engine + `async_sessionmaker`; session injected per request. Repositories take the session.
+- Async engine + `async_sessionmaker`; session injected per request. Repository classes (inside
+  `services/<domain>/`) take the session.
 - Migrations via Alembic; **never** edit a shipped migration — add a new one.
-- **One session helper for everything — `tenant_session(org_id)` — used by BOTH the request path
-  and arq workers** (see architecture.md "Tenancy plumbing"):
+- **One session helper for everything — `tenant_session(org_id)` (in `app/config/db.py`) — used by
+  BOTH the request path and arq workers** (see architecture.md "Tenancy plumbing"):
   ```python
   @asynccontextmanager
   async def tenant_session(org_id):
@@ -33,8 +35,8 @@ web-search the current official docs (versions move). Focus here is "the way we 
     will not parse. `set_config(..., is_local => true)` is the transaction-scoped function equivalent
     and takes a bound value. Being transaction-scoped, it never leaks `org_id` into the next pooled
     checkout (plain `set_config(..., false)` / plain `SET` would).
-  - Repositories **always** apply `WHERE org_id = :org` regardless of `RLS_ENABLED`. RLS is the
-    backstop, the app filter is the guarantee.
+  - Repository classes (inside `services/<domain>/`) **always** apply `WHERE org_id = :org` regardless
+    of `RLS_ENABLED`. RLS is the backstop, the app filter is the guarantee.
 - **RLS — DESIGNED NOW, ENABLED IN PHASE 6 (Security Hardening). Do not turn on in MVP.** The
   migration is written but the teeth are gated by `RLS_ENABLED`:
   ```sql
@@ -73,22 +75,22 @@ web-search the current official docs (versions move). Focus here is "the way we 
     a full `k`. Filtered-recall tuning is flagged as a **V2 revisit**.
 
 ## arq (background workers)
-- Task functions live in `app/tasks/<domain>.py`; `worker.py` only imports and registers
-  them in `WorkerSettings.functions`. Enqueue from a service. Tasks are thin and call the
-  domain's `services/<domain>.py`. Pass the `request_id` and `org_id` in the job payload for
-  tracing + scoping.
-- **A worker opens its DB work via `tenant_session(org_id)` using the `org_id` from the job payload**
-  — the same helper the request path uses — so background writes are tenant-scoped exactly like
-  request writes (no HTTP `TenantContext` required).
+- Task functions live in `app/services/<domain>/tasks.py` (currently only `app/services/ingestion/tasks.py`);
+  `worker.py` only imports and registers them in `WorkerSettings.functions`. Enqueue from a service.
+  Tasks are thin and call the domain's service functions. Pass the `request_id` and `org_id` in the job
+  payload for tracing + scoping.
+- **A worker opens its DB work via `tenant_session(org_id)` (from `app/config/db.py`) using the `org_id`
+  from the job payload** — the same helper the request path uses — so background writes are tenant-scoped
+  exactly like request writes (no HTTP `TenantContext` required).
 - Ingestion stages are separate task functions chained on success; each is idempotent so retries
   are safe and a `FAILED` doc resumes from its last good stage.
 
-## The 3 seams (our wrappers, in `app/platform/seams/`)
+## The 3 seams (our wrappers, in `app/services/seams/`)
 - Real adapters wrap the vendor APIs; **fakes** are the default in tests/local:
   - `FakeEmbedder`: deterministic vector from `sha256(text)` → reproducible retrieval assertions.
   - `FakeLLM`: streams back a templated answer citing the provided context → tests citation mapping.
   - `FakeParser`: returns a fixed text + outline → tests structuring without a real PDF.
-- Swap real⇄fake via config; production wires real adapters, CI wires fakes.
+- Swap real⇄fake via per-seam config (`PARSER_MODE`, `EMBEDDER_MODE`, `LLM_MODE`); production wires real adapters, CI wires fakes.
 
 ## SSE streaming (chat)
 - Chat endpoint returns `StreamingResponse` (or EventSourceResponse) yielding tokens from
@@ -109,7 +111,7 @@ web-search the current official docs (versions move). Focus here is "the way we 
 
 ## Parser / OCR vendor
 - **Resolved F23: OpenRouter's file-parser plugin**, called directly over HTTP from inside
-  `RealParser` (`app/platform/seams/real_parser.py`) — never hand-rolled OCR, never leaks
+  `RealParser` (`app/services/seams/real_parser.py`) — never hand-rolled OCR, never leaks
   outside the seam.
 - Send the PDF as a base64 `file` content part on a `/chat/completions` call, with
   `plugins: [{"id": "file-parser", "pdf": {"engine": ...}}]`. The model/generated text is

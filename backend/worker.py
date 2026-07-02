@@ -9,14 +9,14 @@ from __future__ import annotations
 
 from arq.connections import RedisSettings
 
-from app.platform.config import settings
-from app.platform.logging import configure_logging
-from app.platform.queue import ArqJobQueue
-from app.tasks.ingestion import (
+from app.config.logging import configure_logging
+from app.config.settings import settings
+from app.services.ingestion.tasks import (
     run_embedding_stage_job,
     run_parsing_stage_job,
     run_structuring_stage_job,
 )
+from app.services.queue import ArqJobQueue
 
 
 async def startup(ctx: dict) -> None:

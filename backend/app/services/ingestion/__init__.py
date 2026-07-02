@@ -16,16 +16,16 @@ from __future__ import annotations
 
 import uuid
 
-from app.platform.context import TenantContext
-from app.platform.queue import JobQueue
-from app.platform.seams import Embedder, Parser
-from app.platform.storage import ObjectStore
-from app.schemas.documents import DocumentOut
-from app.schemas.ingestion import ChunkHit, ChunkRecord
+from app.middleware.context import TenantContext
+from app.models.documents import DocumentOut
+from app.models.ingestion import ChunkHit, ChunkRecord
 from app.services.ingestion import embedding as _embedding
 from app.services.ingestion import parsing as _parsing
 from app.services.ingestion import search as _search
 from app.services.ingestion import structuring as _structuring
+from app.services.queue import JobQueue
+from app.services.seams import Embedder, Parser
+from app.services.storage import ObjectStore
 
 
 class IngestionService:

@@ -6,9 +6,10 @@ loaded **first, every session**.
 
 > Project: a private, source-grounded company knowledge base (NotebookLM-style).
 > Stack: **FastAPI + async workers + Postgres/pgvector** backend, **Vite React** SPA.
-> Architecture: **layer-first MVC monolith** (`app/{models,schemas,controllers,services,
-> repositories,exceptions,tasks}/`, one file per domain inside each layer — locked
-> 2026-07-01 refactor, was domain-first before), ports only for 3 seams (parser/embedder/llm),
+> Architecture: **single-MVC: Express-style MVC backend** (`app/{models,routes,controllers,services,
+> middleware,config,utils}/`, JSON-only, no view layer) **+ conventional React SPA frontend as view layer** 
+> (`frontend/src/{pages,components,layouts,services,context,hooks,types,styles}/` — locked 2026-07-02 refactor, 
+> was layer-first MVC monolith before 2026-07-02), ports only for 3 seams (parser/embedder/llm),
 > staged ingestion pipeline, flag-gated V2/V3 retrieval. See `.claude/context/architecture.md`.
 
 ---
@@ -54,9 +55,8 @@ These are procedures, not code. They are language-agnostic.
   convention (`architecture.md` "Package-layout convention"): start each layer file flat; promote to
   a subpackage only when it exceeds ~200 lines AND mixes 2+ genuinely independent responsibilities —
   never pad a module that doesn't need the split. Land tests with the code.
-- **review** (`/review`, after implementing): verify — no SQL outside `repositories/<domain>.py`; no
-  business logic in `controllers/<domain>.py`; every query scoped by `org_id`; external calls go through a seam; the feature's
-  Definition of Done is met; **any layer file that has crossed the package-layout trigger (>200 lines
+- **review** (`/review`, after implementing): verify — no SQL outside the repository classes (the `# ---- repository ----` sections in `services/<domain>.py`, `services/documents/{documents,folders,tags}.py`, or `services/ingestion/repository.py`); no business logic in `routes/<domain>.py` (routes wire paths) or `controllers/<domain>.py` (controllers are thin handlers); every query scoped by `org_id`; external calls go through a seam; the feature's
+  Definition of Done is met; **any file that has crossed the package-layout trigger (>200 lines
   AND 2+ independent responsibilities) has been promoted to a subpackage, and no module has been
   padded with files it doesn't need.** Report violations, **do not auto-fix** without confirmation.
 - **recover** (`/recover`, when the agent spirals or tests fail mysteriously): stop adding code. Diagnose
@@ -75,18 +75,17 @@ boxes in `.claude/progresstracker.md` with the commit ref. Never end a session w
 
 1. A domain may call another domain **only through its `services/<domain>.py`**, never its
    repository or tables.
-2. **No SQL outside `repositories/<domain>.py`.** No business logic in `controllers/<domain>.py`.
+2. **No SQL outside the repository classes** (the `# ---- repository ----` sections in `services/<domain>.py`, `services/documents/{documents,folders,tags}.py`, or `services/ingestion/repository.py`). **No business logic in `routes/<domain>.py` or `controllers/<domain>.py`** — routes wire paths, controllers are thin handlers.
 3. **Every query is scoped by `org_id`.** RLS is the backstop, not the excuse to skip it.
-4. External services (LLM, embeddings, parser) are reached **only through a seam interface**.
+4. External services (LLM, embeddings, parser) are reached **only through a seam interface** (in `app/services/seams/`).
 5. Ingestion stages are **idempotent and resumable**; intermediate artifacts are persisted.
 6. **Structural metadata is captured now; semantic enrichment (summaries/topics/graph) is
    designed-for now but populated later behind a flag.** Never break this split.
 7. MVP retrieval is flat vector search. Hierarchical (V2) and graph (V3) are additive,
    behind flags, with **no schema rewrite**.
-8. **Package-layout convention (locked F31 refactor, paths updated by the 2026-07-01 MVC
-   refactor):** a layer file (`services/<domain>.py`/`repositories/<domain>.py`/etc.) is
+8. **Package-layout convention (locked F31 refactor, updated by 2026-07-02 refactor):** a file at the services layer (e.g., `services/<domain>.py`, `services/documents/{documents,folders,tags}.py`, `services/ingestion/repository.py`) is
    promoted to a subpackage only when it exceeds ~200 lines AND mixes 2+ independent
    responsibilities — never speculatively, never to pad a domain that doesn't need it
-   (`retrieval` having no `models/retrieval.py`/`repositories/retrieval.py` is correct, not
+   (`models/retrieval.py` containing only API schemas with no table ownership is correct, not
    a gap). Full rule + the ORM metadata-registration caveat: `architecture.md` "Package-layout
    convention".

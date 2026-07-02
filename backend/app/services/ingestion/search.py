@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import uuid
 
-from app.platform import db as db_mod
-from app.platform.context import TenantContext
-from app.repositories.ingestion import ChunkRepository, EmbeddingRepository
-from app.schemas.ingestion import ChunkHit, ChunkRecord
+from app.config import db as db_mod
+from app.middleware.context import TenantContext
+from app.models.ingestion import ChunkHit, ChunkRecord
+from app.services.ingestion.repository import ChunkRepository, EmbeddingRepository
 
 
 async def search_chunks(

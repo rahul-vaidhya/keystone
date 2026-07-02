@@ -5,12 +5,14 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
 
 ---
 
-> **Note:** The backend was refactored (2026-07-01) from domain-first (`app/<domain>/`) to
-> layer-first MVC (`app/{models,schemas,controllers,services,repositories,exceptions,tasks}/`).
-> The frontend went from `src/features/` to `src/views/` + split `lib/api.ts` into `src/models/`
-> and `src/controllers/`. **Every `app/<domain>/...` and `src/features/...` path referenced
-> in the entries below describes the layout at the time that work was done and is STALE.**
-> The authoritative old→new mapping lives in `.claude/memory.md` ("MVC layout refactor" section).
+> **Note:** The codebase underwent TWO major refactors: (1) 2026-07-01, domain-first
+> (`app/<domain>/`) → layer-first MVC (`app/{models,schemas,controllers,services,repositories,exceptions,tasks}/`)
+> with frontend `src/features/` → `src/{models,controllers,views}/`. (2) 2026-07-02,
+> layer-first → single-MVC (Express-style backend with `routes/`+`controllers/` split,
+> collapsed `services/`, frontend conventional SPA with `src/{types,services,pages,components,layouts}`).
+> **Every `app/<domain>/...` and `src/features/...` path referenced in the entries below describes
+> the layout at the time that work was done and is STALE.** The authoritative mapping (all three
+> layouts) lives in `.claude/memory.md` ("Single-MVC re-refactor" section at the top).
 
 ## Foundation
 - [x] Foundation review + resolution pass (context docs only; 2026-06-21) — C1–C3, M1–M5, L1–L6 resolved.
@@ -347,6 +349,26 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       layers, both module-boundary rules, stale-import sweep, frontend split, docs) came
       back clean; re-ran green at commit time (135 backend / 30 frontend, ruff clean).
 
+- [x] **Single-MVC re-refactor (2026-07-02, uncommitted)** — re-refactored the 2026-07-01
+      layer-first MVC into a unified single-MVC: Express-style backend (routes/+controllers/
+      split, repositories/exceptions/schemas collapsed into services/models/) + conventional
+      React SPA frontend (types, services, pages, components, layouts). ZERO logic/schema/
+      API/behavior change — pure path + file-location refactor. Executed by 5 sequential
+      agent slices (4 backend, 1 frontend) with fixups. Owner decisions: (a) literal
+      `routes/`+`controllers/` split; (b) full service/model collapse; (c) frontend `src/types/`.
+      **Verification:** Route table proven byte-identical to pre-refactor HEAD via OpenAPI
+      diff. **Docker-gated full-suite re-run CLOSED:** 135 passed, 1 skipped (opt-in
+      `real_parser` test needing a live API key, unrelated to this refactor), 0 failures —
+      exact baseline match to 2026-07-01 MVC refactor. **3 test-file fixes + openai SDK
+      installed (v2.44.0):** `app/config/__init__.py` shadowing the `settings` submodule
+      (fixed imports in conftest/test_tenant_session), monkeypatch string literals updated
+      (test_ingestion_dispatch), migrations/0002 import updated (app.platform.config →
+      app.config.settings — deliberate exception, schema untouched). **Live end-to-end
+      smoke PASSED:** GET /health 200, signup/login/me/docs all working. `ruff check` clean
+      (3 pre-existing scripts findings only). Frontend: `tsc -b` clean, 30/30 vitest, `vite build`
+      clean. See memory.md "Single-MVC re-refactor" for full old→new mapping tables, gotchas,
+      and verification record. Work staged via git mv, uncommitted on main.
+
 ## Phase 4 — Chat
 - [x] F40 Grounded generation (`1572fa8`) — new `app/chat` module (`schemas.py`/
       `service.py`/`router.py`/`exceptions.py` only — stateless, no `models.py`/
@@ -545,8 +567,16 @@ Testcontainers Postgres — 135 passed, 1 skipped (opt-in `real_parser`, needs a
 API key), 0 failures. `ruff check .` re-confirmed unchanged (3 pre-existing findings
 only). MVC refactor now fully verified end to end. See memory.md "MVC layout refactor"
 for the path-mapping table.
-Next action: **F42 admin debug bundle, or F60 RLS hardening** — ask the user which to resume.
-(MVC refactor committed `6ff4be7`; working tree clean. Verified clean by a 7-Haiku-agent
-cross-audit before commit — see memory.md "MVC refactor cross-verification".)
+**Single-MVC re-refactor DONE (2026-07-02, UNCOMMITTED).** Layer-first backend+frontend
+re-refactored into Express-style backend (routes/controllers split, collapsed services)
++ conventional SPA frontend (types, services, pages, components). Route table byte-identical
+to HEAD. **Docker-gated full-suite re-run CLOSED: 135 passed, 1 skipped, 0 failures.**
+Fixed 3 test-file bugs (app/config shadowing, monkeypatch string literals, migrations/0002
+import). Installed openai SDK (v2.44.0). Live end-to-end smoke (GET /health, signup/login/
+auth/documents) passed. `ruff check` unchanged (3 pre-existing). Frontend: tsc/vitest/build
+all clean. Work staged via git mv on main, uncommitted. See memory.md "Single-MVC re-refactor"
+for full mapping tables, verification record, and gotchas.
+Next action: **Commit the single-MVC refactor, then proceed to F42 admin debug bundle or F60
+RLS hardening.**
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

@@ -16,64 +16,62 @@ run as **backfill jobs over already-ingested data** — never a re-parse, never 
 
 ---
 
-## Folder map (layer-first MVC — locked 2026-07-01 refactor)
+## Folder map (single-MVC — Express-style backend + React SPA; 2026-07-02 refactor)
 
-**Backend is layer-first, not domain-first**: code is grouped by role (model / schema /
-controller / service / repository) and each layer package holds one file per **domain**
-(auth, documents, ingestion, knowledge, retrieval, chat). A "module" in the boundary rules
-below now means a domain **name**, not a folder — its logic is spread horizontally across
-the layer packages under that same file stem.
+**2026-07-02 UPDATE:** The codebase moved from layer-first MVC on both tiers to a single MVC: backend is Express-style (routes + controllers + services, no view layer) and frontend is conventional React SPA (pages, layouts, components). See the refactor mapping in memory.md "Single-MVC refactor (2026-07-02)".
+
+**Backend is Express-style MVC (single MVC for the whole system)**: one package per layer (`models/`, `routes/`, `controllers/`, `services/`, `middleware/`, `config/`, `utils/`), one file per domain (auth, documents, ingestion, knowledge, retrieval, chat) inside each layer. models = ORM + API schemas; routes = HTTP wiring; controllers = thin handlers; services = business logic + SQL repository classes. The frontend SPA is the view layer — there is deliberately no second MVC inside it.
 
 ```
 backend/
   app/
-    platform/          # config, db session, TenantContext, logging, storage, queue,
-                        #   the 3 seam Protocols + fakes (platform/seams/)
-    models/             # ORM models, one file per domain: identity.py, documents.py,
-                        #   ingestion.py, knowledge.py, chat.py  (retrieval owns no table)
-    schemas/            # Pydantic request/response types, one file per domain: auth.py,
-                        #   documents.py, ingestion.py, knowledge.py, retrieval.py, chat.py
-    controllers/        # HTTP routers (thin), one file per domain: auth.py, documents.py,
-                        #   ingestion.py, notebooks.py (= knowledge domain), retrieval.py,
-                        #   chat.py, + deps.py (current_user/get_ctx/require_admin)
-    services/            # use cases / business logic, one file OR subpackage per domain:
+    config/             # settings.py (pydantic-settings), db.py, logging.py
+    middleware/         # context.py (TenantContext), deps.py (current_user/get_ctx)
+    utils/              # tokens.py, passwords.py, constants.py, http.py (utilities)
+    services/           # business logic + SQL repositories, one file OR subpackage per domain:
                         #   auth.py, documents/ (subpackage), ingestion/ (subpackage),
-                        #   knowledge.py, retrieval.py, chat.py
-    repositories/        # ALL SQL, one file OR subpackage per domain: auth.py,
-                        #   documents/ (subpackage), ingestion.py, knowledge.py, chat.py
-    exceptions/          # domain exception hierarchies: auth.py, documents.py,
-                        #   knowledge.py, chat.py
-    tasks/               # arq task functions: ingestion.py
+                        #   knowledge.py, retrieval.py, chat.py, base.py (BaseRepository),
+                        #   seams/ (3 seam Protocols + fakes + real adapters),
+                        #   storage.py, queue.py
+    models/             # ORM models + Pydantic API schemas (merged), one file per domain:
+                        #   auth.py, documents.py, ingestion.py, knowledge.py, retrieval.py,
+                        #   chat.py  (retrieval has schemas only, owns no table)
+    routes/             # HTTP path wiring only, one file per domain: auth.py, documents.py,
+                        #   ingestion.py, notebooks.py (= knowledge domain), retrieval.py, chat.py
+    controllers/        # thin handlers (parse/validate/call service/shape response),
+                        #   one file per domain: auth.py, documents.py, ingestion.py,
+                        #   notebooks.py, retrieval.py, chat.py
   tests/
   migrations/           # alembic
   worker.py             # arq entrypoint
   main.py               # FastAPI entrypoint
 frontend/
-  src/{views,components,lib(api client),models,controllers,...}
+  src/
+    pages/              # routed screens: HomePage, LoginPage, SignupPage, DocumentsPage, etc.
+    layouts/            # AppShell, Sidebar (shared page containers)
+    components/         # reusable non-routed UI: StatusBadge, FolderTree, ChatPanel, etc.
+    services/           # API client namespaces: authApi, documentsApi, chatApi, etc. +
+                        #   http.ts (apiFetch wrapper), AuthContext.tsx, useAuth.ts hook
+    types/              # TypeScript types extracted from API schemas
+    styles/             # CSS (index.css)
+  index.html
 context/                # these files
 ```
 
-**Domain-naming note (read the file name, not the folder, to find a domain's home):**
-the "identity" domain (orgs/users/auth) is named `auth` in `controllers/`, `services/`,
-`repositories/`, `schemas/`, `exceptions/` but keeps `models/identity.py` (its ORM file
-never got renamed to `auth.py` — this is deliberate, carried verbatim from the refactor
-spec). The "knowledge" domain (notebooks) is named `notebooks` only in
-`controllers/notebooks.py` (matches the public "Notebook" API terminology); every other
-layer keeps the internal `knowledge` name (`schemas/knowledge.py`, `services/knowledge.py`,
-`repositories/knowledge.py`, `exceptions/knowledge.py`, `models/knowledge.py`) — locked
-since F30, unchanged by the MVC refactor. Full old-path → new-path table: memory.md "MVC
-layout refactor".
+**Single-MVC terminology:** "domain" names match routing (auth, documents, knowledge → notebooks) and services (same names).
+The **routes/ layer** is wiring only (FastAPI `APIRouter` + `@router.post` path definitions).
+The **controllers/ layer** is thin handlers (request validation → service call → response shape).
+The **services/ layer** holds business logic AND repository classes (SQL). Services reach other domains only via their service module; never via repository classes or models directly.
 
-Each domain's logic is spread across:
-`app/controllers/<domain>.py` (HTTP only) · `app/services/<domain>.py` or
-`services/<domain>/` (use cases / logic) · `app/repositories/<domain>.py` or
-`repositories/<domain>/` (ALL SQL) · `app/schemas/<domain>.py` (Pydantic + domain types) ·
-`app/models/<domain>.py` (ORM) · `app/tasks/<domain>.py` (background work — only where a
-domain has one, currently ingestion only).
+**Domain-naming note:**
+The "identity" domain (orgs/users/auth) is named `auth` in `routes/auth.py`, `controllers/auth.py`, `services/auth.py`, `models/auth.py`. The "knowledge" domain (notebooks) is named `notebooks` only in `routes/notebooks.py` and `controllers/notebooks.py` (matches the public "Notebook" API terminology); its internal service and models stay `knowledge_base*` in `services/knowledge.py` and `models/knowledge.py` — locked since F30, unchanged by the single-MVC refactor.
 
-### Package-layout convention (locked, F00–F31 structural refactor)
+Each domain's logic lives in one file or subpackage per layer:
+`app/routes/<domain>.py` (HTTP path wiring) · `app/controllers/<domain>.py` (handlers) · `app/services/<domain>.py` or `services/<domain>/` (business logic + repository classes) · `app/models/<domain>.py` (ORM + Pydantic schemas, merged).
 
-Each domain's layer file starts flat. A flat file is **promoted to a subpackage of the same
+### Package-layout convention (locked, applies to all backend code)
+
+Each domain's service/model file starts flat. A flat file is **promoted to a subpackage of the same
 name** (e.g. `services/documents.py` → `services/documents/__init__.py` + submodules) only
 when **both** hold:
 
@@ -86,23 +84,12 @@ A file that's long but is one class/one concern with many small methods is **not
 promoted. A file with multiple small classes but no real logic (e.g. several plain ORM
 declarations in one `models/<domain>.py`) is **not** promoted either — declaring data
 classes together is normal, not drift. **Do not pad**: a domain that legitimately owns no
-table keeps no `models/retrieval.py`/`repositories/retrieval.py` file at all (`retrieval`
-is correct as-is — no models/repository file, `schemas/retrieval.py` and
-`services/retrieval.py` only). Over-splitting to satisfy "one file per domain, always" is
+table keeps no `models/retrieval.py` file at all (though it has `models/retrieval.py` for
+schemas/types only; `retrieval` is correct as-is — models/schemas-only, `services/retrieval.py`
+only, no repository class). Over-splitting to satisfy "one file per domain, always" is
 itself a violation of this convention, not a stricter reading of it.
 
-When `services/<domain>.py`/`repositories/<domain>.py` is split, the original public
-surface (the module-level class/singleton/function names other modules and tests import)
-**must resolve at the exact same import path afterward**, via the subpackage's
-`__init__.py` re-exporting everything a real call site uses today — including any private
-(underscore-prefixed) names a test file imports directly (debug-only scripts are not
-load-bearing the same way: fix their one-line import instead of promoting a
-deliberately-private helper to the package's public API). Composition inside a split
-`services/<domain>/` is **always delegation to free functions taking explicit arguments**
-(the same shape `services/ingestion/` and `services/documents/` use) — **never mixins**.
-If a clean free-function split would need many self-like positional args threaded through
-every call, that's evidence the responsibilities aren't actually separable; leave the file
-flat rather than force a bad split.
+When `services/<domain>.py` is split, the original public surface (the module-level class/singleton/function names other modules and tests import) **must resolve at the exact same import path afterward**, via the subpackage's `__init__.py` re-exporting everything a real call site uses today — including any private (underscore-prefixed) names a test file imports directly (debug-only scripts are not load-bearing the same way: fix their one-line import instead of promoting a deliberately-private helper to the package's public API). Composition inside a split `services/<domain>/` is **always delegation to free functions taking explicit arguments** (the same shape `services/ingestion/` and `services/documents/` use) — **never mixins**. If a clean free-function split would need many self-like positional args threaded through every call, that's evidence the responsibilities aren't actually separable; leave the file flat rather than force a bad split.
 
 **The ORM registration rule:** every ORM model class must still be imported, by name, at
 metadata-assembly time (today: `migrations/env.py`'s side-effect imports of each domain's
@@ -110,45 +97,44 @@ metadata-assembly time (today: `migrations/env.py`'s side-effect imports of each
 subpackage, its `__init__.py` **must import every model class** (not just re-export the
 ones other modules happen to use) — Alembic only sees a table if its class has been
 imported somewhere on the path to `Base.metadata`; a model class that's merely defined in
-an unimported submodule silently vanishes from autogenerate/migrations with no error. No
-`models/<domain>.py` has been promoted yet (none crossed the 200-line/independent-
-responsibility threshold as of F41) — this rule is recorded now, before it's needed, so the
-first domain that does cross it doesn't relearn this the hard way.
+an unimported submodule silently vanishes from autogenerate/migrations with no error. Note:
+since the 2026-07-02 single-MVC refactor merged schemas into models, `models/<domain>.py`
+now holds both ORM classes and Pydantic schemas; the rule still applies — ensure every
+ORM class in the module is imported at metadata-assembly time. No `models/<domain>.py` has
+been promoted yet (none crossed the 200-line/independent-responsibility threshold as of F52)
+— this rule is recorded now, before it's needed, so the first domain that does cross it
+doesn't relearn this the hard way.
 
-**Reference domain:** `knowledge` and `retrieval` — every layer file is one cohesive
-concern at a sane size, and `retrieval` correctly has no `models/retrieval.py`/
-`repositories/retrieval.py` since it owns no table. Hold new domains to this, not to "more
-files is more structured."
+**Reference domain:** `knowledge` and `retrieval` — every domain's service/model file is one
+cohesive concern at a sane size, and `retrieval` correctly has no repository class since
+it owns no table. Hold new domains to this, not to "more files is more structured."
 
-This convention was applied retroactively to F00–F31 as a pure structural refactor (zero
-logic/behavior/schema/API change), back when the codebase was still domain-first:
-`platform/seams.py` → `platform/seams/`, `ingestion/service.py` → `ingestion/service/`,
-`documents/repository.py` → `documents/repository/`, `documents/service.py` →
-`documents/service/`. The **2026-07-01 MVC layout refactor** then relocated every file by
-layer (domain-first `app/<domain>/service.py` → layer-first `app/services/<domain>.py`,
-same for schemas/controllers/repositories/exceptions/models) with **zero further
-logic/behavior/schema/API change** — the two subpackages that had already been split
-(`ingestion/service/`, `documents/repository/`, `documents/service/`) kept their split
-shape, just moved wholesale to `services/ingestion/`, `repositories/documents/`,
-`services/documents/`. See memory.md "MVC layout refactor" for the full old→new path
-table. This convention applies to every feature from F40 onward, under the new layer-first
-paths.
+This convention was initially applied in F00–F31 to split four files that exceeded 200
+lines: `services/documents/`, `services/ingestion/`, `services/documents/`, and
+`services/seams/` (the latter holding 3 vendor adapters + fakes). The **2026-07-02
+single-MVC refactor** then restructured the entire codebase from the 2026-07-01
+layer-first MVC layout to the current Express-style single-MVC layout, with zero
+logic/behavior/schema/API change — the subpackages that had already been split kept their
+split shape, just in new locations (`services/documents/`, `services/ingestion/`,
+`services/seams/`). This convention applies to every feature from F40 onward under the
+current single-MVC paths.
 
 ## Boundaries (HARD RULES)
-1. A module calls another module **only through its `service`** — never its repository or
-   tables. Under the layer-first layout this means: a domain's `services/<domain>.py`
-   imports another domain's `services/<other>.py`, never `repositories/<other>.py` or its
-   ORM models. Example: `app/services/chat.py` asks `app/services/retrieval.py` for
-   context; it never imports `app/repositories/ingestion.py` (which owns `chunks`/
-   `embeddings`) directly.
-2. **No SQL outside `repositories/<domain>.py`.** **No business logic in
-   `controllers/<domain>.py`.** Controllers validate + call services.
-3. **Every query is scoped by `org_id`.** A `TenantContext` carries it; the base repository applies
-   the app-level `WHERE org_id = :org` filter on **every** query, **always** (independent of any flag).
-   Postgres **RLS** is the backstop — but it is **deferred to Phase 6 (Security Hardening), gated by
-   `RLS_ENABLED` (default OFF in dev/test)**. The schema, policies, and role split are designed now;
+1. A domain's service calls another domain **only through its `services/<other>.py`** — never directly
+   to repository classes or ORM models. Example: `app/services/chat.py` asks `app/services/retrieval.py`
+   for context; it never imports repository classes from `services/ingestion.py` (which owns `chunks`/
+   `embeddings`) directly. Within a domain, repository classes live inside the `services/<domain>/`
+   module (they are implementation details, accessed only by that domain's service layer).
+2. **No SQL outside the repository classes inside `services/<domain>.py` (or `services/<domain>/repository.py` if split).**
+   **No business logic in `routes/<domain>.py` or `controllers/<domain>.py`.** Routes wire paths; controllers
+   validate requests and call services; services hold logic; repositories hold SQL.
+3. **Every query is scoped by `org_id`.** A `TenantContext` carries it; the base repository (`BaseRepository` in
+   `app/services/base.py`) applies the app-level `WHERE org_id = :org` filter on **every** query, **always**
+   (independent of any flag). Postgres **RLS** is the backstop — but it is **deferred to Phase 6 (Security Hardening),
+   gated by `RLS_ENABLED` (default OFF in dev/test)**. The schema, policies, and role split are designed now;
    the teeth are switched on before real customer data. App-level scoping is the MVP guarantee.
 4. External services are reached **only through a seam** (`Parser`, `Embedder`, `LLM`). Tests use fakes.
+   Seams live in `app/services/seams/` (protocols, fakes, and real adapters).
 
 ### Tenancy plumbing (built NOW; enforcement gated)
 - **Every tenant-scoped table carries `org_id`** — including join tables (`document_tags`,
@@ -225,7 +211,8 @@ each seam's mode is selected, not how many seams exist or their Protocol shapes.
   heading at the same-or-shallower level (not just the next heading in the flat list), so a
   parent's range still covers its children. If a document's output has no markdown headings,
   the outline is `[]` and F21's degenerate-outline contract (one root section) takes over —
-  this is a valid, expected per-document finding, not a bug.
+  this is a valid, expected per-document finding, not a bug. Heading parsing logic lives in
+  `app/services/seams/real_parser.py`.
 - **Two known, accepted F23 findings, not bugs to fix:**
   1. `language` is hardcoded `"en"` — the provider doesn't return detected language. A future
      language-detection pass (if ever needed) is a separate, additive concern.
@@ -248,11 +235,9 @@ each seam's mode is selected, not how many seams exist or their Protocol shapes.
 
 ## Ingestion pipeline (staged, idempotent, resumable)
 
-**Authoritative status enum** (`DocumentStatus`) lives in `app/models/documents.py` (merged
-in during the MVC refactor — it was `documents/status.py` pre-refactor) and is referenced
+**Authoritative status enum** (`DocumentStatus`) lives in `app/models/documents.py` and is referenced
 everywhere (controller responses, repository writes, worker transitions, UI color mapping).
-There is exactly one source of truth — do not invent ad-hoc states (there is no `parsed`
-state):
+There is exactly one source of truth — do not invent ad-hoc states (there is no `parsed` state):
 ```
 UPLOADED → PARSING → STRUCTURING → EMBEDDING → READY        (+ FAILED, with failed_stage)
 ```

@@ -28,8 +28,8 @@ import structlog
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from app.platform.seams import RealParser
 from app.services.ingestion.structuring import _build_sections_and_chunks
+from app.services.seams import RealParser
 
 
 def _gap_overlap_report(sections, chunks) -> list[str]:

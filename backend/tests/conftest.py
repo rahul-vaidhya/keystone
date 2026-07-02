@@ -71,17 +71,17 @@ def pg_url() -> Iterator[str]:
     url = f"postgresql+asyncpg://veratas:veratas@{host}:{port}/veratas"
 
     # Apply the real baseline migration against the container (F01 DoD).
-    from app.platform import config as config_mod
+    from app.config.settings import settings as app_settings
 
-    original = config_mod.settings.DATABASE_URL
-    config_mod.settings.DATABASE_URL = url
+    original = app_settings.DATABASE_URL
+    app_settings.DATABASE_URL = url
     cfg = Config(str(BACKEND / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND / "migrations"))
     try:
         command.upgrade(cfg, "head")
         yield url
     finally:
-        config_mod.settings.DATABASE_URL = original
+        app_settings.DATABASE_URL = original
         container.stop()
 
 
@@ -97,10 +97,10 @@ async def session_factory(pg_url: str) -> AsyncIterator[async_sessionmaker[Async
 @pytest.fixture
 async def tenant_engine(pg_url: str) -> AsyncIterator[None]:
     """Rebind the app-global async engine/session factory to the test container so the REAL
-    ``tenant_session(org_id)`` helper (which opens from ``app.platform.db.sessionmaker``,
+    ``tenant_session(org_id)`` helper (which opens from ``app.config.db.sessionmaker``,
     created at import against the dev URL) runs against the ephemeral Postgres. Restored
     after the test."""
-    from app.platform import db as db_mod
+    from app.config import db as db_mod
 
     engine = create_async_engine(pg_url)
     orig_engine, orig_maker = db_mod.engine, db_mod.sessionmaker

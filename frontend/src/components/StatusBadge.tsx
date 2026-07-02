@@ -1,4 +1,4 @@
-import type { DocumentStatus } from "../models/documents";
+import type { DocumentStatus } from "../types/documents";
 
 const LABEL: Record<DocumentStatus, string> = {
   UPLOADED: "Uploaded",

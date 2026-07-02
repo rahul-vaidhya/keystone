@@ -1,4 +1,4 @@
-"""Knowledge (notebooks) domain models.
+"""Knowledge (notebooks) domain models and Pydantic schemas.
 
 Public terminology is "Notebook" everywhere (schemas/services/routes/tests); the
 underlying tables stay ``knowledge_bases``/``knowledge_base_documents`` to match the
@@ -10,11 +10,12 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, ForeignKey, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.platform.db import Base
+from app.config.db import Base
 
 
 class Notebook(Base):
@@ -65,3 +66,28 @@ class NotebookDocument(Base):
     added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+# ---- API schemas ----
+
+
+class NotebookCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = None
+
+
+class NotebookUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+
+
+class NotebookOut(BaseModel):
+    id: uuid.UUID
+    org_id: uuid.UUID
+    name: str
+    description: str | None
+    created_by: uuid.UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

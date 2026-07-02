@@ -5,8 +5,9 @@
 > real prop/class details as you build them.
 
 ## Conventions
-- View-folder components live in `src/views/<area>/` (was `src/features/<area>/` pre-MVC
-  refactor); shared ones in `src/components/`.
+- Screen pages (routed, area-specific) live in `src/pages/` (e.g. `HomePage.tsx`, `DocumentsPage.tsx`,
+  `NotebookPage.tsx`). Shared non-routed UI lives in `src/components/` (e.g. `StatusBadge.tsx`,
+  `FolderTree.tsx`, `ChatPanel.tsx`). Layouts in `src/layouts/` (e.g. `AppShell.tsx`, `Sidebar.tsx`).
 - Each entry: name · purpose · key props · token usage. Add a one-line visual description.
 
 ## Components (to be built in Phase 5 — update as implemented)
@@ -15,12 +16,12 @@
   (`text-warning/border-warning` for the 4 non-terminal stages, `text-success/border-success`
   for READY, `text-danger/border-danger` for FAILED) — small bordered pill, `text-xs`,
   `rounded-sm`, `px-2 py-0.5`. FAILED additionally appends `(<failed stage label>)` inline.
-  _[built, F51]_ — shared (not feature-folder-local) since F52/chat will likely reuse it.
+  _[built, F51]_ — shared (not area-local) since F52/chat will likely reuse it.
 - **UploadDropzone** — drag/drop or pick files; emits upload events; shows per-file progress.
   _[not built — F51 used a plain hidden `<input type="file">` + button instead (no drag/drop,
   no per-file progress, since the backend gives no upload-progress signal to show). Scope
   reduction, not a gap. Build the real dropzone later if drag/drop becomes a real ask.]_
-- **FolderTree** (`src/views/documents/FolderTree.tsx`) — recursive nav of the folder tree,
+- **FolderTree** (`src/components/FolderTree.tsx`) — recursive nav of the folder tree,
   built client-side from the flat `parent_id` list returned by `GET /documents/folders` (no
   separate tree endpoint). Narrow, swappable props: `currentFolderId: string | null`,
   `onNavigate: (id: string | null) => void` — owns its own create/rename/move/delete UI
@@ -31,20 +32,22 @@
   select) are `opacity-0 group-hover:opacity-100`, `text-muted`, hover to `text-text` (rename)
   or `text-danger` (delete). Every mutation invalidates the whole folder list (no optimistic
   patch) since F25's move/rename rebuild every descendant's `path` server-side.
-  _[built, F51]_ — view-folder-local (not reused outside `views/documents/`, no shared promotion).
+  _[built, F51]_ — shared component (not page-local) in `src/components/`.
 - **NotebookSelector** — pick which documents are in scope for a chat. _[not built — replaced by
   the document membership panel inside `NotebookPage` which is always visible in the left rail]_
-- **ChatMessage** — renders a streamed answer with inline citation markers. _[built as `AnswerText`
-  inside `ChatPanel` (private sub-component, not exported). See ChatPanel entry below.]_
-- **SourcePanel** — shows the cited chunk's text. _[built as `CitationPanel`. See entry below.]_
+- **ChatMessage** — renders a streamed answer with inline citation markers. _[built as part of
+  `ChatPanel` in `src/components/ChatPanel.tsx` (private sub-component, not a separate export).
+  See ChatPanel entry below.]_
+- **SourcePanel** — shows the cited chunk's text. _[built as `CitationPanel` in `src/components/CitationPanel.tsx`.
+  See entry below.]_
 - **DebugBundle** (admin only) — collapsible: retrieved hits + scores, final prompt, raw output. _[not built — F42]_
 
 ---
 
 ### NotebookList
 
-File: `src/views/notebooks/NotebookList.tsx`
-Last updated: 2026-06-30 (F52)
+File: `src/pages/NotebookList.tsx`
+Last updated: 2026-07-02 (single-MVC refactor)
 
 | Property       | Class                                                    |
 | -------------- | -------------------------------------------------------- |
@@ -65,8 +68,8 @@ Card rows use `group` + `opacity-0 group-hover:opacity-100` for action buttons �
 
 ### NotebookPage
 
-File: `src/views/notebooks/NotebookPage.tsx`
-Last updated: 2026-06-30 (F52)
+File: `src/pages/NotebookPage.tsx`
+Last updated: 2026-07-02 (single-MVC refactor)
 
 | Property       | Class                                                    |
 | -------------- | -------------------------------------------------------- |
@@ -86,8 +89,8 @@ Left panel is `w-72 shrink-0 border-r border-border`. Section labels in all-caps
 
 ### ChatPanel
 
-File: `src/views/chat/ChatPanel.tsx`
-Last updated: 2026-06-30 (F52)
+File: `src/components/ChatPanel.tsx`
+Last updated: 2026-07-02 (single-MVC refactor)
 
 | Property            | Class                                                          |
 | ------------------- | -------------------------------------------------------------- |
@@ -108,8 +111,8 @@ Chat bubbles: user on right (`justify-end`), assistant on left (`justify-start`)
 
 ### CitationPanel
 
-File: `src/views/chat/CitationPanel.tsx`
-Last updated: 2026-06-30 (F52)
+File: `src/components/CitationPanel.tsx`
+Last updated: 2026-07-02 (single-MVC refactor)
 
 | Property       | Class                                                |
 | -------------- | ---------------------------------------------------- |
@@ -123,7 +126,10 @@ Last updated: 2026-06-30 (F52)
 | Source quote   | `border-l-2 border-accent pl-3 text-sm text-text whitespace-pre-wrap leading-relaxed` |
 
 **Pattern notes:**
-CitationPanel is a `SourcePanel`-equivalent (was planned). Lives in `views/chat/` (not `components/`) since it's specific to the chat context. The source quote uses a left-accent-colored border (`border-l-2 border-accent`) and `font-mono` for the offset label — citaitons are always displayed in mono font per `uitokens.md`. Panel appears as a third column (`w-80 border-l border-border`) inside `ChatPanel` when a citation is active.
+CitationPanel is a `SourcePanel`-equivalent (was planned). Lives in `src/components/` as a shared component.
+The source quote uses a left-accent-colored border (`border-l-2 border-accent`) and `font-mono` for the
+offset label — citations are always displayed in mono font per `uitokens.md`. Panel appears as a third column
+(`w-80 border-l border-border`) inside `ChatPanel` when a citation is active.
 
 ## Rule
 Before creating a new component, check this list. Reuse or extend an existing one rather than

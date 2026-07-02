@@ -9,16 +9,18 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.exceptions.documents import FolderNameConflict, FolderNotFound
-from app.models.documents import Folder
-from app.models.identity import Organization
-from app.platform.context import TenantContext
-from app.platform.queue import get_job_queue
-from app.platform.storage import get_object_store
-from app.repositories.documents.folders import FolderRepository
-from app.schemas.documents import FolderCreate
-from app.services.documents import documents_service
-from app.services.documents.folders import create_folder, move_folder, rename_folder
+from app.middleware.context import TenantContext
+from app.models.auth import Organization
+from app.models.documents import Folder, FolderCreate
+from app.services.documents import FolderNameConflict, FolderNotFound, documents_service
+from app.services.documents.folders import (
+    FolderRepository,
+    create_folder,
+    move_folder,
+    rename_folder,
+)
+from app.services.queue import get_job_queue
+from app.services.storage import get_object_store
 from main import app
 from tests.conftest import FakeJobQueue
 

@@ -6,13 +6,12 @@ from __future__ import annotations
 import json
 import uuid
 
-from app.models.documents import DocumentStatus
-from app.platform.context import TenantContext
-from app.platform.logging import get_logger
-from app.platform.seams import ParsedDoc, Parser
-from app.platform.storage import ObjectStore, build_artifact_key
-from app.schemas.documents import DocumentOut
+from app.config.logging import get_logger
+from app.middleware.context import TenantContext
+from app.models.documents import DocumentOut, DocumentStatus
 from app.services.documents import documents_service
+from app.services.seams import ParsedDoc, Parser
+from app.services.storage import ObjectStore, build_artifact_key
 
 logger = get_logger(__name__)
 

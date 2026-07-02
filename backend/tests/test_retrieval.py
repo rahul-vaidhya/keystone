@@ -10,14 +10,13 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.middleware.context import TenantContext
+from app.models.auth import Organization
 from app.models.documents import Document
-from app.models.identity import Organization
-from app.models.ingestion import Chunk, Embedding
-from app.platform.context import TenantContext
-from app.platform.seams import EMBED_DIM
-from app.schemas.ingestion import ChunkHit
+from app.models.ingestion import Chunk, ChunkHit, Embedding
 from app.services.ingestion import ingestion_service
 from app.services.retrieval import assemble_context, resolve_allowed_documents
+from app.services.seams import EMBED_DIM
 from main import app
 
 FAKE_MODEL = f"fake-embed-{EMBED_DIM}"

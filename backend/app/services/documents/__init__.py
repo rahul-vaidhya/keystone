@@ -14,13 +14,34 @@ from __future__ import annotations
 
 import uuid
 
-from app.platform.context import TenantContext
-from app.platform.storage import ObjectStore
-from app.schemas.documents import DocumentOut, FolderCreate, FolderOut, TagCreate, TagOut
+from app.middleware.context import TenantContext
+from app.models.documents import DocumentOut, FolderCreate, FolderOut, TagCreate, TagOut
 from app.services.documents import documents as _documents
 from app.services.documents import folders as _folders
 from app.services.documents import tags as _tags
+from app.services.documents.exceptions import (
+    DocumentNotFound as DocumentNotFound,
+)
+from app.services.documents.exceptions import (
+    DocumentsError as DocumentsError,
+)
+from app.services.documents.exceptions import (
+    FolderCycleError as FolderCycleError,
+)
+from app.services.documents.exceptions import (
+    FolderNameConflict as FolderNameConflict,
+)
+from app.services.documents.exceptions import (
+    FolderNotEmpty as FolderNotEmpty,
+)
+from app.services.documents.exceptions import (
+    FolderNotFound as FolderNotFound,
+)
+from app.services.documents.exceptions import (
+    TagNotFound as TagNotFound,
+)
 from app.services.documents.folders import DeleteMode
+from app.services.storage import ObjectStore
 
 
 class DocumentsService:

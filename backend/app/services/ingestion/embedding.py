@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import uuid
 
-from app.models.documents import DocumentStatus
-from app.platform import db as db_mod
-from app.platform.context import TenantContext
-from app.platform.logging import get_logger
-from app.platform.seams import Embedder
-from app.repositories.ingestion import ChunkRepository, EmbeddingRepository
-from app.schemas.documents import DocumentOut
+from app.config import db as db_mod
+from app.config.logging import get_logger
+from app.middleware.context import TenantContext
+from app.models.documents import DocumentOut, DocumentStatus
 from app.services.documents import documents_service
+from app.services.ingestion.repository import ChunkRepository, EmbeddingRepository
+from app.services.seams import Embedder
 
 logger = get_logger(__name__)
 

@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import asyncio
 
-from app.exceptions.auth import EmailTaken
-from app.platform import db as db_mod
-from app.platform.constants import ROLE_ADMIN, ROLE_MEMBER
-from app.platform.context import TenantContext
-from app.repositories.auth import AuthRepository
-from app.schemas.auth import InviteRequest, SignupRequest
-from app.services.auth import auth_service
+from app.config import db as db_mod
+from app.middleware.context import TenantContext
+from app.models.auth import InviteRequest, SignupRequest
+from app.services.auth import AuthRepository, EmailTaken, auth_service
+from app.utils.constants import ROLE_ADMIN, ROLE_MEMBER
 
 ORG_NAME = "Veratas Demo"
 PASSWORD = "hellos123"

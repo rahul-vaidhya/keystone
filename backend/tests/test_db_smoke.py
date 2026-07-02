@@ -8,7 +8,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models.identity import Organization
+from app.models.auth import Organization
 
 
 async def test_insert_and_read_org(
