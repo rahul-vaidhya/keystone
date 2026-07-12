@@ -354,3 +354,58 @@ async def test_delete_missing_document_404(client: AsyncClient) -> None:
 
     resp = await client.delete(f"/documents/{uuid.uuid4()}", headers=headers)
     assert resp.status_code == 404
+
+
+async def test_move_document_to_folder_and_back_to_root(client: AsyncClient) -> None:
+    tokens = await _signup(client, "docs-move1@test.com", "MoveOne")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    upload = await client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("m.pdf", b"move me", "application/pdf")},
+    )
+    doc_id = upload.json()["id"]
+    folder = await client.post("/documents/folders", headers=headers, json={"name": "Dest"})
+    folder_id = folder.json()["id"]
+
+    moved = await client.patch(
+        f"/documents/{doc_id}/folder", headers=headers, json={"folder_id": folder_id}
+    )
+    assert moved.status_code == 200
+    assert moved.json()["folder_id"] == folder_id
+
+    back_to_root = await client.patch(
+        f"/documents/{doc_id}/folder", headers=headers, json={"folder_id": None}
+    )
+    assert back_to_root.status_code == 200
+    assert back_to_root.json()["folder_id"] is None
+
+
+async def test_move_document_to_missing_folder_404(client: AsyncClient) -> None:
+    tokens = await _signup(client, "docs-move2@test.com", "MoveTwo")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    upload = await client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("m.pdf", b"move me", "application/pdf")},
+    )
+    doc_id = upload.json()["id"]
+
+    resp = await client.patch(
+        f"/documents/{doc_id}/folder",
+        headers=headers,
+        json={"folder_id": str(uuid.uuid4())},
+    )
+    assert resp.status_code == 404
+
+
+async def test_move_missing_document_404(client: AsyncClient) -> None:
+    tokens = await _signup(client, "docs-move3@test.com", "MoveThree")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    resp = await client.patch(
+        f"/documents/{uuid.uuid4()}/folder", headers=headers, json={"folder_id": None}
+    )
+    assert resp.status_code == 404

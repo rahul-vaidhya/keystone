@@ -12,12 +12,12 @@ from fastapi.responses import JSONResponse
 from app.middleware.context import TenantContext
 from app.middleware.deps import get_ctx, require_admin
 from app.models.documents import (
+    DocumentMove,
     DocumentOut,
     FolderCreate,
     FolderMove,
     FolderOut,
     FolderRename,
-    FolderRestrictionUpdate,
     TagCreate,
     TagOut,
 )
@@ -68,12 +68,22 @@ async def move_folder(
     return await documents_service.move_folder(ctx, folder_id, req.parent_id)
 
 
-async def set_folder_restriction(
+async def tag_folder(
     folder_id: uuid.UUID,
-    req: FolderRestrictionUpdate,
+    tag_id: uuid.UUID,
     ctx: Annotated[TenantContext, Depends(require_admin)],
-) -> FolderOut:
-    return await documents_service.set_restricted(ctx, folder_id, req.restricted)
+) -> None:
+    # Admin/owner-only: a folder tag cascades to its whole subtree (docs/
+    # access-roles-dnd-plan.md), unlike document tagging below (open to any member).
+    await documents_service.tag_folder(ctx, folder_id, tag_id)
+
+
+async def untag_folder(
+    folder_id: uuid.UUID,
+    tag_id: uuid.UUID,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+) -> None:
+    await documents_service.untag_folder(ctx, folder_id, tag_id)
 
 
 async def create_tag(req: TagCreate, ctx: Annotated[TenantContext, Depends(get_ctx)]) -> TagOut:
@@ -118,6 +128,14 @@ async def delete_document(
     object_store: Annotated[ObjectStore, Depends(get_object_store)],
 ) -> None:
     await documents_service.delete_document(ctx, document_id, object_store=object_store)
+
+
+async def move_document(
+    document_id: uuid.UUID,
+    req: DocumentMove,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+) -> DocumentOut:
+    return await documents_service.move_document(ctx, document_id, req.folder_id)
 
 
 async def upload_document(

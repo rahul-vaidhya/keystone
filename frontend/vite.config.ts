@@ -11,6 +11,7 @@ export default defineConfig({
       "/documents": { target: "http://127.0.0.1:8010", changeOrigin: true },
       "/notebooks": { target: "http://127.0.0.1:8010", changeOrigin: true },
       "/chat": { target: "http://127.0.0.1:8010", changeOrigin: true },
+      "/access-roles": { target: "http://127.0.0.1:8010", changeOrigin: true },
     },
   },
   test: {

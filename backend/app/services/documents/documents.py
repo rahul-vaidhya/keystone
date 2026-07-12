@@ -166,6 +166,10 @@ class DocumentRepository(BaseRepository[Document]):
     async def delete(self, document: Document) -> None:
         await self._db.delete(document)
 
+    async def move(self, document: Document, *, folder_id: uuid.UUID | None) -> None:
+        document.folder_id = folder_id
+        await self._db.flush()
+
 
 # ---- service ----
 
@@ -370,3 +374,24 @@ async def delete_document(
         await object_store.delete(storage_key)
     if artifact_key:
         await object_store.delete(artifact_key)
+
+
+async def move_document(
+    ctx: TenantContext, document_id: uuid.UUID, folder_id: uuid.UUID | None
+) -> DocumentOut:
+    """Re-point a document to a different folder (or ``None`` for org root) — the
+    drag-and-drop target for dragging a document row onto a folder in the tree. No path
+    rebuild needed (unlike folder move): a document carries only a ``folder_id``, no
+    materialized path of its own."""
+    from app.services.documents.folders import FolderRepository
+
+    async with db_mod.sessionmaker() as session, session.begin():
+        repo = DocumentRepository(session, ctx)
+        document = await repo.get_by_id(document_id)
+        if document is None:
+            raise DocumentNotFound("Document not found")
+        if folder_id is not None:
+            if await FolderRepository(session, ctx).get_by_id(folder_id) is None:
+                raise FolderNotFound("Folder not found")
+        await repo.move(document, folder_id=folder_id)
+    return DocumentOut.model_validate(document)

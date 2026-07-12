@@ -113,6 +113,13 @@ class FolderRepository(BaseRepository[Folder]):
 _UNCHANGED = object()
 
 
+def _to_folder_out(folder: Folder, tag_ids: list[uuid.UUID]) -> FolderOut:
+    """``FolderOut.tag_ids`` isn't an ORM column — this codebase avoids ORM relationships
+    (repository-explicit queries only), so tags are fetched separately (``FolderTagRepository``)
+    and merged in here rather than via ``model_validate`` alone."""
+    return FolderOut.model_validate(folder).model_copy(update={"tag_ids": tag_ids})
+
+
 async def create_folder(ctx: TenantContext, req: FolderCreate) -> FolderOut:
     async with db_mod.sessionmaker() as session, session.begin():
         repo = FolderRepository(session, ctx)
@@ -138,37 +145,31 @@ async def create_folder(ctx: TenantContext, req: FolderCreate) -> FolderOut:
             # unique constraint (or, for parent_id IS NULL, the new partial unique index
             # closing the root-level gap) is the actual backstop.
             raise FolderNameConflict("A folder with that name already exists here") from exc
-    return FolderOut.model_validate(folder)
+    return _to_folder_out(folder, [])
 
 
 async def list_folders(ctx: TenantContext) -> list[FolderOut]:
+    # Local import: avoids a documents<->folders circular import at module load time,
+    # same precedent as documents.py's upload_document (see memory.md).
+    from app.services.documents.tags import FolderTagRepository
+
     async with db_mod.sessionmaker() as session:
         folders = await FolderRepository(session, ctx).list()
-    return [FolderOut.model_validate(f) for f in folders]
+        tag_ids_by_folder = await FolderTagRepository(session, ctx).list_tag_ids_by_folders(
+            [f.id for f in folders]
+        )
+    return [_to_folder_out(f, tag_ids_by_folder.get(f.id, [])) for f in folders]
 
 
 async def get_folder(ctx: TenantContext, folder_id: uuid.UUID) -> FolderOut:
+    from app.services.documents.tags import FolderTagRepository
+
     async with db_mod.sessionmaker() as session:
         folder = await FolderRepository(session, ctx).get_by_id(folder_id)
-    if folder is None:
-        raise FolderNotFound("Folder not found")
-    return FolderOut.model_validate(folder)
-
-
-async def set_restricted(ctx: TenantContext, folder_id: uuid.UUID, restricted: bool) -> FolderOut:
-    """Admin-only (enforced by the controller's ``require_admin`` dependency, not here —
-    same split as every other role check in this codebase). Restriction inherits down the
-    subtree at READ time (``retrieval.resolve_allowed_documents``), so flipping this flag
-    needs no cascade/rebuild — unlike ``path``, ``restricted`` is never denormalized onto
-    descendants."""
-    async with db_mod.sessionmaker() as session, session.begin():
-        repo = FolderRepository(session, ctx)
-        folder = await repo.get_by_id(folder_id)
         if folder is None:
             raise FolderNotFound("Folder not found")
-        folder.restricted = restricted
-        await session.flush()
-    return FolderOut.model_validate(folder)
+        tag_ids = await FolderTagRepository(session, ctx).list_tag_ids(folder_id)
+    return _to_folder_out(folder, tag_ids)
 
 
 def _rebuild_subtree_paths(
@@ -208,6 +209,8 @@ async def _relocate_folder(
     new_name: str | None = None,
     new_parent_id: uuid.UUID | None | object = _UNCHANGED,
 ) -> FolderOut:
+    from app.services.documents.tags import FolderTagRepository
+
     async with db_mod.sessionmaker() as session, session.begin():
         repo = FolderRepository(session, ctx)
         folder = await repo.get_by_id(folder_id)
@@ -249,7 +252,8 @@ async def _relocate_folder(
             # application-level check would have raised, rather than leaking a 500.
             raise FolderNameConflict("A folder with that name already exists here") from exc
 
-    return FolderOut.model_validate(folder)
+        tag_ids = await FolderTagRepository(session, ctx).list_tag_ids(folder_id)
+    return _to_folder_out(folder, tag_ids)
 
 
 async def rename_folder(ctx: TenantContext, folder_id: uuid.UUID, new_name: str) -> FolderOut:

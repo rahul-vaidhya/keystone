@@ -243,6 +243,16 @@ class AuthService:
             users = await user_repo.list()
         return [UserOut.model_validate(u) for u in users]
 
+    async def get_user(self, ctx: TenantContext, user_id: uuid.UUID) -> UserOut:
+        """Org-scoped existence lookup for OTHER modules (module-boundary rule). First
+        caller: ``access_roles.service``, validating a member exists in this org before
+        assigning them an Access Role."""
+        async with db_mod.sessionmaker() as session:
+            user = await UserRepository(session, ctx).get_by_id(user_id)
+        if user is None:
+            raise TargetUserNotFound("User not found")
+        return UserOut.model_validate(user)
+
     async def change_role(
         self, ctx: TenantContext, target_user_id: uuid.UUID, new_role: str
     ) -> UserOut:

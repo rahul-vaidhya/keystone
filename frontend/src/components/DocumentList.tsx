@@ -4,6 +4,7 @@ import { documentsApi } from "../services/documentsService";
 import { ApiError } from "../types/auth";
 import type { Document } from "../types/documents";
 import { StatusBadge } from "./StatusBadge";
+import { DRAG_MIME, type DragPayload } from "./FolderTree";
 
 const TERMINAL_STATUSES: ReadonlySet<Document["status"]> = new Set(["READY", "FAILED"]);
 
@@ -51,6 +52,12 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
     deleteMutation.mutate(doc.id);
   }
 
+  function handleDragStart(e: React.DragEvent, documentId: string) {
+    const payload: DragPayload = { type: "document", id: documentId };
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
+  }
+
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
       <main className="p-6 max-w-3xl mx-auto w-full">
@@ -93,7 +100,12 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
               </thead>
               <tbody>
                 {documentsQuery.data.map((doc) => (
-                  <tr key={doc.id} className="group border-b border-border last:border-0">
+                  <tr
+                    key={doc.id}
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, doc.id)}
+                    className="group border-b border-border last:border-0 cursor-grab"
+                  >
                     <td className="px-4 py-2 truncate max-w-xs">{doc.title}</td>
                     <td className="px-4 py-2">
                       <StatusBadge status={doc.status} failedStage={doc.failed_stage} />

@@ -54,11 +54,6 @@ class DocumentsService:
     async def get_folder(self, ctx: TenantContext, folder_id: uuid.UUID) -> FolderOut:
         return await _folders.get_folder(ctx, folder_id)
 
-    async def set_restricted(
-        self, ctx: TenantContext, folder_id: uuid.UUID, restricted: bool
-    ) -> FolderOut:
-        return await _folders.set_restricted(ctx, folder_id, restricted)
-
     async def delete_folder(
         self, ctx: TenantContext, folder_id: uuid.UUID, *, mode: DeleteMode = "block"
     ) -> None:
@@ -92,6 +87,22 @@ class DocumentsService:
         self, ctx: TenantContext, document_id: uuid.UUID, tag_id: uuid.UUID
     ) -> None:
         return await _tags.untag_document(ctx, document_id, tag_id)
+
+    async def get_tag(self, ctx: TenantContext, tag_id: uuid.UUID) -> TagOut:
+        return await _tags.get_tag(ctx, tag_id)
+
+    async def tag_folder(self, ctx: TenantContext, folder_id: uuid.UUID, tag_id: uuid.UUID) -> None:
+        return await _tags.tag_folder(ctx, folder_id, tag_id)
+
+    async def untag_folder(
+        self, ctx: TenantContext, folder_id: uuid.UUID, tag_id: uuid.UUID
+    ) -> None:
+        return await _tags.untag_folder(ctx, folder_id, tag_id)
+
+    async def list_document_tag_ids_by_documents(
+        self, ctx: TenantContext, document_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[uuid.UUID]]:
+        return await _tags.list_document_tag_ids_by_documents(ctx, document_ids)
 
     async def list_documents(
         self,
@@ -175,6 +186,11 @@ class DocumentsService:
         self, ctx: TenantContext, document_id: uuid.UUID, *, object_store: ObjectStore
     ) -> None:
         return await _documents.delete_document(ctx, document_id, object_store=object_store)
+
+    async def move_document(
+        self, ctx: TenantContext, document_id: uuid.UUID, folder_id: uuid.UUID | None
+    ) -> DocumentOut:
+        return await _documents.move_document(ctx, document_id, folder_id)
 
 
 documents_service = DocumentsService()

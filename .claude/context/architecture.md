@@ -272,8 +272,9 @@ stage upserts (no duplicates); a failed doc resumes from its last good stage.
 ## Retrieval pipeline (one function, strategy behind flags)
 ```python
 async def retrieve(req) -> Context:
-    allowed = resolve_allowed_documents(req.ctx)   # MVP: returns all org docs. The single seam
-                                                   # where V2 groups/grants permission logic slots in.
+    allowed = resolve_allowed_documents(req.ctx)   # owner/admin: all org docs. Others: gated by
+                                                   # Access Roles' granted tags (2026-07-12) —
+                                                   # see docs/access-roles-dnd-plan.md.
     scope   = req.notebook.document_ids & allowed
     qvec    = await embedder.embed([req.query])
     if   FLAGS.graph_retrieval: hits = graph_then_vector(req, qvec, scope)   # V3
@@ -309,7 +310,9 @@ document_tags(org_id fk, document_id fk, tag_id fk, primary key(document_id, tag
 -- documents (document-level metadata)
 documents(
   id uuid pk, org_id fk,
-  folder_id uuid null fk,                 -- [now] one home folder (NOT a permission boundary)
+  folder_id uuid null fk,                 -- [now] one home folder (a permission boundary ONLY
+                                           -- when the folder carries a tag granted to an Access
+                                           -- Role — otherwise open to the whole org, unchanged)
   title text,                             -- [now]
   source_type text,                       -- [now] upload | gdrive | url ...
   storage_key text, mime_type text, byte_size bigint,
@@ -418,7 +421,7 @@ relationships(id uuid pk, org_id fk, subject_entity_id fk, predicate text,
 | Tenancy (app-level) | `org_id` on every table + always-on app filter + `tenant_session` plumbing | — |
 | Tenancy (enforced RLS) | policies + role split WRITTEN, flag OFF | **Phase 6:** `RLS_ENABLED` on, `app_user`/`migrator` split, `FORCE RLS` |
 | Tenancy (isolation model) | shared DB, `org_id` rows | per-tenant DB/schema (Enterprise) |
-| Permissions | none; `allowed_document_ids` param = all org docs | groups/grants → compute the set (V2) |
+| Permissions | Access Roles: tag-granted resource access (2026-07-12) | per-user grants, connectors, browsing-endpoint gating (V2) |
 | Folders/tags | full nav tree + tags | connector-sourced folders |
 | Sections | tree + structural fields | summary/topics (V2 enrichment) |
 | Embeddings | `owner_type='chunk'` | section/document rows (V2, insert-only) |

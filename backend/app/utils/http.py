@@ -6,6 +6,11 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from app.models.auth import LoginAmbiguousResponse, OrgChoice
+from app.services.access_roles import (
+    AccessRoleNameConflict,
+    AccessRoleNotFound,
+    AccessRolesError,
+)
 from app.services.auth import (
     AmbiguousLogin,
     AuthError,
@@ -136,4 +141,27 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"detail": str(exc) or "Auth error"},
+        )
+
+    @app.exception_handler(AccessRoleNotFound)
+    async def _access_role_not_found(_request: Request, exc: AccessRoleNotFound) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": str(exc) or "Access Role not found"},
+        )
+
+    @app.exception_handler(AccessRoleNameConflict)
+    async def _access_role_name_conflict(
+        _request: Request, exc: AccessRoleNameConflict
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": str(exc) or "Access Role name conflict"},
+        )
+
+    @app.exception_handler(AccessRolesError)
+    async def _access_roles_error(_request: Request, exc: AccessRolesError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": str(exc) or "Access Roles error"},
         )

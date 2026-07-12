@@ -155,4 +155,25 @@ describe("DocumentList", () => {
 
     expect(documentsApi.deleteDocument).not.toHaveBeenCalled();
   });
+
+  it("sets a document drag payload on dragstart, for FolderTree to read on drop", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([makeDoc()]);
+
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+
+    const store = new Map<string, string>();
+    const dataTransfer = {
+      setData: (format: string, data: string) => store.set(format, data),
+      getData: (format: string) => store.get(format) ?? "",
+      effectAllowed: "",
+    } as unknown as DataTransfer;
+
+    const row = screen.getByText("report.pdf").closest("tr")!;
+    fireEvent.dragStart(row, { dataTransfer });
+
+    expect(store.get("application/json")).toBe(
+      JSON.stringify({ type: "document", id: "doc-1" }),
+    );
+  });
 });

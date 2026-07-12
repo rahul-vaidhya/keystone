@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # target_metadata / autogenerate sees the whole schema. Import order does NOT matter:
 # every FK in this codebase is a string table-name reference, never a class-level
 # relationship(), so there's no load-time dependency between model modules.
+import app.models.access_roles  # noqa: F401
 import app.models.auth  # noqa: F401
 import app.models.chat  # noqa: F401
 import app.models.documents  # noqa: F401

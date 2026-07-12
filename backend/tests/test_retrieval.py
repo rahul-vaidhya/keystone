@@ -337,59 +337,84 @@ async def test_resolve_allowed_documents_returns_all_org_documents(
     assert set(allowed) == {doc_1, doc_2}
 
 
-async def test_restricted_folder_hides_documents_from_member_not_admin(
+async def test_untagged_documents_stay_open_to_members(
     client: AsyncClient, session_factory
 ) -> None:
-    owner_tokens = await _signup(client, "ret-restrict-owner@test.com", "RestrictOrg")
+    owner_tokens = await _signup(client, "ret-open-owner@test.com", "OpenOrg")
     owner_headers = {"Authorization": f"Bearer {owner_tokens['access_token']}"}
     org_id = await _org_id(client, owner_headers)
-    member_tokens = await _invite_member(client, owner_headers, "ret-restrict-member@test.com")
     member_ctx = TenantContext(org_id=org_id, user_id=None, role=ROLE_MEMBER)
 
-    folder = await client.post(
-        "/documents/folders", headers=owner_headers, json={"name": "Finance"}
+    doc = await _seed_document(session_factory, org_id, "Public memo")
+
+    allowed = await resolve_allowed_documents(member_ctx)
+    assert doc in allowed
+
+
+async def test_tag_granted_to_no_role_stays_open(client: AsyncClient, session_factory) -> None:
+    """A document tagged with an ordinary organizational tag that no Access Role has
+    ever been granted stays open — tagging alone doesn't gate anything."""
+    owner_tokens = await _signup(client, "ret-ungranted-owner@test.com", "UngrantedOrg")
+    owner_headers = {"Authorization": f"Bearer {owner_tokens['access_token']}"}
+    org_id = await _org_id(client, owner_headers)
+    member_ctx = TenantContext(org_id=org_id, user_id=None, role=ROLE_MEMBER)
+
+    doc = await _seed_document(session_factory, org_id, "Q1 report")
+    tag = await client.post("/documents/tags", headers=owner_headers, json={"name": "Q1"})
+    tag_id = tag.json()["id"]
+    await client.post(f"/documents/{doc}/tags/{tag_id}", headers=owner_headers)
+
+    allowed = await resolve_allowed_documents(member_ctx)
+    assert doc in allowed
+
+
+async def test_access_controlling_document_tag_gates_by_role(
+    client: AsyncClient, session_factory
+) -> None:
+    owner_tokens = await _signup(client, "ret-doctag-owner@test.com", "DocTagOrg")
+    owner_headers = {"Authorization": f"Bearer {owner_tokens['access_token']}"}
+    org_id = await _org_id(client, owner_headers)
+
+    doc = await _seed_document(session_factory, org_id, "Finance memo")
+    tag = await client.post("/documents/tags", headers=owner_headers, json={"name": "Finance"})
+    tag_id = tag.json()["id"]
+    await client.post(f"/documents/{doc}/tags/{tag_id}", headers=owner_headers)
+
+    role = await client.post("/access-roles", headers=owner_headers, json={"name": "Finance Team"})
+    role_id = role.json()["id"]
+    grant = await client.post(f"/access-roles/{role_id}/tags/{tag_id}", headers=owner_headers)
+    assert grant.status_code == 204
+
+    outsider_ctx = TenantContext(org_id=org_id, user_id=uuid.uuid4(), role=ROLE_MEMBER)
+    assert doc not in await resolve_allowed_documents(outsider_ctx)
+
+    member_tokens = await _invite_member(client, owner_headers, "ret-doctag-member@test.com")
+    me = await client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {member_tokens['access_token']}"}
     )
-    folder_id = folder.json()["id"]
-    assert folder.json()["restricted"] is False
+    member_user_id = uuid.UUID(me.json()["id"])
 
-    doc_in_folder = await _seed_document_in_folder(session_factory, org_id, "Budget", folder_id)
-    doc_at_root = await _seed_document(session_factory, org_id, "Public memo")
+    member_ctx_before = TenantContext(org_id=org_id, user_id=member_user_id, role=ROLE_MEMBER)
+    assert doc not in await resolve_allowed_documents(member_ctx_before)
 
-    # Unrestricted (default): member sees both.
-    allowed_before = await resolve_allowed_documents(member_ctx)
-    assert set(allowed_before) == {doc_in_folder, doc_at_root}
-
-    restrict = await client.patch(
-        f"/documents/folders/{folder_id}/restriction",
-        headers=owner_headers,
-        json={"restricted": True},
+    assign = await client.post(
+        f"/access-roles/{role_id}/users/{member_user_id}", headers=owner_headers
     )
-    assert restrict.status_code == 200
-    assert restrict.json()["restricted"] is True
+    assert assign.status_code == 204
 
-    # Live effect, no separate resync step: the very next call reflects it.
-    allowed_after = await resolve_allowed_documents(member_ctx)
-    assert set(allowed_after) == {doc_at_root}
+    member_ctx_after = TenantContext(org_id=org_id, user_id=member_user_id, role=ROLE_MEMBER)
+    assert doc in await resolve_allowed_documents(member_ctx_after)
 
-    # Owner/admin always bypasses restriction.
     owner_ctx = TenantContext(org_id=org_id, user_id=None, role="owner")
-    owner_allowed = await resolve_allowed_documents(owner_ctx)
-    assert set(owner_allowed) == {doc_in_folder, doc_at_root}
-
-    # Member-role user can't even flip the flag.
-    forbidden = await client.patch(
-        f"/documents/folders/{folder_id}/restriction",
-        headers={"Authorization": f"Bearer {member_tokens['access_token']}"},
-        json={"restricted": False},
-    )
-    assert forbidden.status_code == 403
+    assert doc in await resolve_allowed_documents(owner_ctx)
 
 
-async def test_restriction_inherits_to_subtree(client: AsyncClient, session_factory) -> None:
-    owner_tokens = await _signup(client, "ret-subtree-owner@test.com", "SubtreeOrg")
+async def test_access_controlling_folder_tag_inherits_to_subtree(
+    client: AsyncClient, session_factory
+) -> None:
+    owner_tokens = await _signup(client, "ret-foldertag-owner@test.com", "FolderTagOrg")
     owner_headers = {"Authorization": f"Bearer {owner_tokens['access_token']}"}
     org_id = await _org_id(client, owner_headers)
-    member_ctx = TenantContext(org_id=org_id, user_id=None, role=ROLE_MEMBER)
 
     parent = await client.post("/documents/folders", headers=owner_headers, json={"name": "HR"})
     parent_id = parent.json()["id"]
@@ -399,19 +424,73 @@ async def test_restriction_inherits_to_subtree(client: AsyncClient, session_fact
         json={"name": "Payroll", "parent_id": parent_id},
     )
     child_id = child.json()["id"]
-
     doc_in_child = await _seed_document_in_folder(session_factory, org_id, "Payslip", child_id)
 
-    await client.patch(
-        f"/documents/folders/{parent_id}/restriction",
-        headers=owner_headers,
-        json={"restricted": True},
+    tag = await client.post("/documents/tags", headers=owner_headers, json={"name": "HR-Only"})
+    tag_id = tag.json()["id"]
+    tag_folder = await client.post(
+        f"/documents/folders/{parent_id}/tags/{tag_id}", headers=owner_headers
     )
+    assert tag_folder.status_code == 204
 
-    # Restricting the PARENT gates the child's documents too, even though the child
-    # folder's own `restricted` flag was never touched.
-    allowed = await resolve_allowed_documents(member_ctx)
-    assert doc_in_child not in allowed
+    role = await client.post("/access-roles", headers=owner_headers, json={"name": "HR Team"})
+    role_id = role.json()["id"]
+    await client.post(f"/access-roles/{role_id}/tags/{tag_id}", headers=owner_headers)
+
+    member_tokens = await _invite_member(client, owner_headers, "ret-foldertag-member@test.com")
+    me = await client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {member_tokens['access_token']}"}
+    )
+    member_user_id = uuid.UUID(me.json()["id"])
+    member_ctx = TenantContext(org_id=org_id, user_id=member_user_id, role=ROLE_MEMBER)
+
+    # Tagging the PARENT gates the child's document too, even though the child folder
+    # and the document itself were never directly tagged.
+    assert doc_in_child not in await resolve_allowed_documents(member_ctx)
+
+    await client.post(f"/access-roles/{role_id}/users/{member_user_id}", headers=owner_headers)
+    assert doc_in_child in await resolve_allowed_documents(member_ctx)
+
+
+async def test_folder_tagging_requires_admin(client: AsyncClient) -> None:
+    owner_tokens = await _signup(client, "ret-foldertagperm-owner@test.com", "FolderTagPermOrg")
+    owner_headers = {"Authorization": f"Bearer {owner_tokens['access_token']}"}
+    member_tokens = await _invite_member(client, owner_headers, "ret-foldertagperm-member@test.com")
+    member_headers = {"Authorization": f"Bearer {member_tokens['access_token']}"}
+
+    folder = await client.post("/documents/folders", headers=owner_headers, json={"name": "X"})
+    folder_id = folder.json()["id"]
+    tag = await client.post("/documents/tags", headers=owner_headers, json={"name": "T"})
+    tag_id = tag.json()["id"]
+
+    forbidden = await client.post(
+        f"/documents/folders/{folder_id}/tags/{tag_id}", headers=member_headers
+    )
+    assert forbidden.status_code == 403
+
+    allowed = await client.post(
+        f"/documents/folders/{folder_id}/tags/{tag_id}", headers=owner_headers
+    )
+    assert allowed.status_code == 204
+
+
+async def test_document_tagging_stays_open_to_any_member(
+    client: AsyncClient, session_factory
+) -> None:
+    """Unlike folder tagging, tagging a plain document is unchanged from before this
+    feature — no admin gate."""
+    owner_tokens = await _signup(client, "ret-doctagperm-owner@test.com", "DocTagPermOrg")
+    owner_headers = {"Authorization": f"Bearer {owner_tokens['access_token']}"}
+    org_id = await _org_id(client, owner_headers)
+    member_tokens = await _invite_member(client, owner_headers, "ret-doctagperm-member@test.com")
+    member_headers = {"Authorization": f"Bearer {member_tokens['access_token']}"}
+
+    doc_id = await _seed_document(session_factory, org_id, "Doc")
+    tag = await client.post("/documents/tags", headers=owner_headers, json={"name": "T"})
+    tag_id = tag.json()["id"]
+
+    resp = await client.post(f"/documents/{doc_id}/tags/{tag_id}", headers=member_headers)
+    assert resp.status_code == 204
 
 
 def test_assemble_context_numbers_hits_with_source_refs() -> None:

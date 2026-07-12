@@ -477,22 +477,49 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       component logic tested via mocked `chatApi.streamAsk`.
 
 ## Maintenance — Document hard-delete + folder-based access restriction
-- [x] Document hard-delete + folder-based access restriction (2026-07-12) — **built out
-      of buildplan order**, a direct ask, not an F-numbered item. See buildplan.md
-      "Unplanned additions" and memory.md for full detail. `DELETE /documents/{id}`
-      (cascades via existing FKs to sections/chunks/embeddings/document_tags/
-      knowledge_base_documents; new `ObjectStore.delete` removes the blob(s) after DB
-      commit). New `folders.restricted` boolean (migration `0011`) — owner/admin always
-      bypass, `member` blocked from a restricted folder's subtree in chat/retrieval only
-      (`resolve_allowed_documents`), computed live with no resync step needed. New
-      admin-only `PATCH /documents/folders/{id}/restriction`. Frontend wired too:
-      `DocumentList.tsx` delete button (confirm-guarded), `FolderTree.tsx` restricted
-      badge + lock/unlock toggle gated by role. DoD met: 141/141 backend tests (6 new),
-      35/35 frontend tests (5 new), ruff/tsc/build clean, migration applied to a fresh
-      DB and the running dev DB, live HTTP verification (owner vs. invited member) and
-      an actual-browser check both passed. Scope boundary: browsing endpoints
-      (`GET /documents`, `GET /documents/folders`) are NOT gated by restriction, only
-      chat/retrieval — a named, deliberate gap, not an oversight.
+- [x] Document hard-delete (2026-07-12) — **built out of buildplan order**, a direct
+      ask, not an F-numbered item. See buildplan.md "Unplanned additions" and memory.md
+      for full detail. `DELETE /documents/{id}` (cascades via existing FKs to
+      sections/chunks/embeddings/document_tags/knowledge_base_documents; new
+      `ObjectStore.delete` removes the blob(s) after DB commit). Frontend:
+      `DocumentList.tsx` delete button (confirm-guarded). DoD met: tests green,
+      ruff/tsc/build clean, live HTTP + browser verification passed. **Still current —
+      unaffected by the access-control rework below.**
+- [x] ~~Folder-based access restriction (`folders.restricted` boolean)~~ — **SUPERSEDED
+      same session**, fully removed (column dropped, endpoint deleted, FolderTree
+      lock/unlock button deleted) and replaced by the Access Roles system below, per a
+      direct follow-up ask. Do not resurrect this design; see memory.md for why.
+
+## Maintenance — Access Roles (tag-based RBAC) + folder tree drag-and-drop
+- [x] Access Roles + drag-and-drop (2026-07-12, same session) — **built out of
+      buildplan order**, replacing the folder-restriction feature above at the user's
+      direct request (custom roles instead of a binary flag; drag-and-drop instead of a
+      `<select>` move dropdown). Full design: `docs/access-roles-dnd-plan.md`; full
+      detail: memory.md. New tables (migration `0012`): `access_roles`,
+      `user_access_roles`, `access_role_tags`, `folder_tags`. A tag becomes
+      "access-controlling" only once granted to an Access Role — untagged/ungranted
+      resources stay open to everyone, zero behavior change for the common case.
+      `resolve_allowed_documents` rewritten around this (owner/admin bypass unchanged).
+      Folder-tagging is admin/owner-only; document-tagging stays open to any member
+      (unchanged) — accepted, named risk that a member could inadvertently gate a
+      document by attaching an already-granted tag. New `PATCH /documents/{id}/folder`
+      (`move_document`) — didn't exist before, required for drag-and-drop. Frontend:
+      `FolderTree.tsx` — lock/unlock removed, tag badges + admin-only tag grant added,
+      native HTML5 drag-and-drop for both folder-reparenting and dragging a document
+      onto a folder (no new dependency, unlike a tree library such as
+      `react-complex-tree` — deliberately rejected to keep this codebase's
+      zero-UI-library style). New `pages/AccessRolesPage.tsx` (create role, grant/revoke
+      tags, assign/remove members) plus a tag-creation control — a real UI gap (no
+      tag-creation existed anywhere before) caught only during manual browser testing.
+      DoD met: 158/158 backend tests, 44/44 frontend tests, ruff/tsc/build clean,
+      migration applied to a fresh DB and the running dev DB. **Live browser
+      verification, the real proof**: dragged folders to reparent (API-confirmed),
+      created a tag + role via the new page, granted the tag, assigned an invited
+      member, tagged a folder, uploaded+ingested a real document into it, and confirmed
+      via `/retrieval/search` that an outsider member got zero results while the
+      role-holding member got the grounded hit. One unrelated bug found+fixed during
+      this verification: a stale `uvicorn` process running pre-migration code (needed a
+      restart, not a code fix) — see memory.md "Gotcha" for the lesson.
 
 ## Phase 6 — Security Hardening (after MVP validated, before real customer data)
 - [ ] F60 Enforced RLS (RLS_ENABLED on; app_user/migrator split; FORCE RLS; teeth-having isolation test)
@@ -593,21 +620,31 @@ to HEAD. **Docker-gated full-suite re-run CLOSED: 135 passed, 1 skipped, 0 failu
 Fixed 3 test-file bugs (app/config shadowing, monkeypatch string literals, migrations/0002
 import). Installed openai SDK (v2.44.0). Live end-to-end smoke (GET /health, signup/login/
 auth/documents) passed. `ruff check` unchanged (3 pre-existing). Frontend: tsc/vitest/build
-all clean. Work staged via git mv on main, uncommitted. See memory.md "Single-MVC re-refactor"
-for full mapping tables, verification record, and gotchas.
-**Document hard-delete + folder-based access restriction DONE (2026-07-12, this
-session, UNCOMMITTED).** `DELETE /documents/{id}` (full purge, cascades via existing
-FKs + new `ObjectStore.delete`); `folders.restricted` (migration `0011`, owner/admin
-bypass, member blocked from a restricted subtree in chat/retrieval only, live with no
-resync step). Frontend delete button + restriction toggle wired in DocumentList/
-FolderTree. 141/141 backend + 35/35 frontend tests green, live HTTP + browser
-verification passed. See memory.md "Document hard-delete + folder-based access
-restriction" for full detail, and buildplan.md "Unplanned additions" for the V2-scope
-note (this is a slice of V2 permissions, not all of it).
-Next action: **Commit this session's delete/restriction feature (the single-MVC
-refactor was ALREADY committed by an earlier session — `81bd90f`, confirmed via
-`git log` at the start of this session; prior claims below/in memory.md that it was
-still uncommitted were stale), then proceed to F42 admin debug bundle or F60 RLS
-hardening.**
+all clean. See memory.md "Single-MVC re-refactor" for full mapping tables, verification
+record, and gotchas.
+**Document hard-delete DONE and COMMITTED (`7012af2`, 2026-07-12).** `DELETE
+/documents/{id}` (full purge, cascades via existing FKs + new `ObjectStore.delete`).
+Frontend delete button in DocumentList. 141/141 backend + 35/35 frontend tests green at
+commit time, live HTTP + browser verification passed. **The folder-based access
+restriction half of that same commit (`folders.restricted`) is now SUPERSEDED** — see
+below.
+
+**Access Roles (tag-based RBAC) + drag-and-drop DONE (2026-07-12, same session,
+UNCOMMITTED).** Replaces `folders.restricted` (column dropped, endpoint removed,
+FolderTree lock/unlock button removed — migration `0012`) with Access Roles: custom
+named roles, granted tags, assigned members; a tag only gates access once granted to a
+role, so untagged/ungranted resources stay open (zero behavior change for the common
+case). New `PATCH /documents/{id}/folder` for drag-and-drop. FolderTree rebuilt with
+native HTML5 drag-and-drop (folder reparenting + drag-a-document-onto-a-folder) and tag
+badges/grants; new `AccessRolesPage.tsx`. 158/158 backend + 44/44 frontend tests green,
+ruff/tsc/build clean, migration applied to a fresh DB and the running dev DB. **Live
+browser verification passed end-to-end**, including a real `/retrieval/search` proof
+that role-based tag gating actually restricts an outsider member while allowing a
+role-holding member. See memory.md "Access Roles (tag-based RBAC) + folder tree
+drag-and-drop" for full detail, including the stale-uvicorn-process gotcha hit during
+verification and the `docs/access-roles-dnd-plan.md` design record.
+
+Next action: **Commit this session's Access Roles + drag-and-drop feature, then proceed
+to F42 admin debug bundle or F60 RLS hardening.**
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

@@ -7,6 +7,13 @@ import type { Folder, FolderDeleteMode } from "../types/documents";
 
 type TreeNode = Folder & { children: TreeNode[] };
 
+// Drag payload set on dragstart (here, for folder rows; DocumentList sets the same
+// shape for document rows) — a single small JSON envelope lets one onDrop handler
+// branch on what's being dropped without a second drag protocol. Exported so
+// DocumentList's drag source uses the exact same wire shape as this drop target.
+export type DragPayload = { type: "folder"; id: string } | { type: "document"; id: string };
+export const DRAG_MIME = "application/json";
+
 function buildTree(folders: Folder[]): TreeNode[] {
   const byId = new Map<string, TreeNode>(folders.map((f) => [f.id, { ...f, children: [] }]));
   const roots: TreeNode[] = [];
@@ -21,8 +28,9 @@ function buildTree(folders: Folder[]): TreeNode[] {
 }
 
 // Descendant ids of `folderId` (via parent_id, mirroring the backend's BFS) — used to
-// exclude self + descendants from the move target list, since the backend itself
-// rejects moving a folder into its own subtree (FolderCycleError).
+// reject dropping a folder onto itself or one of its own descendants client-side (the
+// backend also rejects this, FolderCycleError, but checking here avoids a round trip
+// for the common case of a stray drop).
 function descendantIds(folders: Folder[], folderId: string): Set<string> {
   const ids = new Set<string>([folderId]);
   let added = true;
@@ -39,7 +47,7 @@ function descendantIds(folders: Folder[], folderId: string): Set<string> {
 }
 
 // Narrow, swappable navigator: the rest of F51 only depends on this props contract, never
-// on FolderTree's internals (client-side tree assembly, rename/move/delete UI).
+// on FolderTree's internals (client-side tree assembly, rename/delete UI, drag-and-drop).
 export function FolderTree({
   currentFolderId,
   onNavigate,
@@ -49,19 +57,21 @@ export function FolderTree({
 }) {
   const queryClient = useQueryClient();
   const { user } = useAuth();
-  const canManageRestriction = user?.role === "owner" || user?.role === "admin";
+  const canManageTags = user?.role === "owner" || user?.role === "admin";
   const foldersQuery = useQuery({ queryKey: ["folders"], queryFn: documentsApi.listFolders });
+  const tagsQuery = useQuery({ queryKey: ["tags"], queryFn: documentsApi.listTags });
   const [newFolderParent, setNewFolderParent] = useState<string | null | undefined>(undefined);
   const [newFolderName, setNewFolderName] = useState("");
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
 
-  // Every mutation invalidates the whole ["folders"] list rather than patching a single
-  // row optimistically: move/rename rebuild every descendant's `path` server-side in one
-  // transaction, so a partial/optimistic update here would leave descendant paths stale
-  // in the UI until the next unrelated refetch. A full refetch always reflects the
-  // freshly-rebuilt paths.
+  // Every folder mutation invalidates the whole ["folders"] list rather than patching a
+  // single row optimistically: move/rename rebuild every descendant's `path`
+  // server-side in one transaction, so a partial/optimistic update here would leave
+  // descendant paths stale in the UI until the next unrelated refetch.
   const invalidateFolders = () => queryClient.invalidateQueries({ queryKey: ["folders"] });
+  const invalidateDocuments = () => queryClient.invalidateQueries({ queryKey: ["documents"] });
 
   const createMutation = useMutation({
     mutationFn: ({ name, parentId }: { name: string; parentId: string | null }) =>
@@ -81,22 +91,37 @@ export function FolderTree({
     onSuccess: invalidateFolders,
   });
 
-  const moveMutation = useMutation({
+  const moveFolderMutation = useMutation({
     mutationFn: ({ id, parentId }: { id: string; parentId: string | null }) =>
       documentsApi.moveFolder(id, parentId),
     onSuccess: invalidateFolders,
+    onError: (err) => window.alert(err instanceof ApiError ? err.message : "Failed to move folder"),
   });
 
-  const restrictionMutation = useMutation({
-    mutationFn: ({ id, restricted }: { id: string; restricted: boolean }) =>
-      documentsApi.setFolderRestriction(id, restricted),
-    onSuccess: invalidateFolders,
+  const moveDocumentMutation = useMutation({
+    mutationFn: ({ id, folderId }: { id: string; folderId: string | null }) =>
+      documentsApi.moveDocument(id, folderId),
+    onSuccess: invalidateDocuments,
     onError: (err) =>
-      window.alert(err instanceof ApiError ? err.message : "Failed to update folder restriction"),
+      window.alert(err instanceof ApiError ? err.message : "Failed to move document"),
+  });
+
+  const tagFolderMutation = useMutation({
+    mutationFn: ({ id, tagId }: { id: string; tagId: string }) =>
+      documentsApi.tagFolder(id, tagId),
+    onSuccess: invalidateFolders,
+    onError: (err) => window.alert(err instanceof ApiError ? err.message : "Failed to tag folder"),
+  });
+
+  const untagFolderMutation = useMutation({
+    mutationFn: ({ id, tagId }: { id: string; tagId: string }) =>
+      documentsApi.untagFolder(id, tagId),
+    onSuccess: invalidateFolders,
   });
 
   const tree = useMemo(() => buildTree(foldersQuery.data ?? []), [foldersQuery.data]);
   const folders = foldersQuery.data ?? [];
+  const tagName = (tagId: string) => tagsQuery.data?.find((t) => t.id === tagId)?.name ?? tagId;
 
   function handleCreateSubmit(parentId: string | null) {
     const name = newFolderName.trim();
@@ -144,44 +169,70 @@ export function FolderTree({
       { id: folder.id, mode },
       {
         onError: (err) =>
-          window.alert(
-            err instanceof ApiError ? err.message : "Failed to delete folder",
-          ),
+          window.alert(err instanceof ApiError ? err.message : "Failed to delete folder"),
       },
     );
   }
 
-  function moveTargetOptions(folder: TreeNode): { id: string | null; label: string }[] {
-    const excluded = descendantIds(folders, folder.id);
-    const options: { id: string | null; label: string }[] = folders
-      .filter((f) => !excluded.has(f.id))
-      .map((f) => ({ id: f.id as string | null, label: f.path }));
-    if (folder.parent_id !== null) options.unshift({ id: null, label: "Root" });
-    return options;
+  function handleDragStart(e: React.DragEvent, folderId: string) {
+    const payload: DragPayload = { type: "folder", id: folderId };
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
   }
 
-  function handleMove(folder: TreeNode, targetParentId: string | null) {
-    moveMutation.mutate(
-      { id: folder.id, parentId: targetParentId },
-      {
-        onError: (err) =>
-          window.alert(err instanceof ApiError ? err.message : "Failed to move folder"),
-      },
-    );
+  function handleDragOver(e: React.DragEvent, targetId: string | null) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDragOverId(targetId ?? "__root__");
   }
 
-  function handleToggleRestriction(folder: TreeNode) {
-    restrictionMutation.mutate({ id: folder.id, restricted: !folder.restricted });
+  function handleDrop(e: React.DragEvent, targetFolderId: string | null) {
+    e.preventDefault();
+    setDragOverId(null);
+    const raw = e.dataTransfer.getData(DRAG_MIME);
+    if (!raw) return;
+    let payload: DragPayload;
+    try {
+      payload = JSON.parse(raw) as DragPayload;
+    } catch {
+      return;
+    }
+
+    if (payload.type === "folder") {
+      if (payload.id === targetFolderId) return; // no-op, dropped onto itself
+      if (targetFolderId !== null && descendantIds(folders, payload.id).has(targetFolderId)) {
+        window.alert("Cannot move a folder into itself or one of its own subfolders.");
+        return;
+      }
+      moveFolderMutation.mutate({ id: payload.id, parentId: targetFolderId });
+    } else {
+      moveDocumentMutation.mutate({ id: payload.id, folderId: targetFolderId });
+    }
+  }
+
+  function handleToggleTag(folder: TreeNode, tagId: string, currentlyTagged: boolean) {
+    if (currentlyTagged) {
+      untagFolderMutation.mutate({ id: folder.id, tagId });
+    } else {
+      tagFolderMutation.mutate({ id: folder.id, tagId });
+    }
   }
 
   function renderNode(node: TreeNode, depth: number) {
     const isActive = currentFolderId === node.id;
+    const isDragOver = dragOverId === node.id;
+    const grantableTags = (tagsQuery.data ?? []).filter((t) => !node.tag_ids.includes(t.id));
     return (
       <div key={node.id}>
         <div
-          className={`group flex items-center gap-1 px-2 py-1 rounded-md text-sm hover:bg-surface ${
+          draggable
+          onDragStart={(e) => handleDragStart(e, node.id)}
+          onDragOver={(e) => handleDragOver(e, node.id)}
+          onDragLeave={() => setDragOverId((prev) => (prev === node.id ? null : prev))}
+          onDrop={(e) => handleDrop(e, node.id)}
+          className={`group flex items-center gap-1 px-2 py-1 rounded-md text-sm hover:bg-surface cursor-grab ${
             isActive ? "bg-surface text-accent" : "text-text"
-          }`}
+          } ${isDragOver ? "outline outline-2 outline-accent" : ""}`}
           style={{ paddingLeft: `${depth * 16 + 8}px` }}
         >
           {renamingId === node.id ? (
@@ -206,44 +257,41 @@ export function FolderTree({
               {node.name}
             </button>
           )}
-          {node.restricted && (
+          {node.tag_ids.map((tagId) => (
             <span
-              title="Restricted: only owners/admins can search this folder's documents"
-              className="text-[10px] border border-danger text-danger rounded-sm px-1"
-            >
-              restricted
-            </span>
-          )}
-          {canManageRestriction && (
-            <button
-              type="button"
-              aria-label={
-                node.restricted ? `Unrestrict ${node.name}` : `Restrict ${node.name}`
+              key={tagId}
+              title={
+                canManageTags
+                  ? `Click to untag "${tagName(tagId)}"`
+                  : `Tagged "${tagName(tagId)}"`
               }
-              onClick={() => handleToggleRestriction(node)}
-              disabled={restrictionMutation.isPending}
-              className="opacity-0 group-hover:opacity-100 text-muted hover:text-text px-1 disabled:opacity-50"
+              onClick={canManageTags ? () => handleToggleTag(node, tagId, true) : undefined}
+              className={`text-[10px] border border-border rounded-sm px-1 text-muted ${
+                canManageTags ? "cursor-pointer hover:border-danger hover:text-danger" : ""
+              }`}
             >
-              {node.restricted ? "unlock" : "lock"}
-            </button>
+              {tagName(tagId)}
+            </span>
+          ))}
+          {canManageTags && grantableTags.length > 0 && (
+            <select
+              aria-label={`Tag ${node.name}`}
+              value=""
+              onChange={(e) => {
+                if (!e.target.value) return;
+                handleToggleTag(node, e.target.value, false);
+                e.target.value = "";
+              }}
+              className="opacity-0 group-hover:opacity-100 bg-bg border border-border rounded-sm text-xs text-muted max-w-[70px]"
+            >
+              <option value="">+ tag</option>
+              {grantableTags.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
           )}
-          <select
-            aria-label={`Move ${node.name}`}
-            value=""
-            onChange={(e) => {
-              if (!e.target.value) return;
-              handleMove(node, e.target.value === "__root__" ? null : e.target.value);
-              e.target.value = "";
-            }}
-            className="opacity-0 group-hover:opacity-100 bg-bg border border-border rounded-sm text-xs text-muted max-w-[60px]"
-          >
-            <option value="">⇲</option>
-            {moveTargetOptions(node).map((opt) => (
-              <option key={opt.id ?? "__root__"} value={opt.id ?? "__root__"}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
           <button
             type="button"
             aria-label={`Rename ${node.name}`}
@@ -274,9 +322,12 @@ export function FolderTree({
       <button
         type="button"
         onClick={() => onNavigate(null)}
+        onDragOver={(e) => handleDragOver(e, null)}
+        onDragLeave={() => setDragOverId((prev) => (prev === "__root__" ? null : prev))}
+        onDrop={(e) => handleDrop(e, null)}
         className={`text-left px-2 py-1 rounded-md text-sm hover:bg-surface ${
           currentFolderId === null ? "bg-surface text-accent" : "text-text"
-        }`}
+        } ${dragOverId === "__root__" ? "outline outline-2 outline-accent" : ""}`}
       >
         All documents
       </button>

@@ -61,6 +61,7 @@ export function Sidebar() {
         <NavItem to="/app/repository" label="Repository" />
         <NavItem to="/app/notebooks" label="Notebooks" />
         <NavItem to="" label="Search" disabled />
+        {canManageTeam && <NavItem to="/app/access-roles" label="Access Roles" />}
       </nav>
 
       <div className="px-2 pb-3 space-y-1 border-t border-border pt-3">

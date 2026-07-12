@@ -9,6 +9,7 @@ import { NotebookPage } from "./pages/NotebookPage";
 import { LoginPage } from "./pages/LoginPage";
 import { SignupPage } from "./pages/SignupPage";
 import { UsersPage } from "./pages/UsersPage";
+import { AccessRolesPage } from "./pages/AccessRolesPage";
 import { AuthProvider } from "./context/AuthContext";
 
 const queryClient = new QueryClient();
@@ -30,6 +31,7 @@ export default function App() {
                 <Route path="notebooks/:notebookId" element={<NotebookPage />} />
                 <Route element={<AdminRoute />}>
                   <Route path="users" element={<UsersPage />} />
+                  <Route path="access-roles" element={<AccessRolesPage />} />
                 </Route>
               </Route>
             </Route>

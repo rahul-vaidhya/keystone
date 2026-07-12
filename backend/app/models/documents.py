@@ -15,7 +15,6 @@ from enum import StrEnum
 from pydantic import BaseModel, Field
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -63,10 +62,6 @@ class Folder(Base):
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     path: Mapped[str] = mapped_column(Text, nullable=False)  # materialized path, e.g. 'HR/Policies'
-    # Opt-in access restriction (0011): False (default) = open to every org role, unchanged
-    # from pre-0011 behavior. True = invisible to `member`-role users in chat/retrieval,
-    # inherited down the subtree (see resolve_allowed_documents in services/retrieval.py).
-    restricted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -149,6 +144,27 @@ class DocumentTag(Base):
     )
 
 
+class FolderTag(Base):
+    """Mirrors ``DocumentTag`` — folders can carry tags too (0012). A folder's tags are
+    inherited down its subtree by ``resolve_allowed_documents``; a folder tag that has
+    been granted to an Access Role makes the whole subtree access-controlled."""
+
+    __tablename__ = "folder_tags"
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    folder_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("folders.id", ondelete="CASCADE"), primary_key=True
+    )
+    tag_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+
+
 # ---- API schemas ----
 
 
@@ -163,7 +179,7 @@ class FolderOut(BaseModel):
     parent_id: uuid.UUID | None
     name: str
     path: str
-    restricted: bool
+    tag_ids: list[uuid.UUID] = Field(default_factory=list)
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -175,10 +191,6 @@ class FolderRename(BaseModel):
 
 class FolderMove(BaseModel):
     parent_id: uuid.UUID | None = None
-
-
-class FolderRestrictionUpdate(BaseModel):
-    restricted: bool
 
 
 class TagCreate(BaseModel):
@@ -211,3 +223,7 @@ class DocumentOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class DocumentMove(BaseModel):
+    folder_id: uuid.UUID | None = None

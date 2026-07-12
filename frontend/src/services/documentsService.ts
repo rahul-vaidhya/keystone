@@ -25,11 +25,11 @@ export const documentsApi = {
   deleteFolder: (folderId: string, mode: FolderDeleteMode = "block") =>
     apiFetch<void>(`/documents/folders/${folderId}?mode=${mode}`, { method: "DELETE" }),
 
-  setFolderRestriction: (folderId: string, restricted: boolean) =>
-    apiFetch<Folder>(`/documents/folders/${folderId}/restriction`, {
-      method: "PATCH",
-      body: JSON.stringify({ restricted }),
-    }),
+  tagFolder: (folderId: string, tagId: string) =>
+    apiFetch<void>(`/documents/folders/${folderId}/tags/${tagId}`, { method: "POST" }),
+
+  untagFolder: (folderId: string, tagId: string) =>
+    apiFetch<void>(`/documents/folders/${folderId}/tags/${tagId}`, { method: "DELETE" }),
 
   listTags: () => apiFetch<Tag[]>("/documents/tags"),
 
@@ -61,4 +61,10 @@ export const documentsApi = {
 
   deleteDocument: (documentId: string) =>
     apiFetch<void>(`/documents/${documentId}`, { method: "DELETE" }),
+
+  moveDocument: (documentId: string, folderId: string | null) =>
+    apiFetch<Document>(`/documents/${documentId}/folder`, {
+      method: "PATCH",
+      body: JSON.stringify({ folder_id: folderId }),
+    }),
 };

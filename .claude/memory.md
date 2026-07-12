@@ -6,7 +6,100 @@
 
 ---
 
-## Document hard-delete + folder-based access restriction (2026-07-12, this session)
+## Access Roles (tag-based RBAC) + folder tree drag-and-drop (2026-07-12, same session — SUPERSEDES the folder-restriction feature immediately below)
+
+**Full design record:** `docs/access-roles-dnd-plan.md` (produced via `/architect`,
+confirmed by the user before implementation). **This fully replaces the
+`folders.restricted` boolean feature from earlier the same session** (see the section
+right below this one) — that column, its endpoint, its inheritance-walk code, and its
+FolderTree lock/unlock button are ALL DELETED, not deprecated. The user asked for this
+replacement directly: custom roles instead of a binary owner/admin-vs-member flag, plus
+a friendlier folder tree (drag-and-drop instead of a `<select>` dropdown).
+
+**What was built:**
+1. **Access Role** — a new concept, deliberately separate from the system role
+   (owner/admin/member, unchanged, still governs invites/role-changes). New tables
+   (migration `0012`): `access_roles`, `user_access_roles`, `access_role_tags`, plus
+   `folder_tags` (folders can now carry tags, mirroring the pre-existing
+   `document_tags`). A tag becomes **"access-controlling"** the instant it's granted to
+   any Access Role — an untagged resource, or one tagged only with tags no role has
+   ever been granted, stays open to every org member (zero behavior change for the
+   common case). New domain `app/{models,services,routes,controllers}/access_roles.py`
+   (routes/controllers), all admin/owner-gated.
+2. **`resolve_allowed_documents` rewrite** (`app/services/retrieval.py`): owner/admin
+   bypass unchanged; for everyone else, one top-down pass over `list_folders()`
+   computes each folder's inherited effective tag set (`_inherited_folder_tags` — same
+   shape as the old `_inherited_restricted_ids` but accumulating tag-id sets instead of
+   a boolean), a document's own direct tags add to whatever its folder chain inherits,
+   and a document is visible unless its effective tags intersect the org's
+   access-controlling tags AND that intersection misses every tag the requesting
+   user's Access Roles grant.
+3. **Folder tagging is admin/owner-only; document tagging stays open to any member**
+   (unchanged from before) — a deliberate asymmetry, since a folder tag cascades to an
+   entire subtree. **Named, accepted risk**: because document-tagging has no
+   permission gate, a plain member CAN accidentally make a document invisible to most
+   of the org by attaching a tag that happens to already be granted to some Access
+   Role — a direct, foreseeable consequence of "reuse the same tags for both
+   organization and access control" + "keep document-tagging permission-free," both
+   confirmed by the user.
+4. **New `PATCH /documents/{id}/folder`** (`move_document`) — didn't exist before;
+   required for the drag-and-drop-a-document-onto-a-folder UX to work at all.
+5. **Frontend**: `FolderTree.tsx` lost the lock/unlock button entirely, gained
+   always-visible tag badges (click-to-untag for admin/owner) + an admin-only "+ tag"
+   grant select, and native HTML5 drag-and-drop (`draggable`/`onDragStart`/`onDragOver`/
+   `onDrop`) replacing the `<select>`-based move dropdown — chosen over a tree library
+   like `react-complex-tree` specifically to add zero new dependency (this codebase has
+   none today beyond react-query/react-router). `DocumentList.tsx` rows are now drag
+   sources too (dropping one onto a FolderTree folder calls the new move-document
+   endpoint). New `pages/AccessRolesPage.tsx` (create role, grant/revoke tags,
+   assign/remove members) plus a **new tag-creation control on that same page** — a
+   real gap caught only during manual browser testing: there was NO tag-creation UI
+   anywhere in the app before this (only document/folder tag *attach*, never *create*).
+   New `AccessRolesPage` nav item, admin-gated like the existing Users page.
+
+**Verification:**
+- Backend: 158/158 tests (full suite, including new `tests/test_access_roles.py` CRUD/
+  grant/assign/isolation coverage and rewritten tag-based cases in
+  `tests/test_retrieval.py`), ruff/format clean (3 pre-existing findings only),
+  migration `0012` applied cleanly to both a fresh Testcontainers DB and the running
+  dev Postgres.
+- Frontend: 44/44 vitest (including drag-and-drop simulated via a Map-backed fake
+  `DataTransfer` passed through `fireEvent.dragStart`/`fireEvent.drop`), `tsc -b` +
+  `vite build` clean.
+- **Live browser verification (Chrome via claude-in-chrome), the real end-to-end
+  proof**: created two folders, dragged one onto the other to reparent it (confirmed
+  via API: `parent_id`/`path` correctly rebuilt), dragged it back to root by dropping
+  on "All documents"; created a tag and an Access Role on the new page, granted the tag
+  to the role, assigned an invited member to it; tagged the Finance folder with that
+  tag in FolderTree (badge appeared live); uploaded+ingested a real document into that
+  folder, attached it to a notebook, and confirmed via `/retrieval/search` that an
+  **outsider member (no matching role) got zero results** while the **role-holding
+  member got the grounded hit** — the tag-based gate genuinely works, not just at the
+  unit-test level.
+- **One real bug found and fixed during this same verification, unrelated to the new
+  feature**: a stale `uvicorn` process (started earlier in the session, before this
+  feature's model/migration edits) was still running old code and threw
+  `UndefinedColumnError: column folders.restricted does not exist` on folder-create —
+  looked like a live regression until traced to the process simply needing a restart
+  to pick up the code changes. **Lesson for next session**: after editing backend
+  models/migrations mid-session, restart any already-running dev `uvicorn`/`arq`
+  processes before trusting a "live" browser check — they don't hot-reload.
+
+**Gotcha**: `fireEvent.dragStart`/`fireEvent.drop` in vitest+jsdom need a manually
+constructed `{ setData, getData }` object passed as `{ dataTransfer }` in the event init
+— jsdom's real `DataTransfer` doesn't implement storage. Reuse the *same* object
+instance across the paired dragstart/drop calls to simulate the OS-level handoff.
+
+**Next migration is now `0013`.**
+
+---
+
+## Document hard-delete + folder-based access restriction (2026-07-12, this session — SUPERSEDED, see section above)
+
+> **STALE as of later the same session**: `folders.restricted`, its endpoint, and its
+> FolderTree UI (described below) were fully removed and replaced by the Access Roles
+> system in the section above, per a direct follow-up ask. The document hard-delete
+> half of this entry is still current and unaffected.
 
 **Built out of numeric buildplan order** (no F-number — a direct ask, not a
 `buildplan.md` line item), on top of the committed single-MVC layout. Full design

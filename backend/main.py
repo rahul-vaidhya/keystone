@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config.logging import configure_logging
 from app.config.settings import settings
+from app.routes.access_roles import router as access_roles_router
 from app.routes.auth import router as auth_router
 from app.routes.chat import router as chat_router
 from app.routes.documents import router as documents_router
@@ -39,6 +40,7 @@ app.include_router(ingestion_router)
 app.include_router(knowledge_router)
 app.include_router(retrieval_router)
 app.include_router(chat_router)
+app.include_router(access_roles_router)
 
 
 @app.get("/health")
