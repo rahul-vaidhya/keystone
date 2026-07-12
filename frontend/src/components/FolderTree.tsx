@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { documentsApi } from "../services/documentsService";
+import { useAuth } from "../hooks/useAuth";
 import { ApiError } from "../types/auth";
 import type { Folder, FolderDeleteMode } from "../types/documents";
 
@@ -47,6 +48,8 @@ export function FolderTree({
   onNavigate: (folderId: string | null) => void;
 }) {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const canManageRestriction = user?.role === "owner" || user?.role === "admin";
   const foldersQuery = useQuery({ queryKey: ["folders"], queryFn: documentsApi.listFolders });
   const [newFolderParent, setNewFolderParent] = useState<string | null | undefined>(undefined);
   const [newFolderName, setNewFolderName] = useState("");
@@ -82,6 +85,14 @@ export function FolderTree({
     mutationFn: ({ id, parentId }: { id: string; parentId: string | null }) =>
       documentsApi.moveFolder(id, parentId),
     onSuccess: invalidateFolders,
+  });
+
+  const restrictionMutation = useMutation({
+    mutationFn: ({ id, restricted }: { id: string; restricted: boolean }) =>
+      documentsApi.setFolderRestriction(id, restricted),
+    onSuccess: invalidateFolders,
+    onError: (err) =>
+      window.alert(err instanceof ApiError ? err.message : "Failed to update folder restriction"),
   });
 
   const tree = useMemo(() => buildTree(foldersQuery.data ?? []), [foldersQuery.data]);
@@ -159,6 +170,10 @@ export function FolderTree({
     );
   }
 
+  function handleToggleRestriction(folder: TreeNode) {
+    restrictionMutation.mutate({ id: folder.id, restricted: !folder.restricted });
+  }
+
   function renderNode(node: TreeNode, depth: number) {
     const isActive = currentFolderId === node.id;
     return (
@@ -184,10 +199,32 @@ export function FolderTree({
           ) : (
             <button
               type="button"
+              title={node.name}
               onClick={() => onNavigate(node.id)}
               className="flex-1 text-left truncate"
             >
               {node.name}
+            </button>
+          )}
+          {node.restricted && (
+            <span
+              title="Restricted: only owners/admins can search this folder's documents"
+              className="text-[10px] border border-danger text-danger rounded-sm px-1"
+            >
+              restricted
+            </span>
+          )}
+          {canManageRestriction && (
+            <button
+              type="button"
+              aria-label={
+                node.restricted ? `Unrestrict ${node.name}` : `Restrict ${node.name}`
+              }
+              onClick={() => handleToggleRestriction(node)}
+              disabled={restrictionMutation.isPending}
+              className="opacity-0 group-hover:opacity-100 text-muted hover:text-text px-1 disabled:opacity-50"
+            >
+              {node.restricted ? "unlock" : "lock"}
             </button>
           )}
           <select

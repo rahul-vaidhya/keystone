@@ -3,6 +3,7 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Folder } from "../types/documents";
 import { documentsApi } from "../services/documentsService";
+import { useAuth } from "../hooks/useAuth";
 import { FolderTree } from "./FolderTree";
 
 vi.mock("../services/documentsService", async () => {
@@ -17,9 +18,28 @@ vi.mock("../services/documentsService", async () => {
       renameFolder: vi.fn(),
       moveFolder: vi.fn(),
       deleteFolder: vi.fn(),
+      setFolderRestriction: vi.fn(),
     },
   };
 });
+
+vi.mock("../hooks/useAuth", () => ({ useAuth: vi.fn() }));
+
+function mockUser(role: "owner" | "admin" | "member" = "owner") {
+  vi.mocked(useAuth).mockReturnValue({
+    user: {
+      id: "u-1",
+      org_id: "org-1",
+      email: "u@test.com",
+      role,
+      created_at: "2026-01-01T00:00:00Z",
+    },
+    loading: false,
+    login: vi.fn(),
+    signup: vi.fn(),
+    logout: vi.fn(),
+  });
+}
 
 function makeFolder(overrides: Partial<Folder> = {}): Folder {
   return {
@@ -28,6 +48,7 @@ function makeFolder(overrides: Partial<Folder> = {}): Folder {
     parent_id: null,
     name: "HR",
     path: "HR",
+    restricted: false,
     created_at: "2026-01-01T00:00:00Z",
     ...overrides,
   };
@@ -45,6 +66,8 @@ describe("FolderTree", () => {
     vi.mocked(documentsApi.renameFolder).mockReset();
     vi.mocked(documentsApi.moveFolder).mockReset();
     vi.mocked(documentsApi.deleteFolder).mockReset();
+    vi.mocked(documentsApi.setFolderRestriction).mockReset();
+    mockUser("owner");
   });
 
   it("renders a nested folder structure built from the flat parent_id list", async () => {
@@ -158,5 +181,41 @@ describe("FolderTree", () => {
 
     await waitFor(() => expect(documentsApi.moveFolder).toHaveBeenCalledWith("root", "sales"));
     await waitFor(() => expect(documentsApi.listFolders).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows a restrict toggle for an owner and calls setFolderRestriction", async () => {
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder()]);
+    vi.mocked(documentsApi.setFolderRestriction).mockResolvedValue(
+      makeFolder({ restricted: true }),
+    );
+
+    renderWithClient(<FolderTree currentFolderId={null} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "HR" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Restrict HR"));
+
+    await waitFor(() =>
+      expect(documentsApi.setFolderRestriction).toHaveBeenCalledWith("f-1", true),
+    );
+    await waitFor(() => expect(documentsApi.listFolders).toHaveBeenCalledTimes(2));
+  });
+
+  it("hides the restrict toggle for a plain member", async () => {
+    mockUser("member");
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder()]);
+
+    renderWithClient(<FolderTree currentFolderId={null} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "HR" })).toBeInTheDocument());
+
+    expect(screen.queryByLabelText("Restrict HR")).not.toBeInTheDocument();
+  });
+
+  it("shows an always-visible restricted badge regardless of role", async () => {
+    mockUser("member");
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder({ restricted: true })]);
+
+    renderWithClient(<FolderTree currentFolderId={null} onNavigate={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText("restricted")).toBeInTheDocument());
   });
 });

@@ -54,6 +54,11 @@ class DocumentsService:
     async def get_folder(self, ctx: TenantContext, folder_id: uuid.UUID) -> FolderOut:
         return await _folders.get_folder(ctx, folder_id)
 
+    async def set_restricted(
+        self, ctx: TenantContext, folder_id: uuid.UUID, restricted: bool
+    ) -> FolderOut:
+        return await _folders.set_restricted(ctx, folder_id, restricted)
+
     async def delete_folder(
         self, ctx: TenantContext, folder_id: uuid.UUID, *, mode: DeleteMode = "block"
     ) -> None:
@@ -165,6 +170,11 @@ class DocumentsService:
 
     async def get_parse_artifact_key(self, ctx: TenantContext, document_id: uuid.UUID) -> str:
         return await _documents.get_parse_artifact_key(ctx, document_id)
+
+    async def delete_document(
+        self, ctx: TenantContext, document_id: uuid.UUID, *, object_store: ObjectStore
+    ) -> None:
+        return await _documents.delete_document(ctx, document_id, object_store=object_store)
 
 
 documents_service = DocumentsService()

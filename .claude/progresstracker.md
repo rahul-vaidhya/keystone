@@ -476,6 +476,24 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       + `vite build` clean. No separate manual gate run (requires real backend + Docker);
       component logic tested via mocked `chatApi.streamAsk`.
 
+## Maintenance — Document hard-delete + folder-based access restriction
+- [x] Document hard-delete + folder-based access restriction (2026-07-12) — **built out
+      of buildplan order**, a direct ask, not an F-numbered item. See buildplan.md
+      "Unplanned additions" and memory.md for full detail. `DELETE /documents/{id}`
+      (cascades via existing FKs to sections/chunks/embeddings/document_tags/
+      knowledge_base_documents; new `ObjectStore.delete` removes the blob(s) after DB
+      commit). New `folders.restricted` boolean (migration `0011`) — owner/admin always
+      bypass, `member` blocked from a restricted folder's subtree in chat/retrieval only
+      (`resolve_allowed_documents`), computed live with no resync step needed. New
+      admin-only `PATCH /documents/folders/{id}/restriction`. Frontend wired too:
+      `DocumentList.tsx` delete button (confirm-guarded), `FolderTree.tsx` restricted
+      badge + lock/unlock toggle gated by role. DoD met: 141/141 backend tests (6 new),
+      35/35 frontend tests (5 new), ruff/tsc/build clean, migration applied to a fresh
+      DB and the running dev DB, live HTTP verification (owner vs. invited member) and
+      an actual-browser check both passed. Scope boundary: browsing endpoints
+      (`GET /documents`, `GET /documents/folders`) are NOT gated by restriction, only
+      chat/retrieval — a named, deliberate gap, not an oversight.
+
 ## Phase 6 — Security Hardening (after MVP validated, before real customer data)
 - [ ] F60 Enforced RLS (RLS_ENABLED on; app_user/migrator split; FORCE RLS; teeth-having isolation test)
 
@@ -567,7 +585,8 @@ Testcontainers Postgres — 135 passed, 1 skipped (opt-in `real_parser`, needs a
 API key), 0 failures. `ruff check .` re-confirmed unchanged (3 pre-existing findings
 only). MVC refactor now fully verified end to end. See memory.md "MVC layout refactor"
 for the path-mapping table.
-**Single-MVC re-refactor DONE (2026-07-02, UNCOMMITTED).** Layer-first backend+frontend
+**Single-MVC re-refactor DONE and COMMITTED (`81bd90f`, confirmed via `git log` 2026-07-12
+— an earlier "UNCOMMITTED" note here was stale).** Layer-first backend+frontend
 re-refactored into Express-style backend (routes/controllers split, collapsed services)
 + conventional SPA frontend (types, services, pages, components). Route table byte-identical
 to HEAD. **Docker-gated full-suite re-run CLOSED: 135 passed, 1 skipped, 0 failures.**
@@ -576,7 +595,19 @@ import). Installed openai SDK (v2.44.0). Live end-to-end smoke (GET /health, sig
 auth/documents) passed. `ruff check` unchanged (3 pre-existing). Frontend: tsc/vitest/build
 all clean. Work staged via git mv on main, uncommitted. See memory.md "Single-MVC re-refactor"
 for full mapping tables, verification record, and gotchas.
-Next action: **Commit the single-MVC refactor, then proceed to F42 admin debug bundle or F60
-RLS hardening.**
+**Document hard-delete + folder-based access restriction DONE (2026-07-12, this
+session, UNCOMMITTED).** `DELETE /documents/{id}` (full purge, cascades via existing
+FKs + new `ObjectStore.delete`); `folders.restricted` (migration `0011`, owner/admin
+bypass, member blocked from a restricted subtree in chat/retrieval only, live with no
+resync step). Frontend delete button + restriction toggle wired in DocumentList/
+FolderTree. 141/141 backend + 35/35 frontend tests green, live HTTP + browser
+verification passed. See memory.md "Document hard-delete + folder-based access
+restriction" for full detail, and buildplan.md "Unplanned additions" for the V2-scope
+note (this is a slice of V2 permissions, not all of it).
+Next action: **Commit this session's delete/restriction feature (the single-MVC
+refactor was ALREADY committed by an earlier session — `81bd90f`, confirmed via
+`git log` at the start of this session; prior claims below/in memory.md that it was
+still uncommitted were stale), then proceed to F42 admin debug bundle or F60 RLS
+hardening.**
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

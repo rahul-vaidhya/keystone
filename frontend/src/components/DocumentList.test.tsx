@@ -14,6 +14,7 @@ vi.mock("../services/documentsService", async () => {
     documentsApi: {
       listDocuments: vi.fn(),
       uploadDocument: vi.fn(),
+      deleteDocument: vi.fn(),
     },
   };
 });
@@ -62,6 +63,7 @@ describe("DocumentList", () => {
   beforeEach(() => {
     vi.mocked(documentsApi.listDocuments).mockReset();
     vi.mocked(documentsApi.uploadDocument).mockReset();
+    vi.mocked(documentsApi.deleteDocument).mockReset();
   });
 
   function renderWithClient(ui: React.ReactElement) {
@@ -126,5 +128,31 @@ describe("DocumentList", () => {
     await waitFor(() =>
       expect(alertSpy).toHaveBeenCalledWith("A document with that checksum already exists"),
     );
+  });
+
+  it("deletes a document after confirm and invalidates the list", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([makeDoc()]);
+    vi.mocked(documentsApi.deleteDocument).mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Delete report.pdf"));
+
+    await waitFor(() => expect(documentsApi.deleteDocument).toHaveBeenCalledWith("doc-1"));
+    await waitFor(() => expect(documentsApi.listDocuments).toHaveBeenCalledTimes(2));
+  });
+
+  it("does not delete when the confirm dialog is cancelled", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([makeDoc()]);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Delete report.pdf"));
+
+    expect(documentsApi.deleteDocument).not.toHaveBeenCalled();
   });
 });

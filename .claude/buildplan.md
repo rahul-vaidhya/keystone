@@ -188,6 +188,15 @@ The schema + plumbing exist from Phase 0; this phase turns on the teeth.
 ---
 
 ## Unplanned additions — needs a decision
+- **Document hard-delete + folder-based access restriction — RESOLVED: built** (2026-07-12).
+  Direct ask, not a buildplan line item. `DELETE /documents/{id}` (full purge, cascades
+  via existing FKs + a new `ObjectStore.delete`). Folder `restricted` boolean (migration
+  `0011`) — a **scoped, role-granularity slice** of the "V2: groups/grants permissions"
+  item below, pulled forward early by explicit user decision (owner/admin bypass,
+  `member` blocked from a restricted folder's subtree in chat/retrieval only, default
+  open until restricted). **The REST of V2 permissions (per-user grants, connectors,
+  browsing-endpoint gating) is still postponed** — do not assume this closed the whole
+  V2 permissions item. Full design + rationale: `docs/document-delete-folder-restriction-plan.md`.
 - **`GET /context/docs` + `/context/docs/{path}`** — **RESOLVED: deleted** (2026-06-23).
   Decision was "remove" — exposed internal `.claude/`/`CLAUDE.md` build docs to any
   authenticated user across all orgs (not org-scoped), too risky to formalize as a real

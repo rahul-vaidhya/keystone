@@ -17,6 +17,7 @@ from app.models.ingestion import Chunk, ChunkHit, Embedding
 from app.services.ingestion import ingestion_service
 from app.services.retrieval import assemble_context, resolve_allowed_documents
 from app.services.seams import EMBED_DIM
+from app.utils.constants import ROLE_MEMBER
 from main import app
 
 FAKE_MODEL = f"fake-embed-{EMBED_DIM}"
@@ -41,6 +42,21 @@ async def _org_id(client: AsyncClient, headers: dict) -> uuid.UUID:
     return uuid.UUID(me.json()["org_id"])
 
 
+async def _invite_member(client: AsyncClient, owner_headers: dict, email: str) -> dict:
+    """Invites a member into the owner's org and logs them in, returning their own token
+    dict — the only way to get a real `member`-role TenantContext through the API rather
+    than constructing one by hand."""
+    invite = await client.post(
+        "/auth/invite",
+        headers=owner_headers,
+        json={"email": email, "password": "password123", "role": ROLE_MEMBER},
+    )
+    assert invite.status_code == 201
+    login = await client.post("/auth/login", json={"email": email, "password": "password123"})
+    assert login.status_code == 200
+    return login.json()
+
+
 def _vector(seed: int, dim: int = EMBED_DIM) -> list[float]:
     """A cheap deterministic unit-ish vector — these tests only need presence/absence of
     hits (scope/isolation/model filtering), never a meaningful similarity ranking."""
@@ -53,6 +69,15 @@ async def _seed_document(session_factory, org_id: uuid.UUID, title: str) -> uuid
     doc_id = uuid.uuid4()
     async with session_factory() as session, session.begin():
         session.add(Document(id=doc_id, org_id=org_id, title=title))
+    return doc_id
+
+
+async def _seed_document_in_folder(
+    session_factory, org_id: uuid.UUID, title: str, folder_id: str
+) -> uuid.UUID:
+    doc_id = uuid.uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(Document(id=doc_id, org_id=org_id, title=title, folder_id=uuid.UUID(folder_id)))
     return doc_id
 
 
@@ -310,6 +335,83 @@ async def test_resolve_allowed_documents_returns_all_org_documents(
 
     allowed = await resolve_allowed_documents(TenantContext(org_id=org_id))
     assert set(allowed) == {doc_1, doc_2}
+
+
+async def test_restricted_folder_hides_documents_from_member_not_admin(
+    client: AsyncClient, session_factory
+) -> None:
+    owner_tokens = await _signup(client, "ret-restrict-owner@test.com", "RestrictOrg")
+    owner_headers = {"Authorization": f"Bearer {owner_tokens['access_token']}"}
+    org_id = await _org_id(client, owner_headers)
+    member_tokens = await _invite_member(client, owner_headers, "ret-restrict-member@test.com")
+    member_ctx = TenantContext(org_id=org_id, user_id=None, role=ROLE_MEMBER)
+
+    folder = await client.post(
+        "/documents/folders", headers=owner_headers, json={"name": "Finance"}
+    )
+    folder_id = folder.json()["id"]
+    assert folder.json()["restricted"] is False
+
+    doc_in_folder = await _seed_document_in_folder(session_factory, org_id, "Budget", folder_id)
+    doc_at_root = await _seed_document(session_factory, org_id, "Public memo")
+
+    # Unrestricted (default): member sees both.
+    allowed_before = await resolve_allowed_documents(member_ctx)
+    assert set(allowed_before) == {doc_in_folder, doc_at_root}
+
+    restrict = await client.patch(
+        f"/documents/folders/{folder_id}/restriction",
+        headers=owner_headers,
+        json={"restricted": True},
+    )
+    assert restrict.status_code == 200
+    assert restrict.json()["restricted"] is True
+
+    # Live effect, no separate resync step: the very next call reflects it.
+    allowed_after = await resolve_allowed_documents(member_ctx)
+    assert set(allowed_after) == {doc_at_root}
+
+    # Owner/admin always bypasses restriction.
+    owner_ctx = TenantContext(org_id=org_id, user_id=None, role="owner")
+    owner_allowed = await resolve_allowed_documents(owner_ctx)
+    assert set(owner_allowed) == {doc_in_folder, doc_at_root}
+
+    # Member-role user can't even flip the flag.
+    forbidden = await client.patch(
+        f"/documents/folders/{folder_id}/restriction",
+        headers={"Authorization": f"Bearer {member_tokens['access_token']}"},
+        json={"restricted": False},
+    )
+    assert forbidden.status_code == 403
+
+
+async def test_restriction_inherits_to_subtree(client: AsyncClient, session_factory) -> None:
+    owner_tokens = await _signup(client, "ret-subtree-owner@test.com", "SubtreeOrg")
+    owner_headers = {"Authorization": f"Bearer {owner_tokens['access_token']}"}
+    org_id = await _org_id(client, owner_headers)
+    member_ctx = TenantContext(org_id=org_id, user_id=None, role=ROLE_MEMBER)
+
+    parent = await client.post("/documents/folders", headers=owner_headers, json={"name": "HR"})
+    parent_id = parent.json()["id"]
+    child = await client.post(
+        "/documents/folders",
+        headers=owner_headers,
+        json={"name": "Payroll", "parent_id": parent_id},
+    )
+    child_id = child.json()["id"]
+
+    doc_in_child = await _seed_document_in_folder(session_factory, org_id, "Payslip", child_id)
+
+    await client.patch(
+        f"/documents/folders/{parent_id}/restriction",
+        headers=owner_headers,
+        json={"restricted": True},
+    )
+
+    # Restricting the PARENT gates the child's documents too, even though the child
+    # folder's own `restricted` flag was never touched.
+    allowed = await resolve_allowed_documents(member_ctx)
+    assert doc_in_child not in allowed
 
 
 def test_assemble_context_numbers_hits_with_source_refs() -> None:

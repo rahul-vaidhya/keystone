@@ -6,8 +6,10 @@ import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.models.documents import Document
+from app.models.ingestion import Chunk, Embedding, Section
 from app.services.queue import get_job_queue
 from app.services.storage import get_object_store
 from main import app
@@ -27,13 +29,20 @@ class _InMemoryObjectStore:
     async def get(self, key: str) -> bytes:
         return self.puts[key]
 
+    async def delete(self, key: str) -> None:
+        self.puts.pop(key, None)
+
 
 @pytest.fixture
-async def client(session_factory, tenant_engine) -> AsyncClient:
+async def store() -> _InMemoryObjectStore:
+    return _InMemoryObjectStore()
+
+
+@pytest.fixture
+async def client(session_factory, tenant_engine, store: _InMemoryObjectStore) -> AsyncClient:
     # One shared store instance for the whole test: FastAPI calls the override fresh on
     # every request, so a `lambda: _InMemoryObjectStore()` would give each request its own
     # empty store and a later GET could never see an earlier PUT.
-    store = _InMemoryObjectStore()
     app.dependency_overrides[get_object_store] = lambda: store
     # F24: upload now enqueues the parsing job — fake the queue so these tests never
     # touch real Redis/arq.
@@ -237,4 +246,111 @@ async def test_upload_missing_folder_404(client: AsyncClient) -> None:
         files={"file": ("x.txt", b"x", "text/plain")},
         data={"folder_id": str(uuid.uuid4())},
     )
+    assert resp.status_code == 404
+
+
+async def test_delete_document_removes_row_and_blob(
+    client: AsyncClient, store: _InMemoryObjectStore
+) -> None:
+    tokens = await _signup(client, "docs-del1@test.com", "DelOne")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    upload = await client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("gone.pdf", b"delete me", "application/pdf")},
+    )
+    assert upload.status_code == 201
+    doc = upload.json()
+    assert doc["storage_key"] in store.puts
+
+    # Drive the document all the way through ingestion (fakes) so a real cascade
+    # (sections/chunks/embeddings) exists to prove the delete actually removes it, not
+    # just the bare row.
+    parse = await client.post(f"/ingestion/documents/{doc['id']}/parse", headers=headers)
+    assert parse.status_code == 200
+    structure = await client.post(f"/ingestion/documents/{doc['id']}/structure", headers=headers)
+    assert structure.status_code == 200
+    embed = await client.post(f"/ingestion/documents/{doc['id']}/embed", headers=headers)
+    assert embed.status_code == 200
+    assert embed.json()["status"] == "READY"
+
+    resp = await client.delete(f"/documents/{doc['id']}", headers=headers)
+    assert resp.status_code == 204
+
+    assert doc["storage_key"] not in store.puts
+
+    missing = await client.get("/documents", headers=headers)
+    assert missing.json() == []
+
+    second_delete = await client.delete(f"/documents/{doc['id']}", headers=headers)
+    assert second_delete.status_code == 404
+
+
+async def test_delete_document_removes_sections_chunks_embeddings(
+    client: AsyncClient, session_factory
+) -> None:
+    tokens = await _signup(client, "docs-del2@test.com", "DelTwo")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    upload = await client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("cascade.pdf", b"cascade check", "application/pdf")},
+    )
+    doc_id = upload.json()["id"]
+    await client.post(f"/ingestion/documents/{doc_id}/parse", headers=headers)
+    await client.post(f"/ingestion/documents/{doc_id}/structure", headers=headers)
+    await client.post(f"/ingestion/documents/{doc_id}/embed", headers=headers)
+
+    doc_uuid = uuid.UUID(doc_id)
+    async with session_factory() as session:
+        assert (
+            await session.scalar(select(Section).where(Section.document_id == doc_uuid))
+        ) is not None
+        assert (
+            await session.scalar(select(Chunk).where(Chunk.document_id == doc_uuid))
+        ) is not None
+        assert (
+            await session.scalar(select(Embedding).where(Embedding.document_id == doc_uuid))
+        ) is not None
+
+    resp = await client.delete(f"/documents/{doc_id}", headers=headers)
+    assert resp.status_code == 204
+
+    async with session_factory() as session:
+        assert (
+            await session.scalar(select(Section).where(Section.document_id == doc_uuid))
+        ) is None
+        assert (await session.scalar(select(Chunk).where(Chunk.document_id == doc_uuid))) is None
+        assert (
+            await session.scalar(select(Embedding).where(Embedding.document_id == doc_uuid))
+        ) is None
+
+
+async def test_delete_document_cross_org_404(client: AsyncClient) -> None:
+    tokens_a = await _signup(client, "docs-del3a@test.com", "DelThreeA")
+    tokens_b = await _signup(client, "docs-del3b@test.com", "DelThreeB")
+    headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}
+    headers_b = {"Authorization": f"Bearer {tokens_b['access_token']}"}
+
+    upload = await client.post(
+        "/documents/upload",
+        headers=headers_a,
+        files={"file": ("private.pdf", b"private", "application/pdf")},
+    )
+    doc_id = upload.json()["id"]
+
+    resp = await client.delete(f"/documents/{doc_id}", headers=headers_b)
+    assert resp.status_code == 404
+
+    still_there = await client.get("/documents", headers=headers_a)
+    assert len(still_there.json()) == 1
+
+
+async def test_delete_missing_document_404(client: AsyncClient) -> None:
+    tokens = await _signup(client, "docs-del4@test.com", "DelFour")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    resp = await client.delete(f"/documents/{uuid.uuid4()}", headers=headers)
     assert resp.status_code == 404

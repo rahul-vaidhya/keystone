@@ -13,7 +13,16 @@ from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -54,6 +63,10 @@ class Folder(Base):
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     path: Mapped[str] = mapped_column(Text, nullable=False)  # materialized path, e.g. 'HR/Policies'
+    # Opt-in access restriction (0011): False (default) = open to every org role, unchanged
+    # from pre-0011 behavior. True = invisible to `member`-role users in chat/retrieval,
+    # inherited down the subtree (see resolve_allowed_documents in services/retrieval.py).
+    restricted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -150,6 +163,7 @@ class FolderOut(BaseModel):
     parent_id: uuid.UUID | None
     name: str
     path: str
+    restricted: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -161,6 +175,10 @@ class FolderRename(BaseModel):
 
 class FolderMove(BaseModel):
     parent_id: uuid.UUID | None = None
+
+
+class FolderRestrictionUpdate(BaseModel):
+    restricted: bool
 
 
 class TagCreate(BaseModel):

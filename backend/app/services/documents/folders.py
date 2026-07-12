@@ -155,6 +155,22 @@ async def get_folder(ctx: TenantContext, folder_id: uuid.UUID) -> FolderOut:
     return FolderOut.model_validate(folder)
 
 
+async def set_restricted(ctx: TenantContext, folder_id: uuid.UUID, restricted: bool) -> FolderOut:
+    """Admin-only (enforced by the controller's ``require_admin`` dependency, not here —
+    same split as every other role check in this codebase). Restriction inherits down the
+    subtree at READ time (``retrieval.resolve_allowed_documents``), so flipping this flag
+    needs no cascade/rebuild — unlike ``path``, ``restricted`` is never denormalized onto
+    descendants."""
+    async with db_mod.sessionmaker() as session, session.begin():
+        repo = FolderRepository(session, ctx)
+        folder = await repo.get_by_id(folder_id)
+        if folder is None:
+            raise FolderNotFound("Folder not found")
+        folder.restricted = restricted
+        await session.flush()
+    return FolderOut.model_validate(folder)
+
+
 def _rebuild_subtree_paths(
     subtree: list[Folder],
     *,

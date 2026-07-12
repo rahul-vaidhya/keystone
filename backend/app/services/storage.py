@@ -22,6 +22,7 @@ from app.config.settings import settings
 class ObjectStore(Protocol):
     async def put(self, key: str, data: bytes, content_type: str) -> None: ...
     async def get(self, key: str) -> bytes: ...
+    async def delete(self, key: str) -> None: ...
 
 
 class R2ObjectStore:
@@ -51,6 +52,10 @@ class R2ObjectStore:
     async def get(self, key: str) -> bytes:
         response = await asyncio.to_thread(self._client.get_object, Bucket=self._bucket, Key=key)
         return await asyncio.to_thread(response["Body"].read)
+
+    async def delete(self, key: str) -> None:
+        # S3's delete_object is already idempotent — no error on a missing key.
+        await asyncio.to_thread(self._client.delete_object, Bucket=self._bucket, Key=key)
 
 
 class LocalDiskObjectStore:
@@ -93,6 +98,15 @@ class LocalDiskObjectStore:
     async def get(self, key: str) -> bytes:
         # Path.read_bytes raises FileNotFoundError on a missing key — the parity property.
         return await asyncio.to_thread(self._path_for(key).read_bytes)
+
+    async def delete(self, key: str) -> None:
+        # Idempotent, matching R2's delete_object (no error on a missing key) — "for good"
+        # means the caller wants it gone, not an assertion that it existed.
+        await asyncio.to_thread(self._delete, self._path_for(key))
+
+    @staticmethod
+    def _delete(path: Path) -> None:
+        path.unlink(missing_ok=True)
 
 
 def get_object_store() -> ObjectStore:

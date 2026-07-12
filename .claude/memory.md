@@ -6,14 +6,101 @@
 
 ---
 
-## Single-MVC re-refactor (2026-07-02, this session)
+## Document hard-delete + folder-based access restriction (2026-07-12, this session)
+
+**Built out of numeric buildplan order** (no F-number — a direct ask, not a
+`buildplan.md` line item), on top of the committed single-MVC layout. Full design
+record: `docs/document-delete-folder-restriction-plan.md` (produced via `/architect`,
+confirmed by the user before implementation). Session also ran a full health check
+first: 135/135 backend tests + 30/30 frontend tests green, ruff/tsc/build clean, and a
+live smoke test (signup→upload→auto-ingest→notebook→chat) confirmed the whole golden
+path already worked before any new code was written.
+
+**Two features, both closing gaps an Explore-agent audit found were previously
+real (not assumed): there was NO document-delete endpoint at all, and
+`resolve_allowed_documents` was a literal all-org-docs stub.**
+
+1. **Hard document delete** — `DELETE /documents/{id}`. Deletes the `Document` row
+   inside a transaction (cascades to sections/chunks/embeddings/document_tags/
+   knowledge_base_documents — all were ALREADY `ON DELETE CASCADE`, so no other
+   repository needed touching), then deletes the object-store blob(s) AFTER commit
+   (source file + parse artifact JSON, both known keys from `document.storage_key` /
+   `document.metadata_["parse_artifact_key"]`). Order matters: DB-first means a failed
+   blob delete only orphans a blob (already an accepted future "orphan sweep" gap),
+   never leaves a document row pointing at nothing.
+2. **Folder-based access restriction** — new `folders.restricted` boolean (migration
+   `0011`, default `false`). Owner/admin always bypass (`ADMIN_ROLES`); a `member` is
+   denied any document in a restricted folder OR ITS SUBTREE (inherited downward,
+   computed live in `resolve_allowed_documents` via one top-down pass over
+   `list_folders()`'s already-parent-before-child-ordered result — no caching, so
+   toggling `restricted` takes effect on the very next request, satisfying the "sorted
+   as soon as tags/folders change" ask without needing any resync job). New admin-only
+   `PATCH /documents/folders/{id}/restriction`.
+
+**Explicit scope boundary (a deliberate choice, not an oversight):** restriction only
+gates chat/retrieval (`resolve_allowed_documents`), NOT the plain browsing endpoints
+(`GET /documents`, `GET /documents/folders`) — those still show everyone everything, by
+design, because `documents_service.list_documents`/`get_document` are also called
+internally by ingestion/knowledge services with non-interactive worker contexts
+(`role=None`), and folding restriction into those shared accessors risked silently
+breaking the pipeline. If browsing should ALSO be gated later, that's a separate,
+slightly riskier follow-up — named, not built.
+
+**Locked-decision amendment:** `ObjectStore` gained a `delete(key)` method (S3
+`delete_object` / local `Path.unlink(missing_ok=True)`, both idempotent on a missing
+key) — this supersedes the prior "put+get only" decision recorded pre-2026-07-12; that
+decision itself named this exact feature as the future trigger for the change.
+
+**Frontend wired too** (confirmed with the user before building — backend-only was the
+other option): `DocumentList.tsx` gained a hover-reveal delete button (×) with a
+`window.confirm` guard; `FolderTree.tsx` gained an always-visible red "restricted" badge
+(visible to everyone) plus a hover-reveal lock/unlock toggle button gated by
+`useAuth().user?.role` (owner/admin only) — first component test to need `useAuth`,
+so `FolderTree.test.tsx` now mocks `../hooks/useAuth` (pattern: `vi.mock(...)` +
+a `mockUser(role)` helper reset in `beforeEach`). Added `title={node.name}` tooltip to
+the folder-name button since the restricted badge eats into the already-narrow sidebar
+name space.
+
+**Verification:** 141/141 backend tests (135 + 6 new: 3 delete, 1 cascade-cleanup via
+direct Section/Chunk/Embedding queries, 1 cross-org 404, 1 missing-404), 35/35 frontend
+tests (30 + 5 new), ruff/tsc/build all clean. Migration `0011` applied cleanly to both
+a fresh Testcontainers DB (via the suite) and the running dev Postgres. **Live end-to-end
+proof, not just unit tests**: real HTTP session with an owner + an invited `member` user
+— member blocked from a restricted folder's docs in `/retrieval/search`, owner
+unaffected, member gets 403 trying to toggle the flag, and un-restricting live-unblocks
+the member's very next search with no resync step. Hard delete verified live too:
+DELETE removes the DB row (confirmed via list + double-delete 404) AND the local-disk
+blob file (confirmed via filesystem check — only empty leftover directories remained,
+zero file content). Also verified in an actual browser (Chrome via claude-in-chrome):
+signed up, created a folder, clicked the lock toggle (badge + button rendered and
+worked), uploaded a doc via API + refreshed, clicked delete, confirmed via the native
+dialog — document disappeared from the list.
+
+**Gotcha for next session:** clicking a button wired to `window.confirm`/`window.alert`
+through browser automation blocks the tab (CDP screenshot/exec calls hang until the
+native dialog is dismissed) — recovered by sending a bare `key: Return` press (accepts
+the dialog) rather than trying to click through it. Don't `left_click` a confirm-guarded
+delete button in automated browser testing; drive it via `key` press once the dialog is
+already open, or avoid clicking it directly and verify via API + a page refresh instead.
+
+**Next migration is now `0012`** (F42's `message_traces` claim on `0011` is superseded —
+this feature took `0011` instead, since it landed first).
+
+---
+
+## Single-MVC re-refactor (2026-07-02 — COMMITTED as `81bd90f`, confirmed 2026-07-12)
 
 **Pure structural re-refactor — zero logic/schema/API change.** Yesterday's layer-first MVC
 (2026-07-01, backend ONLY) was itself re-refactored into a single unified MVC: Express-style
 backend (JSON-only, no view layer) + conventional React SPA frontend as the unified view
 layer. **Every path reference in older sections below describing 2026-07-01 layer-first
 layouts is now STALE** — this table and the old→new mappings below are the new
-authoritative record. Work is UNCOMMITTED (staged via `git mv`).
+authoritative record. **Correction (2026-07-12): every "work is UNCOMMITTED" claim below
+in this section was stale by the time the 2026-07-12 session started — `git log` showed
+this refactor already committed as `81bd90f` ("refactor: single-MVC restructure..."),
+one commit ahead of the `ab3e0f3`/`6ff4be7` layer-first-MVC commits. Some other session
+between 2026-07-02 and 2026-07-12 committed it without updating this file. Trust `git log`
+over this file's commit-status claims going forward.**
 
 **Owner decisions:** (a) literal `routes/` + `controllers/` split on backend (express-style);
 (b) full collapse of `repositories/` and `exceptions/` into `services/`, and `schemas/`

@@ -163,6 +163,9 @@ class DocumentRepository(BaseRepository[Document]):
         document.status = DocumentStatus.READY
         await self._db.flush()
 
+    async def delete(self, document: Document) -> None:
+        await self._db.delete(document)
+
 
 # ---- service ----
 
@@ -342,3 +345,28 @@ async def get_parse_artifact_key(ctx: TenantContext, document_id: uuid.UUID) -> 
         if document is None:
             raise DocumentNotFound("Document not found")
     return document.metadata_["parse_artifact_key"]
+
+
+async def delete_document(
+    ctx: TenantContext, document_id: uuid.UUID, *, object_store: ObjectStore
+) -> None:
+    """Hard delete — the document row is removed inside a transaction first; every child
+    row (sections/chunks/embeddings/document_tags/knowledge_base_documents) is already
+    ``ON DELETE CASCADE`` on ``document_id``, so no other repository needs to be touched.
+    Blobs are deleted AFTER the DB commit, never before: if blob deletion fails partway,
+    we're left with an orphaned blob (an accepted, already-named gap — the future orphan
+    sweep's job), which is far safer than the reverse order (a DB delete failing after the
+    blob is already gone would leave a document pointing at nothing)."""
+    async with db_mod.sessionmaker() as session, session.begin():
+        repo = DocumentRepository(session, ctx)
+        document = await repo.get_by_id(document_id)
+        if document is None:
+            raise DocumentNotFound("Document not found")
+        storage_key = document.storage_key
+        artifact_key = document.metadata_.get("parse_artifact_key")
+        await repo.delete(document)
+
+    if storage_key:
+        await object_store.delete(storage_key)
+    if artifact_key:
+        await object_store.delete(artifact_key)

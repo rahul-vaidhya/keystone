@@ -25,6 +25,12 @@ export const documentsApi = {
   deleteFolder: (folderId: string, mode: FolderDeleteMode = "block") =>
     apiFetch<void>(`/documents/folders/${folderId}?mode=${mode}`, { method: "DELETE" }),
 
+  setFolderRestriction: (folderId: string, restricted: boolean) =>
+    apiFetch<Folder>(`/documents/folders/${folderId}/restriction`, {
+      method: "PATCH",
+      body: JSON.stringify({ restricted }),
+    }),
+
   listTags: () => apiFetch<Tag[]>("/documents/tags"),
 
   createTag: (name: string) =>
@@ -52,4 +58,7 @@ export const documentsApi = {
     if (folderId) form.append("folder_id", folderId);
     return apiFetch<Document>("/documents/upload", { method: "POST", body: form });
   },
+
+  deleteDocument: (documentId: string) =>
+    apiFetch<void>(`/documents/${documentId}`, { method: "DELETE" }),
 };

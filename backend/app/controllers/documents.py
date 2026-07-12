@@ -10,13 +10,14 @@ from fastapi import Depends, Form, UploadFile, status
 from fastapi.responses import JSONResponse
 
 from app.middleware.context import TenantContext
-from app.middleware.deps import get_ctx
+from app.middleware.deps import get_ctx, require_admin
 from app.models.documents import (
     DocumentOut,
     FolderCreate,
     FolderMove,
     FolderOut,
     FolderRename,
+    FolderRestrictionUpdate,
     TagCreate,
     TagOut,
 )
@@ -67,6 +68,14 @@ async def move_folder(
     return await documents_service.move_folder(ctx, folder_id, req.parent_id)
 
 
+async def set_folder_restriction(
+    folder_id: uuid.UUID,
+    req: FolderRestrictionUpdate,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+) -> FolderOut:
+    return await documents_service.set_restricted(ctx, folder_id, req.restricted)
+
+
 async def create_tag(req: TagCreate, ctx: Annotated[TenantContext, Depends(get_ctx)]) -> TagOut:
     return await documents_service.create_tag(ctx, req)
 
@@ -101,6 +110,14 @@ async def list_documents(
     tag_id: uuid.UUID | None = None,
 ) -> list[DocumentOut]:
     return await documents_service.list_documents(ctx, folder_id=folder_id, tag_id=tag_id)
+
+
+async def delete_document(
+    document_id: uuid.UUID,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+    object_store: Annotated[ObjectStore, Depends(get_object_store)],
+) -> None:
+    await documents_service.delete_document(ctx, document_id, object_store=object_store)
 
 
 async def upload_document(

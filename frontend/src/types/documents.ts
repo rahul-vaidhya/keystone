@@ -4,6 +4,7 @@ export type Folder = {
   parent_id: string | null;
   name: string;
   path: string;
+  restricted: boolean;
   created_at: string;
 };
 

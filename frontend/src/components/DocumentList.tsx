@@ -33,10 +33,22 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
       window.alert(err instanceof ApiError ? err.message : "Failed to upload document"),
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (documentId: string) => documentsApi.deleteDocument(documentId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["documents"] }),
+    onError: (err) =>
+      window.alert(err instanceof ApiError ? err.message : "Failed to delete document"),
+  });
+
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (file) uploadMutation.mutate(file);
     e.target.value = "";
+  }
+
+  function handleDelete(doc: Document) {
+    if (!window.confirm(`Permanently delete "${doc.title}"? This cannot be undone.`)) return;
+    deleteMutation.mutate(doc.id);
   }
 
   return (
@@ -76,17 +88,29 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
                 <tr className="text-left text-muted border-b border-border">
                   <th className="px-4 py-2 font-medium">Title</th>
                   <th className="px-4 py-2 font-medium">Status</th>
+                  <th className="px-4 py-2 font-medium w-8" />
                 </tr>
               </thead>
               <tbody>
                 {documentsQuery.data.map((doc) => (
-                  <tr key={doc.id} className="border-b border-border last:border-0">
+                  <tr key={doc.id} className="group border-b border-border last:border-0">
                     <td className="px-4 py-2 truncate max-w-xs">{doc.title}</td>
                     <td className="px-4 py-2">
                       <StatusBadge status={doc.status} failedStage={doc.failed_stage} />
                       {doc.status === "FAILED" && doc.error_detail && (
                         <span className="text-muted text-xs ml-2">{doc.error_detail}</span>
                       )}
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <button
+                        type="button"
+                        aria-label={`Delete ${doc.title}`}
+                        onClick={() => handleDelete(doc)}
+                        disabled={deleteMutation.isPending}
+                        className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger px-1 disabled:opacity-50"
+                      >
+                        ×
+                      </button>
                     </td>
                   </tr>
                 ))}
