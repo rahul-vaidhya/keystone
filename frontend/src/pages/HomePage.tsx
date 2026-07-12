@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 
 export function HomePage() {
@@ -11,21 +12,21 @@ export function HomePage() {
           Welcome, <span className="capitalize">{name}</span>
         </h1>
 
-        <div className="flex items-center gap-3 bg-surface border border-border rounded-full px-5 py-3 opacity-60">
+        <Link
+          to="/app/notebooks"
+          className="flex items-center gap-3 bg-surface border border-border rounded-full px-5 py-3 hover:border-accent transition-colors"
+        >
           <span className="text-xl text-muted">+</span>
-          <input
-            type="text"
-            placeholder="Ask Veratas about your documents…"
-            disabled
-            className="flex-1 bg-transparent text-sm focus:outline-none cursor-not-allowed placeholder:text-muted"
-          />
-          <span className="text-xs text-muted border border-border rounded-md px-2 py-1">
-            Coming soon
+          <span className="flex-1 text-left text-sm text-muted">
+            Ask Veratas about your documents…
           </span>
-        </div>
+          <span className="text-xs text-accent border border-border rounded-md px-2 py-1">
+            Open a notebook
+          </span>
+        </Link>
 
         <p className="text-sm text-muted">
-          Chat arrives once ingestion and retrieval are wired up.
+          Chat lives inside notebooks — open or create one to start asking questions.
         </p>
       </div>
     </div>
