@@ -1,5 +1,5 @@
 import { apiFetch } from "./http";
-import type { TokenResponse, User } from "../types/auth";
+import type { Organization, TokenResponse, User } from "../types/auth";
 
 export const authApi = {
   signup: (email: string, password: string, org_name: string) =>
@@ -27,5 +27,19 @@ export const authApi = {
     apiFetch<User>(`/auth/users/${userId}/role`, {
       method: "PATCH",
       body: JSON.stringify({ role }),
+    }),
+
+  invite: (email: string, password: string, role: "admin" | "member") =>
+    apiFetch<User>("/auth/invite", {
+      method: "POST",
+      body: JSON.stringify({ email, password, role }),
+    }),
+
+  getOrg: () => apiFetch<Organization>("/auth/org"),
+
+  renameOrg: (org_name: string) =>
+    apiFetch<Organization>("/auth/org", {
+      method: "PATCH",
+      body: JSON.stringify({ org_name }),
     }),
 };

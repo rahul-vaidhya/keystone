@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app import controllers
-from app.models.auth import TokenResponse, UserOut
+from app.models.auth import OrganizationOut, TokenResponse, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -17,3 +17,5 @@ router.get("/me", response_model=UserOut)(controllers.auth.me)
 router.post("/invite", response_model=UserOut, status_code=201)(controllers.auth.invite)
 router.get("/users", response_model=list[UserOut])(controllers.auth.list_users)
 router.patch("/users/{user_id}/role", response_model=UserOut)(controllers.auth.change_role)
+router.get("/org", response_model=OrganizationOut)(controllers.auth.get_org)
+router.patch("/org", response_model=OrganizationOut)(controllers.auth.rename_org)

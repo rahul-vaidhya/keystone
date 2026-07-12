@@ -13,6 +13,7 @@ from app.models.auth import (
     InviteRequest,
     LoginRequest,
     Organization,
+    OrganizationOut,
     SignupRequest,
     TokenResponse,
     User,
@@ -72,6 +73,11 @@ class OrganizationRepository:
 
     async def get(self, org_id: uuid.UUID) -> Organization | None:
         return await self._db.get(Organization, org_id)
+
+    async def update_name(self, org: Organization, name: str) -> Organization:
+        org.name = name
+        await self._db.flush()
+        return org
 
 
 class AuthRepository:
@@ -274,6 +280,22 @@ class AuthService:
             updated = await user_repo.update_role(target, new_role)
 
         return UserOut.model_validate(updated)
+
+    async def get_org(self, ctx: TenantContext) -> OrganizationOut:
+        async with db_mod.sessionmaker() as session:
+            org = await OrganizationRepository(session).get(ctx.org_id)
+        return OrganizationOut.model_validate(org)
+
+    async def rename_org(self, ctx: TenantContext, new_name: str) -> OrganizationOut:
+        if ctx.role not in ADMIN_ROLES:
+            raise Forbidden("Only owners and admins can rename the organization")
+
+        async with db_mod.sessionmaker() as session, session.begin():
+            org_repo = OrganizationRepository(session)
+            org = await org_repo.get(ctx.org_id)
+            updated = await org_repo.update_name(org, new_name)
+
+        return OrganizationOut.model_validate(updated)
 
 
 auth_service = AuthService()

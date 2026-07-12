@@ -11,6 +11,11 @@ export type TokenResponse = {
   token_type: string;
 };
 
+export type Organization = {
+  id: string;
+  name: string;
+};
+
 export class ApiError extends Error {
   status: number;
   body: unknown;

@@ -198,3 +198,119 @@ async def test_change_role_cannot_self_change(
         json={"role": "member"},
     )
     assert resp.status_code == 403
+
+
+async def test_get_org_returns_current_name(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    signup = await client.post(
+        "/auth/signup",
+        json={"email": "orgview@test.com", "password": "password123", "org_name": "Theta"},
+    )
+    headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+
+    resp = await client.get("/auth/org", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Theta"
+
+
+async def test_rename_org_owner_can_rename(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    signup = await client.post(
+        "/auth/signup",
+        json={"email": "orgowner@test.com", "password": "password123", "org_name": "Iota"},
+    )
+    owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+
+    resp = await client.patch(
+        "/auth/org",
+        headers=owner_headers,
+        json={"org_name": "Iota Renamed"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Iota Renamed"
+
+    check = await client.get("/auth/org", headers=owner_headers)
+    assert check.json()["name"] == "Iota Renamed"
+
+
+async def test_rename_org_admin_can_rename(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    signup = await client.post(
+        "/auth/signup",
+        json={"email": "orgadminowner@test.com", "password": "password123", "org_name": "Kappa"},
+    )
+    owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+
+    invite = await client.post(
+        "/auth/invite",
+        headers=owner_headers,
+        json={"email": "orgadmin@test.com", "password": "password123", "role": "admin"},
+    )
+    assert invite.status_code == 201
+
+    admin_login = await client.post(
+        "/auth/login", json={"email": "orgadmin@test.com", "password": "password123"}
+    )
+    admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+
+    resp = await client.patch(
+        "/auth/org",
+        headers=admin_headers,
+        json={"org_name": "Kappa Renamed"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Kappa Renamed"
+
+
+async def test_rename_org_member_forbidden(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    signup = await client.post(
+        "/auth/signup",
+        json={"email": "orgmemberowner@test.com", "password": "password123", "org_name": "Lambda"},
+    )
+    owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+
+    invite = await client.post(
+        "/auth/invite",
+        headers=owner_headers,
+        json={"email": "orgmember@test.com", "password": "password123", "role": ROLE_MEMBER},
+    )
+    assert invite.status_code == 201
+
+    member_login = await client.post(
+        "/auth/login", json={"email": "orgmember@test.com", "password": "password123"}
+    )
+    member_headers = {"Authorization": f"Bearer {member_login.json()['access_token']}"}
+
+    resp = await client.patch(
+        "/auth/org",
+        headers=member_headers,
+        json={"org_name": "Should Not Work"},
+    )
+    assert resp.status_code == 403
+
+
+async def test_rename_org_rejects_empty_name(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    signup = await client.post(
+        "/auth/signup",
+        json={"email": "orgvalidate@test.com", "password": "password123", "org_name": "Mu"},
+    )
+    owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+
+    resp = await client.patch(
+        "/auth/org",
+        headers=owner_headers,
+        json={"org_name": ""},
+    )
+    assert resp.status_code == 422

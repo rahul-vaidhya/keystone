@@ -79,6 +79,17 @@ class RoleChangeRequest(BaseModel):
     role: str
 
 
+class RenameOrgRequest(BaseModel):
+    org_name: str = Field(min_length=1, max_length=200)
+
+
+class OrganizationOut(BaseModel):
+    id: uuid.UUID
+    name: str
+
+    model_config = {"from_attributes": True}
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"

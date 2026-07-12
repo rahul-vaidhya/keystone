@@ -13,6 +13,8 @@ from app.middleware.deps import current_user, get_ctx, require_admin
 from app.models.auth import (
     InviteRequest,
     LoginRequest,
+    OrganizationOut,
+    RenameOrgRequest,
     RoleChangeRequest,
     SignupRequest,
     TokenResponse,
@@ -87,3 +89,14 @@ async def change_role(
     ctx: Annotated[TenantContext, Depends(require_admin)],
 ) -> UserOut:
     return await auth_service.change_role(ctx, user_id, req.role)
+
+
+async def get_org(ctx: Annotated[TenantContext, Depends(get_ctx)]) -> OrganizationOut:
+    return await auth_service.get_org(ctx)
+
+
+async def rename_org(
+    req: RenameOrgRequest,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+) -> OrganizationOut:
+    return await auth_service.rename_org(ctx, req.org_name)
