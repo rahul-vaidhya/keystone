@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +21,13 @@ from app.models.auth import (
     UserOut,
 )
 from app.services.base import BaseRepository
-from app.utils.constants import ADMIN_ROLES, ROLE_OWNER, ROLES
+from app.utils.constants import (
+    ADMIN_ROLES,
+    LOGIN_LOCKOUT_MINUTES,
+    LOGIN_LOCKOUT_THRESHOLD,
+    ROLE_OWNER,
+    ROLES,
+)
 from app.utils.passwords import hash_password, verify_password
 from app.utils.tokens import issue_access_token, issue_refresh_token
 
@@ -58,6 +65,14 @@ class TargetUserNotFound(AuthError):
     pass
 
 
+class AccountLocked(AuthError):
+    """Too many failed login attempts — locked until ``locked_until``."""
+
+    def __init__(self, locked_until: datetime) -> None:
+        self.locked_until = locked_until
+        super().__init__("Account temporarily locked")
+
+
 # ---- repository ----
 class OrganizationRepository:
     """Repository for the tenancy root — no ``org_id`` column on ``organizations``."""
@@ -87,12 +102,25 @@ class AuthRepository:
         self._db = session
 
     async def find_login_candidates(self, email: str) -> list[tuple[User, str]]:
+        """Active-only — a deactivated member's org doesn't even show up as a login
+        choice, so a removed user gets the same generic failure as a wrong password."""
         stmt = (
             select(User, Organization.name)
             .join(Organization, User.org_id == Organization.id)
-            .where(User.email == email)
+            .where(User.email == email, User.is_active.is_(True))
         )
         return list((await self._db.execute(stmt)).all())
+
+    async def record_login_failure(self, user: User) -> None:
+        user.failed_login_attempts += 1
+        if user.failed_login_attempts >= LOGIN_LOCKOUT_THRESHOLD:
+            user.locked_until = datetime.now(UTC) + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
+        await self._db.flush()
+
+    async def reset_login_lockout(self, user: User) -> None:
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        await self._db.flush()
 
     async def email_exists_globally(self, email: str) -> bool:
         stmt = select(User.id).where(User.email == email).limit(1)
@@ -136,6 +164,20 @@ class UserRepository(BaseRepository[User]):
         await self._db.flush()
         return user
 
+    async def set_active(self, user: User, is_active: bool) -> User:
+        user.is_active = is_active
+        await self._db.flush()
+        return user
+
+    async def update_password(self, user: User, password_hash: str) -> User:
+        user.password_hash = password_hash
+        # Bumping token_version invalidates every OTHER session (every already-issued
+        # access/refresh token carries the OLD version in its "tv" claim and will fail
+        # the check in current_user/refresh) without needing a token denylist.
+        user.token_version += 1
+        await self._db.flush()
+        return user
+
 
 # ---- service ----
 
@@ -157,39 +199,73 @@ class AuthService:
             )
 
         access = issue_access_token(
-            user_id=user.id, org_id=user.org_id, role=user.role, email=user.email
+            user_id=user.id,
+            org_id=user.org_id,
+            role=user.role,
+            email=user.email,
+            token_version=user.token_version,
         )
-        refresh = issue_refresh_token(user_id=user.id, org_id=user.org_id)
+        refresh = issue_refresh_token(
+            user_id=user.id, org_id=user.org_id, token_version=user.token_version
+        )
         return TokenResponse(access_token=access), refresh
 
     async def login(self, req: LoginRequest) -> tuple[TokenResponse, str]:
-        async with db_mod.sessionmaker() as session:
+        # A failed attempt must persist even though we raise afterward — raising
+        # INSIDE `session.begin()` rolls back that write, so the intended failure is
+        # captured here and raised only after the block commits.
+        pending_error: AuthError | None = None
+        user: User | None = None
+
+        async with db_mod.sessionmaker() as session, session.begin():
             auth_repo = AuthRepository(session)
             candidates = await auth_repo.find_login_candidates(req.email)
 
-        if not candidates:
-            raise InvalidCredentials("Invalid email or password")
-
-        if len(candidates) > 1 and req.org_id is None:
-            raise AmbiguousLogin(
-                [{"org_id": user.org_id, "org_name": org_name} for user, org_name in candidates]
-            )
-
-        if req.org_id is not None:
-            matched = [(u, n) for u, n in candidates if u.org_id == req.org_id]
-            if not matched:
+            if not candidates:
                 raise InvalidCredentials("Invalid email or password")
-            user, _ = matched[0]
-        else:
-            user, _ = candidates[0]
 
-        if not user.password_hash or not verify_password(req.password, user.password_hash):
-            raise InvalidCredentials("Invalid email or password")
+            if len(candidates) > 1 and req.org_id is None:
+                raise AmbiguousLogin(
+                    [{"org_id": u.org_id, "org_name": org_name} for u, org_name in candidates]
+                )
+
+            if req.org_id is not None:
+                matched = [(u, n) for u, n in candidates if u.org_id == req.org_id]
+                if not matched:
+                    raise InvalidCredentials("Invalid email or password")
+                user, _ = matched[0]
+            else:
+                user, _ = candidates[0]
+
+            now = datetime.now(UTC)
+            if user.locked_until is not None and user.locked_until > now:
+                raise AccountLocked(user.locked_until)
+            if user.locked_until is not None:
+                # Lock window has passed — start a fresh observation window instead of
+                # leaving a stale counter that would re-lock on a single failure.
+                user.failed_login_attempts = 0
+                user.locked_until = None
+
+            if not user.password_hash or not verify_password(req.password, user.password_hash):
+                await auth_repo.record_login_failure(user)
+                pending_error = InvalidCredentials("Invalid email or password")
+            else:
+                await auth_repo.reset_login_lockout(user)
+
+        if pending_error is not None:
+            raise pending_error
+        assert user is not None
 
         access = issue_access_token(
-            user_id=user.id, org_id=user.org_id, role=user.role, email=user.email
+            user_id=user.id,
+            org_id=user.org_id,
+            role=user.role,
+            email=user.email,
+            token_version=user.token_version,
         )
-        refresh = issue_refresh_token(user_id=user.id, org_id=user.org_id)
+        refresh = issue_refresh_token(
+            user_id=user.id, org_id=user.org_id, token_version=user.token_version
+        )
         return TokenResponse(access_token=access), refresh
 
     async def refresh(self, refresh_token: str) -> tuple[TokenResponse, str]:
@@ -205,13 +281,24 @@ class AuthService:
             auth_repo = AuthRepository(session)
             user = await auth_repo.get_user_by_id(user_id)
 
-        if user is None or not user.password_hash:
+        if (
+            user is None
+            or not user.password_hash
+            or not user.is_active
+            or user.token_version != payload.get("tv")
+        ):
             raise InvalidCredentials("Invalid refresh token")
 
         access = issue_access_token(
-            user_id=user.id, org_id=user.org_id, role=user.role, email=user.email
+            user_id=user.id,
+            org_id=user.org_id,
+            role=user.role,
+            email=user.email,
+            token_version=user.token_version,
         )
-        new_refresh = issue_refresh_token(user_id=user.id, org_id=user.org_id)
+        new_refresh = issue_refresh_token(
+            user_id=user.id, org_id=user.org_id, token_version=user.token_version
+        )
         return TokenResponse(access_token=access), new_refresh
 
     async def me(self, user_id: uuid.UUID) -> UserOut:
@@ -280,6 +367,58 @@ class AuthService:
             updated = await user_repo.update_role(target, new_role)
 
         return UserOut.model_validate(updated)
+
+    async def set_member_active(
+        self, ctx: TenantContext, target_user_id: uuid.UUID, is_active: bool
+    ) -> UserOut:
+        """Deactivate = the org's "remove a member" action. Soft, reversible: the row
+        stays (preserving FK-referenced history in chat/knowledge tables) but is blocked
+        at every auth boundary the instant it's deactivated (see middleware/deps.py and
+        AuthService.refresh — both re-check ``is_active`` on every request)."""
+        if ctx.role not in ADMIN_ROLES:
+            raise Forbidden("Only owners and admins can change member status")
+        if target_user_id == ctx.user_id:
+            raise Forbidden("Cannot change your own active status")
+
+        async with db_mod.sessionmaker() as session, session.begin():
+            user_repo = UserRepository(session, ctx)
+            target = await user_repo.get_by_id(target_user_id)
+            if target is None:
+                raise TargetUserNotFound("User not found")
+            if target.role == ROLE_OWNER:
+                raise Forbidden("Cannot change an owner's active status")
+
+            updated = await user_repo.set_active(target, is_active)
+
+        return UserOut.model_validate(updated)
+
+    async def change_password(
+        self, ctx: TenantContext, current_password: str, new_password: str
+    ) -> tuple[TokenResponse, str]:
+        """Self-service only (``ctx.user_id`` — no admin-reset path exists). Rotates
+        ``token_version``, which invalidates every other session; returns a fresh token
+        pair so the session making the change keeps working."""
+        async with db_mod.sessionmaker() as session, session.begin():
+            user_repo = UserRepository(session, ctx)
+            user = await user_repo.get_by_id(ctx.user_id)  # type: ignore[arg-type]
+            if user is None:
+                raise UserNotFound("User not found")
+            if not user.password_hash or not verify_password(current_password, user.password_hash):
+                raise InvalidCredentials("Current password is incorrect")
+
+            updated = await user_repo.update_password(user, hash_password(new_password))
+
+        access = issue_access_token(
+            user_id=updated.id,
+            org_id=updated.org_id,
+            role=updated.role,
+            email=updated.email,
+            token_version=updated.token_version,
+        )
+        refresh = issue_refresh_token(
+            user_id=updated.id, org_id=updated.org_id, token_version=updated.token_version
+        )
+        return TokenResponse(access_token=access), refresh
 
     async def get_org(self, ctx: TenantContext) -> OrganizationOut:
         async with db_mod.sessionmaker() as session:

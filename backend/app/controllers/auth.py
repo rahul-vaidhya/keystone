@@ -11,6 +11,7 @@ from app.config.settings import settings
 from app.middleware.context import TenantContext
 from app.middleware.deps import current_user, get_ctx, require_admin
 from app.models.auth import (
+    ChangePasswordRequest,
     InviteRequest,
     LoginRequest,
     OrganizationOut,
@@ -20,6 +21,7 @@ from app.models.auth import (
     TokenResponse,
     User,
     UserOut,
+    UserStatusRequest,
 )
 from app.services.auth import auth_service
 
@@ -89,6 +91,26 @@ async def change_role(
     ctx: Annotated[TenantContext, Depends(require_admin)],
 ) -> UserOut:
     return await auth_service.change_role(ctx, user_id, req.role)
+
+
+async def set_member_active(
+    user_id: uuid.UUID,
+    req: UserStatusRequest,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+) -> UserOut:
+    return await auth_service.set_member_active(ctx, user_id, req.is_active)
+
+
+async def change_password(
+    req: ChangePasswordRequest,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+    response: Response,
+) -> TokenResponse:
+    tokens, refresh_token = await auth_service.change_password(
+        ctx, req.current_password, req.new_password
+    )
+    _set_refresh_cookie(response, refresh_token)
+    return tokens
 
 
 async def get_org(ctx: Annotated[TenantContext, Depends(get_ctx)]) -> OrganizationOut:

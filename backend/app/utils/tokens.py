@@ -37,24 +37,28 @@ def _decode(token: str) -> dict[str, Any]:
         raise TokenError("Invalid or expired token") from exc
 
 
-def issue_access_token(*, user_id: uuid.UUID, org_id: uuid.UUID, role: str, email: str) -> str:
+def issue_access_token(
+    *, user_id: uuid.UUID, org_id: uuid.UUID, role: str, email: str, token_version: int
+) -> str:
     return _encode(
         {
             "sub": str(user_id),
             "org_id": str(org_id),
             "role": role,
             "email": email,
+            "tv": token_version,
             "type": TOKEN_TYPE_ACCESS,
         },
         timedelta(minutes=settings.JWT_ACCESS_TTL_MINUTES),
     )
 
 
-def issue_refresh_token(*, user_id: uuid.UUID, org_id: uuid.UUID) -> str:
+def issue_refresh_token(*, user_id: uuid.UUID, org_id: uuid.UUID, token_version: int) -> str:
     return _encode(
         {
             "sub": str(user_id),
             "org_id": str(org_id),
+            "tv": token_version,
             "type": TOKEN_TYPE_REFRESH,
         },
         timedelta(days=settings.JWT_REFRESH_TTL_DAYS),

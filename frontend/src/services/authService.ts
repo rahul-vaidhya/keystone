@@ -29,6 +29,18 @@ export const authApi = {
       body: JSON.stringify({ role }),
     }),
 
+  setUserActive: (userId: string, is_active: boolean) =>
+    apiFetch<User>(`/auth/users/${userId}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_active }),
+    }),
+
+  changePassword: (current_password: string, new_password: string) =>
+    apiFetch<TokenResponse>("/auth/me/password", {
+      method: "POST",
+      body: JSON.stringify({ current_password, new_password }),
+    }),
+
   invite: (email: string, password: string, role: "admin" | "member") =>
     apiFetch<User>("/auth/invite", {
       method: "POST",

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { authApi } from "../services/authService";
 import { ApiError } from "../types/auth";
 import { useAuth } from "../hooks/useAuth";
+import { setStoredAccessToken } from "../services/http";
 
 const ROLE_LABEL: Record<string, string> = {
   owner: "Owner",
@@ -26,6 +27,11 @@ export function UsersPage() {
   const [invitePassword, setInvitePassword] = useState("");
   const [inviteRole, setInviteRole] = useState<"admin" | "member">("member");
   const [inviting, setInviting] = useState(false);
+
+  const [showPasswordForm, setShowPasswordForm] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [changingPassword, setChangingPassword] = useState(false);
 
   function startEditingOrgName() {
     setOrgNameDraft(orgQuery.data?.name ?? "");
@@ -70,6 +76,42 @@ export function UsersPage() {
       await queryClient.invalidateQueries({ queryKey: ["users"] });
     } catch (err) {
       window.alert(err instanceof ApiError ? err.message : "Failed to change role");
+    }
+  }
+
+  async function handleSetActive(userId: string, nextActive: boolean) {
+    if (!nextActive) {
+      const confirmed = window.confirm(
+        "Remove this member? They will immediately lose access. This can be undone later.",
+      );
+      if (!confirmed) return;
+    }
+    try {
+      await authApi.setUserActive(userId, nextActive);
+      await queryClient.invalidateQueries({ queryKey: ["users"] });
+    } catch (err) {
+      window.alert(err instanceof ApiError ? err.message : "Failed to update member status");
+    }
+  }
+
+  async function handleChangePassword(e: FormEvent) {
+    e.preventDefault();
+    if (!currentPassword || newPassword.length < 8) return;
+    setChangingPassword(true);
+    try {
+      const tokens = await authApi.changePassword(currentPassword, newPassword);
+      // The response carries a fresh token pair (password change bumps token_version,
+      // invalidating every other session) — persist it now or this tab's own next
+      // request would get rejected as stale.
+      setStoredAccessToken(tokens.access_token);
+      setCurrentPassword("");
+      setNewPassword("");
+      setShowPasswordForm(false);
+      window.alert("Password changed. You've been signed out of any other active sessions.");
+    } catch (err) {
+      window.alert(err instanceof ApiError ? err.message : "Failed to change password");
+    } finally {
+      setChangingPassword(false);
     }
   }
 
@@ -121,6 +163,69 @@ export function UsersPage() {
                 </button>
               )}
             </div>
+          )}
+        </div>
+
+        <div className="mb-6">
+          {showPasswordForm ? (
+            <form
+              onSubmit={handleChangePassword}
+              className="bg-surface border border-border rounded-lg p-4 flex flex-wrap items-end gap-2"
+            >
+              <div className="flex flex-col gap-1">
+                <label htmlFor="current-password" className="text-xs text-muted">
+                  Current password
+                </label>
+                <input
+                  id="current-password"
+                  type="password"
+                  required
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  className="bg-bg border border-border rounded-md px-2 py-1 text-sm"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="new-password" className="text-xs text-muted">
+                  New password
+                </label>
+                <input
+                  id="new-password"
+                  type="password"
+                  required
+                  minLength={8}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="bg-bg border border-border rounded-md px-2 py-1 text-sm"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={changingPassword}
+                className="text-sm bg-accent text-white rounded-md px-3 py-1.5 hover:opacity-90 disabled:opacity-50"
+              >
+                Update password
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPasswordForm(false);
+                  setCurrentPassword("");
+                  setNewPassword("");
+                }}
+                className="text-sm text-muted hover:text-fg px-2 py-1.5"
+              >
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowPasswordForm(true)}
+              className="text-xs text-muted hover:text-fg"
+            >
+              Change your password
+            </button>
           )}
         </div>
 
@@ -204,30 +309,57 @@ export function UsersPage() {
                   const canEdit = !isSelf && !isOwner;
 
                   return (
-                    <tr key={u.id} className="border-b border-border last:border-0">
-                      <td className="px-4 py-2">{u.email}</td>
+                    <tr
+                      key={u.id}
+                      className={`border-b border-border last:border-0 ${!u.is_active ? "opacity-50" : ""}`}
+                    >
+                      <td className="px-4 py-2">
+                        {u.email}
+                        {!u.is_active && (
+                          <span className="ml-2 text-xs bg-danger/10 text-danger rounded-sm px-1.5 py-0.5">
+                            Removed
+                          </span>
+                        )}
+                      </td>
                       <td className="px-4 py-2">
                         <span className="text-xs bg-bg border border-border rounded-sm px-2 py-0.5">
                           {ROLE_LABEL[u.role] ?? u.role}
                         </span>
                       </td>
                       <td className="px-4 py-2 text-right">
-                        {canEdit ? (
-                          <select
-                            value={u.role}
-                            onChange={(e) =>
-                              void handleRoleChange(u.id, e.target.value as "admin" | "member")
-                            }
-                            className="bg-bg border border-border rounded-md px-2 py-1 text-sm"
-                          >
-                            <option value="admin">Admin</option>
-                            <option value="member">Member</option>
-                          </select>
-                        ) : (
-                          <span className="text-muted text-xs">
-                            {isSelf ? "(you)" : "—"}
-                          </span>
-                        )}
+                        <div className="flex items-center justify-end gap-2">
+                          {canEdit && u.is_active && (
+                            <select
+                              value={u.role}
+                              onChange={(e) =>
+                                void handleRoleChange(u.id, e.target.value as "admin" | "member")
+                              }
+                              className="bg-bg border border-border rounded-md px-2 py-1 text-sm"
+                            >
+                              <option value="admin">Admin</option>
+                              <option value="member">Member</option>
+                            </select>
+                          )}
+                          {isAdmin && canEdit ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleSetActive(u.id, !u.is_active)}
+                              className={
+                                u.is_active
+                                  ? "text-xs text-danger border border-danger/40 rounded-md px-2 py-1 hover:bg-danger/10"
+                                  : "text-xs bg-accent text-white rounded-md px-2 py-1 hover:opacity-90"
+                              }
+                            >
+                              {u.is_active ? "Remove" : "Reactivate"}
+                            </button>
+                          ) : (
+                            !canEdit && (
+                              <span className="text-muted text-xs">
+                                {isSelf ? "(you)" : "—"}
+                              </span>
+                            )
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );

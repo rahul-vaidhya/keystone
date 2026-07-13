@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+from datetime import UTC, datetime
+
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
@@ -12,6 +15,7 @@ from app.services.access_roles import (
     AccessRolesError,
 )
 from app.services.auth import (
+    AccountLocked,
     AmbiguousLogin,
     AuthError,
     EmailTaken,
@@ -114,6 +118,18 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
             content={"detail": str(exc) or "User not found"},
+        )
+
+    @app.exception_handler(AccountLocked)
+    async def _account_locked(_request: Request, exc: AccountLocked) -> JSONResponse:
+        remaining_minutes = max(
+            1, math.ceil((exc.locked_until - datetime.now(UTC)).total_seconds() / 60)
+        )
+        return JSONResponse(
+            status_code=status.HTTP_423_LOCKED,
+            content={
+                "detail": f"Account temporarily locked. Try again in {remaining_minutes} minute(s)."
+            },
         )
 
     @app.exception_handler(AmbiguousLogin)

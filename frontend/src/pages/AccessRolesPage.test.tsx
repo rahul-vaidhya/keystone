@@ -41,7 +41,14 @@ describe("AccessRolesPage", () => {
     vi.mocked(accessRolesApi.assignUser).mockReset();
     vi.mocked(accessRolesApi.removeUser).mockReset();
     vi.mocked(authApi.listUsers).mockReset().mockResolvedValue([
-      { id: "u-1", org_id: "org-1", email: "alice@test.com", role: "member", created_at: "" },
+      {
+        id: "u-1",
+        org_id: "org-1",
+        email: "alice@test.com",
+        role: "member",
+        is_active: true,
+        created_at: "",
+      },
     ]);
     vi.mocked(documentsApi.listTags).mockReset().mockResolvedValue([
       { id: "t-1", org_id: "org-1", name: "Finance", created_at: "" },

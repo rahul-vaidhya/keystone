@@ -521,6 +521,25 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       this verification: a stale `uvicorn` process running pre-migration code (needed a
       restart, not a code fix) — see memory.md "Gotcha" for the lesson.
 
+## Maintenance — Auth hardening (member removal, session revocation, password change, login lockout)
+- [x] Auth hardening (2026-07-13, UNCOMMITTED) — **built out of buildplan order**, a direct
+      ask to audit login/signup/org/member-management against current best practice and
+      close the gaps. Full detail + design rationale: memory.md "Auth hardening" section.
+      Migration `0013` adds `is_active`/`failed_login_attempts`/`locked_until`/
+      `token_version` to `users`. Four pieces: (1) `PATCH /auth/users/{id}/status` — soft
+      deactivate/reactivate a member (member removal), same guard shape as `change_role`;
+      (2) instant revocation on every request via `current_user`'s existing per-request DB
+      read (no new token-blacklist infra needed) plus a `token_version`/`"tv"` JWT claim
+      checked on every access+refresh read; (3) `POST /auth/me/password` self-service
+      password change (argon2-reverifies current password, bumps `token_version` to kill
+      every other session, returns a fresh token pair so the changing session keeps
+      working); (4) per-account (never per-IP) login lockout, 5 attempts / 15 min, explicit
+      "temporarily locked" message. Deliberately deferred (needs a new email-provider seam,
+      out of this round's scope per direct user choice): tokenized email-invite links,
+      password-reset-via-email, MFA. DoD met: 173/173 backend tests (12 new), 52/52
+      frontend tests (8 new), ruff/tsc/build clean, migration applied cleanly to a real
+      Testcontainers Postgres container as part of the full suite run.
+
 ## Phase 6 — Security Hardening (after MVP validated, before real customer data)
 - [ ] F60 Enforced RLS (RLS_ENABLED on; app_user/migrator split; FORCE RLS; teeth-having isolation test)
 
@@ -644,7 +663,23 @@ role-holding member. See memory.md "Access Roles (tag-based RBAC) + folder tree
 drag-and-drop" for full detail, including the stale-uvicorn-process gotcha hit during
 verification and the `docs/access-roles-dnd-plan.md` design record.
 
-Next action: **Commit this session's Access Roles + drag-and-drop feature, then proceed
-to F42 admin debug bundle or F60 RLS hardening.**
+**Auth hardening DONE (2026-07-13, this session, UNCOMMITTED).** Member removal
+(deactivate/reactivate via `PATCH /auth/users/{id}/status`), instant access revocation
+on deactivation (enforced in `current_user`'s existing per-request DB read), self-service
+`POST /auth/me/password` (invalidates every other session via a new `token_version` JWT
+claim), and per-account login lockout (5 attempts/15 min, migration `0013`). 173/173
+backend + 52/52 frontend tests green, ruff/tsc/build clean. Email-based invite links and
+password-reset-via-email explicitly deferred (would need a new email-provider seam). See
+memory.md "Auth hardening" for full detail, including a real transaction-ordering bug
+(lockout counter write would've been silently rolled back) caught and fixed during
+implementation.
+
+**Correction (2026-07-13):** the Access Roles + drag-and-drop feature is actually
+ALREADY COMMITTED (`cc3faf3`), confirmed via `git log` — a prior "still uncommitted"
+note here was stale (same class of staleness this file has hit before; always trust
+`git log` over a commit-status claim in these docs). Auth hardening was committed this
+session.
+
+Next action: **F42 admin debug bundle or F60 RLS hardening.**
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

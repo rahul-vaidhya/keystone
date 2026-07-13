@@ -39,7 +39,10 @@ async def current_user(
 
     user_id = uuid.UUID(payload["sub"])
     user = await AuthRepository(session).get_user_by_id(user_id)
-    if user is None:
+    # Re-checked on EVERY request (this is a DB read already, not a stateless-JWT-only
+    # check) — a deactivated member or a password change (which bumps token_version)
+    # takes effect on the very next call, not just on the next refresh.
+    if user is None or not user.is_active or user.token_version != payload.get("tv"):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user
 

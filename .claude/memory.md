@@ -6,6 +6,100 @@
 
 ---
 
+## Auth hardening: member removal, session revocation, self password-change, login lockout (2026-07-13, this session — UNCOMMITTED)
+
+**Built out of buildplan order**, a direct ask ("go through the login/signup/org/member
+system, verify against internet best practices, implement fixes") rather than an
+F-numbered item. Full design record went through `/architect` (decisions confirmed by
+the user, including two explicit trade-off choices — see below). Research this session
+found: no member-removal endpoint existed at all (`routes/auth.py` only had
+invite/list/change_role), no revocation mechanism, no self-service password change, and
+no login rate-limiting — all real gaps against current OWASP Authentication Cheat Sheet
+guidance and multi-tenant SaaS RBAC practice. **Explicitly scoped OUT this round** (user
+picked "harden auth, skip email" over "everything including email invites"): tokenized
+email-invite links, password-reset-via-email, MFA — all would require adding a new email
+provider seam, a bigger architectural addition not undertaken here.
+
+**What was built (migration `0013`, adds 4 columns to `users`):**
+1. **`is_active` (member removal)** — soft-delete, not a hard `DELETE`: FK check done
+   first (`chat.messages`/`knowledge_bases` are `ON DELETE SET NULL`, `user_access_roles`
+   is `CASCADE`) confirmed hard-delete would strip authorship from history, so removal is
+   reversible instead. New `PATCH /auth/users/{id}/status` (`{"is_active": bool}`),
+   mirrors `change_role`'s exact guard shape (admin/owner only, can't target self, can't
+   target an owner) in a new `AuthService.set_member_active`.
+2. **Instant revocation, no token blacklist needed** — the real finding that shaped the
+   whole design: `current_user` (`middleware/deps.py`) already does a full DB read on
+   *every* authenticated request, not just on refresh. Adding `is_active`/`token_version`
+   checks there (and in `AuthService.refresh`) makes deactivation take effect on the
+   member's very next API call, and makes a password change invalidate every other
+   session — zero new infrastructure (no Redis denylist, no sessions table).
+3. **`token_version` (session revocation on password change)** — bumped by
+   `UserRepository.update_password`, embedded in both access+refresh JWTs as a `"tv"`
+   claim (`issue_access_token`/`issue_refresh_token` now require `token_version=...`),
+   checked against the DB value on every `current_user` and `refresh()` call. New
+   self-service `POST /auth/me/password` (`ChangePasswordRequest`: current+new password,
+   argon2-reverifies the current one) returns a **fresh token pair** so the session making
+   the change keeps working while every other session dies instantly. User explicitly
+   confirmed this over the simpler "just change the hash" option.
+4. **Per-account login lockout** — `LOGIN_LOCKOUT_THRESHOLD=5` / `LOGIN_LOCKOUT_MINUTES=15`
+   (`utils/constants.py`), counted on the `users` row itself, never by source IP (OWASP:
+   IP-scoped lockout lets an attacker DoS a victim by spoofing addresses). New
+   `AccountLocked` exception → HTTP 423 with an **explicit** "Account temporarily locked,
+   try again in N minute(s)" message — user chose this over a fully generic message,
+   reasoning that this app already reveals org-membership during multi-org login
+   disambiguation (`AmbiguousLogin`), so a stricter anti-enumeration bar wasn't consistent
+   with existing behavior anyway. Counter resets on success; if `locked_until` has already
+   passed when a new attempt arrives, the window resets fresh rather than extending
+   indefinitely under sustained attack. `find_login_candidates` now filters
+   `is_active=True` in the query itself, so a deactivated member's login attempt gets the
+   exact same generic "Invalid email or password" as a wrong password — deliberately a
+   DIFFERENT message than the lockout case (admin-initiated status change on someone
+   else's account vs. the user's own repeated attempts).
+5. **A real transaction-ordering bug caught and fixed during implementation, not by
+   review**: the first draft of `login()`'s failed-attempt counter raised
+   `InvalidCredentials` from inside the `async with session.begin()` block on a wrong
+   password — since `session.begin()` rolls back on any exception escaping the block,
+   this would have silently discarded the very failure-count increment it just flushed,
+   making the lockout counter never actually increment. Fixed with a `pending_error`
+   local-variable pattern: write the counter update, capture the exception to raise, let
+   the block exit normally (commit), THEN raise. All other raise sites in `login()`
+   (no candidates, ambiguous, wrong org_id, already-locked) happen before any write, so
+   they're unaffected — only the wrong-password branch needed this treatment.
+6. **Frontend** (`UsersPage.tsx`): "Remove"/"Reactivate" button per row (confirm-guarded
+   like the existing document-delete pattern), reuses the exact same `canEdit` condition
+   as role-change (self/owner both blocked) gated additionally on `isAdmin`; inactive rows
+   render at `opacity-50` with a "Removed" badge; role `<select>` hidden while inactive
+   (reactivate first, then re-assign role — avoids a meaningless intermediate state). New
+   self-service "Change your password" collapsible form, visible to every role (not just
+   admin) — critically persists the fresh access token returned by the endpoint via
+   `setStoredAccessToken` immediately, since the token used to make the request is now
+   stale the instant the call succeeds.
+
+**Verification:** 173/173 backend tests (161 prior + 12 new: lockout threshold/reset/
+window-expiry, deactivate blocks next request AND relogin, deactivate guard rules (self/
+owner/non-admin), reactivate restores login, password-change wrong-current-password
+rejected, password-change invalidates the old token while the returned new one still
+works), ruff check clean (only the 3 pre-existing `scripts/inspect_document.py`
+findings), ruff format clean. Frontend: 52/52 vitest (44 prior + 8 new), `tsc -b` clean
+(had to add `is_active` to two other test files' inline `User` fixtures —
+`FolderTree.test.tsx`, `AccessRolesPage.test.tsx` — since the type is now required),
+`vite build` clean. Migration `0013` applied cleanly against a real Testcontainers
+Postgres container as part of the full pytest run (not just unit-tested in isolation).
+
+**Gotcha reconfirmed this session**: a background (non-blocking) pytest run against the
+SAME already-warm Testcontainers container returned `43 passed, 131 skipped` (25 minutes
+runtime) — looked like a mass regression at first glance. Immediately re-ran synchronously
+against the same warm container: clean `173 passed, 1 skipped` in 38s. This is the
+existing documented Windows/Testcontainers/Ryuk flakiness gotcha, not a real failure —
+**don't trust a single degraded-skip pytest run on this project without a synchronous
+re-run to confirm**, especially one issued via a background/detached process.
+
+**All work UNCOMMITTED** — staged in the working tree, not yet committed.
+
+**Next migration is now `0014`.**
+
+---
+
 ## Access Roles (tag-based RBAC) + folder tree drag-and-drop (2026-07-12, same session — SUPERSEDES the folder-restriction feature immediately below)
 
 **Full design record:** `docs/access-roles-dnd-plan.md` (produced via `/architect`,

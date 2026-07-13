@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import DateTime, ForeignKey, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import CITEXT, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -49,6 +49,15 @@ class User(Base):
     # enum: 'owner' | 'admin' | 'member' (DB check constraint in migration 0003)
     role: Mapped[str] = mapped_column(Text, nullable=False, server_default="member")
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Soft-delete for org member removal — reversible, preserves FK-referenced history
+    # (chat.messages/knowledge_bases SET NULL on hard delete; access_roles CASCADE).
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Bumped on password change; embedded in every issued JWT's "tv" claim and checked
+    # on every current_user/refresh read — the mechanism that invalidates every OTHER
+    # session the instant a password changes.
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -79,6 +88,15 @@ class RoleChangeRequest(BaseModel):
     role: str
 
 
+class UserStatusRequest(BaseModel):
+    is_active: bool
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
 class RenameOrgRequest(BaseModel):
     org_name: str = Field(min_length=1, max_length=200)
 
@@ -100,6 +118,7 @@ class UserOut(BaseModel):
     org_id: uuid.UUID
     email: str
     role: str
+    is_active: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
