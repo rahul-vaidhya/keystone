@@ -430,7 +430,26 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       hard rule #8 and judged still one cohesive pipeline). DoD met. 99/99 suite green (1
       pre-existing real-parser test deselected), ruff clean. Independent code-review pass:
       zero violations against hard rules #1/#3/#4/#8.
-- [ ] F42 Admin debug bundle
+- [x] F42 Admin debug bundle (uncommitted) — new `message_traces` table (migration `0014`,
+      schema exactly as designed in architecture.md), persisting per-answer hits+distances,
+      the exact final prompt sent to the LLM, and the raw model output — written in the same
+      transaction as the conversation+message pair (`ChatService._persist`), for both
+      `/chat/ask` and `/chat/stream` since they share `_persist`. New admin-gated
+      `GET /chat/messages/{message_id}/trace` (`require_admin`), `MessageTraceNotFound` → 404.
+      Frontend: `chatApi.getTrace`, an inline "Debug" toggle on assistant chat bubbles visible
+      only to owner/admin, showing hits/final_prompt/raw_output, with a module-level cache so
+      reopening the same message's trace doesn't re-fetch. DoD met: an admin can see why any
+      answer was produced from the persisted trace, never recomputed.
+      **Mid-review structural fix (caught and closed same session, not deferred)**:
+      `services/chat.py` had grown to 435 lines with 3 repository classes + a new read-only
+      responsibility — past the package-layout convention's promotion trigger. Split into
+      `services/chat/repository.py` (the 3 repo classes, mirroring `services/ingestion/
+      repository.py`'s precedent) + `service.py` (pipeline logic) + `__init__.py` (re-exports
+      only the 4 names an external call site actually uses). Zero logic change, full suite
+      re-ran green before and after. See memory.md "F42 Admin debug bundle" for full detail,
+      including why this is a different split shape than `documents/` (by-subdomain) or
+      `ingestion/` (by-pipeline-stage). 185/185 backend tests (180 prior + 5 new), 54/54
+      frontend tests (52 prior + 2 new), ruff/tsc/build all clean. **This completes Phase 4.**
 
 ## Phase 5 — Frontend SPA
 - [x] F50 App shell + auth UI (`054aa36`) — built OUT OF SEQUENCE per direct senior instruction,
@@ -703,6 +722,17 @@ critical/major bugs. The one substantive gap (zero backend tests for `POST
 suite baseline now **180 passed, 1 skipped**; ruff/tsc/vitest/build all clean. Minor
 findings and a swarm-orchestration lesson recorded in memory.md.
 
-Next action: **F42 admin debug bundle or F60 RLS hardening.**
+**F42 Admin debug bundle DONE (2026-07-13, this session, UNCOMMITTED).** New
+`message_traces` table (migration `0014`) persists hits/final_prompt/raw_output per
+answer, written in the same transaction as the conversation+message pair, for both
+`/chat/ask` and `/chat/stream`. New admin-gated `GET /chat/messages/{id}/trace`.
+Frontend: admin-only inline "Debug" toggle on chat bubbles. A `/review` pass caught
+`services/chat.py` had crossed the package-layout promotion trigger (435 lines, 3
+repository classes) — split into `services/chat/{repository,service}.py` same session,
+zero logic change. **185/185 backend + 54/54 frontend tests green, ruff/tsc/build
+clean. This completes Phase 4 — only F60 (RLS) remains on the buildplan.** See
+memory.md "F42 Admin debug bundle" for full detail.
+
+Next action: **F60 RLS hardening** (the only item left on the buildplan).
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

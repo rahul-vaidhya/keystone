@@ -6,6 +6,59 @@
 
 ---
 
+## F42 Admin debug bundle (2026-07-13, this session — UNCOMMITTED)
+
+Built via the full `/architect` → implement → `/review` loop, in buildplan order (Phase 4's
+last item). New `message_traces` table (migration `0014`, schema exactly as designed in
+architecture.md) persists, per assistant message, the retrieved hits+distances, the exact
+prompt sent to the LLM, and the raw model output — written in the same transaction as the
+conversation+message pair (`ChatService._persist`), for **both** `/chat/ask` and
+`/chat/stream` (they share `_persist`). New admin-gated `GET /chat/messages/{message_id}/
+trace` (`require_admin`), `MessageTraceNotFound` → 404. Frontend: `chatApi.getTrace`, an
+inline "Debug" toggle on assistant chat bubbles visible only to owner/admin
+(`useAuth().user?.role`), showing hits/final_prompt/raw_output — decided during planning
+over a separate debug page, to keep the trace next to the answer it explains.
+
+**Mid-review structural finding, fixed same session (not deferred):** the `/review` pass
+caught that `services/chat.py` had grown to 435 lines with 3 repository classes
+(Conversation/Message/MessageTrace) plus a new read-only responsibility (`get_trace`)
+alongside the original write-path generation pipeline — objectively past the
+package-layout convention's promotion trigger (>200 lines AND 2+ independent groups,
+"different tables" being the convention's own example). Split into `services/chat/`
+(`repository.py`: the 3 repo classes, mirroring `services/ingestion/repository.py`'s
+exact precedent; `service.py`: exceptions, pure functions, `ChatService`; `__init__.py`
+re-exports only the 4 names an external call site actually uses today —
+`chat_service`/`GenerationFailed`/`MessageTraceNotFound`/`build_messages`, per the
+locked convention's "re-export what's actually used, don't pad" rule). Zero logic
+change — full suite re-ran green before and after. **This is now the reference example
+for "repository vs. service split with no independent-subdomain fan-out"** — contrast
+with `services/documents/` (split by table into peer subdomains, each independently
+callable) and `services/ingestion/` (split by pipeline stage) — chat only ever needed
+the repository/service axis since `ask`/`stream_ask` aren't independent stages, they're
+one flow with two transports.
+
+**Second review finding, also fixed**: `ChatPanel.tsx`'s `TraceDetails` claimed to cache
+fetched traces "per message," but its `useState` lived inside a component that unmounts
+on toggle-close (conditional render), so every reopen re-fetched. Fixed with a
+module-level `Map<string, MessageTrace>` cache read before the fetch — genuinely no
+refetch on reopen now. Note for future test-writing in `ChatPanel.test.tsx`: this cache
+is module-scoped and persists across tests in the same file: don't reuse a `message_id`
+across two admin+Debug-click tests in one file expecting both to call `getTrace`, or the
+second will short-circuit on the cache.
+
+**Verification:** 185 backend tests (180 prior + 5 new: trace persisted+correct on
+`/ask`, trace persisted+correct on `/stream`, admin-only 403 for a member, 404 for a
+random message_id, 404 cross-org), migration `0014` applied cleanly via the real
+Testcontainers run. Frontend: 54 tests (52 prior + 2 new: Debug hidden for a member,
+Debug shown + fetches for an admin). ruff check/format clean (only the 3 standing
+`scripts/inspect_document.py` findings), `tsc -b` clean, `vite build` clean.
+**All work UNCOMMITTED** — staged in the working tree, not yet committed.
+
+**This closes Phase 4 entirely** (F40, F4x, F41, F42 all done). Only F60 (enforced RLS,
+Phase 6) remains on the buildplan.
+
+---
+
 ## Full-codebase Haiku-swarm review + /chat/stream test suite (2026-07-13, this session — COMMITTED `c7d9b50`)
 
 **A direct ask, not a buildplan item**: review the whole codebase with a swarm of Haiku
@@ -637,8 +690,9 @@ about heading recovery — corrected a stale claim in `progresstracker.md`'s F23
 | F41 Citations | migration 0009 | `parse_citation_markers` → `resolve_citations`; fresh chunk read (provenance round-trip); conversation+message persisted |
 | F4x SSE streaming | `e0d67df` | `POST /chat/stream`; `ChatService.stream_ask` async generator; no mid-stream retry |
 | F52 Notebook + Chat UI | `e0d67df` | NotebookList/NotebookPage/ChatPanel/CitationPanel; fetch+ReadableStream SSE; 30/30 frontend tests |
+| F42 Admin debug bundle | uncommitted | `message_traces` (migration 0014); `GET /chat/messages/{id}/trace` admin-gated; `services/chat/` split into repository.py+service.py |
 
-**Remaining: F42 (debug bundle), F60 (RLS).**
+**Remaining: F60 (RLS) only — Phase 4 is now fully complete.**
 
 ---
 
@@ -658,7 +712,7 @@ about heading recovery — corrected a stale claim in `progresstracker.md`'s F23
 - **Deterministic arq `job_id` (`f"ingestion:{stage}:{document_id}"`)** is the REAL concurrency guarantee against double-enqueue under redelivery — a before/after DB status check alone is NOT sufficient (two concurrent deliveries can both read the same "before" status in separate transactions before either writes).
 - **F41 citations persist every call as a fresh Conversation + user Message + assistant Message** — no conversation reuse/multi-turn threading until a future feature builds history-threading alongside reuse (they must arrive together).
 - **`resolve_allowed_documents(ctx)`** is the ONLY hook where V2 groups/grants permission logic slots in — MVP returns all org docs.
-- **Chat (`app/services/chat.py` + `app/repositories/chat.py` + `app/models/chat.py`, was `app/chat/` pre-MVC-refactor):** stateless was F40; F41 added the repository/models (migration 0009). Each layer file stays flat (one cohesive pipeline, <200 lines each) — the MVC refactor only changed which top-level package each file lives under, not this internal shape.
+- **Chat (`app/services/chat/` + `app/models/chat.py`):** stateless was F40; F41 added persistence (migration 0009); F42 added the `message_traces` debug bundle (migration 0014) and split `services/chat.py` into `services/chat/repository.py` (Conversation/Message/MessageTrace repos) + `service.py` (pipeline logic) once it crossed the package-layout threshold — see "F42 Admin debug bundle" above for why this is the reference example for a repository/service-axis split (vs. `documents/`'s by-subdomain split or `ingestion/`'s by-pipeline-stage split).
 
 ---
 
@@ -702,15 +756,16 @@ about heading recovery — corrected a stale claim in `progresstracker.md`'s F23
 | knowledge_base_documents | 0008 | knowledge_base_id, document_id, org_id |
 | conversations | 0009 | id, org_id, created_at |
 | messages | 0009 | id, org_id, conversation_id, role, content, citations jsonb, created_at |
+| message_traces | 0014 | id, org_id, message_id (unique), hits jsonb, final_prompt, raw_output, created_at |
 
-**Next migration: 0011** (message_traces for F42).
+**Next migration: 0015.**
 
 ---
 
 ## Open questions / future decisions
 
 - Reranker (4th seam) — add when real quality complaints arise in V2.
-- F42 `message_traces` schema — needs raw_prompt, raw_output, hit scores, latency_ms; admin-read-only.
+- F42 `message_traces` RESOLVED (this session) — built to architecture.md's locked schema exactly (hits/final_prompt/raw_output/created_at); no separate `latency_ms` column (that number is only ever logged via structlog's `chat.llm_call_succeeded`, never persisted — a future addition if trace-level latency reporting is ever needed).
 - F52 SSE consumption RESOLVED: `fetch` + `ReadableStream.getReader()` + `TextDecoder`; buffer splits on `\n\n` to handle partial reads; `AbortController` in `useRef` for cleanup on unmount/re-submit. `EventSource` was NOT used (POST body required).
 - V2 folder-permissions: per-folder role-based access (client stated as a real future need) — `folder_id` is already the stable FK anchor; no permission code exists yet.
 - Orphan blob sweep — `ObjectStore.delete` not built (deliberately deferred, rides with the sweep feature).
