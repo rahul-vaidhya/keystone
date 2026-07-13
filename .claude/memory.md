@@ -94,7 +94,7 @@ existing documented Windows/Testcontainers/Ryuk flakiness gotcha, not a real fai
 **don't trust a single degraded-skip pytest run on this project without a synchronous
 re-run to confirm**, especially one issued via a background/detached process.
 
-**All work UNCOMMITTED** — staged in the working tree, not yet committed.
+**Committed `a13d307`.**
 
 **Next migration is now `0014`.**
 
