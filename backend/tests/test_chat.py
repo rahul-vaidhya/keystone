@@ -420,3 +420,276 @@ def test_build_messages_empty_context_has_no_numbered_block() -> None:
 
     messages = build_messages("q", [])
     assert "[1]" not in messages[1].content
+
+
+# ---- SSE streaming tests (F4x POST /chat/stream) ----
+
+
+def _parse_sse_events(response_text: str) -> list[dict]:
+    """Parse SSE event stream: split on double newline, strip 'data: ' prefix, json.loads each."""
+    import json
+
+    events = []
+    for block in response_text.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+        if block.startswith("data: "):
+            events.append(json.loads(block[6:]))
+    return events
+
+
+async def test_stream_grounded_answer_yields_tokens_and_done_event(
+    client: AsyncClient, session_factory
+) -> None:
+    """Happy path: streaming a notebook with attached document yields one or more token
+    events followed by a done event. Tokens concatenate to the full answer. Done event
+    carries conversation_id, message_id, and citations."""
+    tokens = await _signup(client, "chatstream-ground@test.com", "StreamGround")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "streaming content about topics"
+    )
+
+    resp = await client.post(
+        "/chat/stream", headers=headers, json={"notebook_id": notebook_id, "query": "streaming"}
+    )
+    assert resp.status_code == 200
+
+    events = _parse_sse_events(resp.text)
+    assert len(events) > 0
+
+    # Separate token events from done event
+    token_events = [e for e in events if e["type"] == "token"]
+    done_events = [e for e in events if e["type"] == "done"]
+
+    # Must have at least one token and exactly one done
+    assert len(token_events) >= 1
+    assert len(done_events) == 1
+
+    # Concatenated tokens should form the answer
+    concatenated_answer = "".join(e["content"] for e in token_events).strip()
+    assert len(concatenated_answer) > 0
+    assert "[1]" in concatenated_answer  # FakeLLM cites when context is present
+
+    # Done event carries the full answer and metadata
+    done = done_events[0]
+    assert done["type"] == "done"
+    assert done["answer"] == concatenated_answer
+    assert done["conversation_id"]
+    assert done["message_id"]
+    assert done["notebook_id"] == notebook_id
+    assert done["query"] == "streaming"
+    assert done["model"] == "fake-llm"
+    assert done["correlation_id"]
+    assert isinstance(done["citations"], list)
+    assert len(done["citations"]) == 1
+    assert done["citations"][0]["marker"] == 1
+
+
+async def test_stream_persists_conversation_and_message_with_citations(
+    client: AsyncClient, session_factory
+) -> None:
+    """Persistence parity: after streaming completes, conversation + user message +
+    assistant message rows exist in the DB with correct citations."""
+    tokens = await _signup(client, "chatstream-persist@test.com", "StreamPersist")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "persisted streaming content"
+    )
+
+    resp = await client.post(
+        "/chat/stream",
+        headers=headers,
+        json={"notebook_id": notebook_id, "query": "persisted"},
+    )
+    assert resp.status_code == 200
+
+    events = _parse_sse_events(resp.text)
+    done = next(e for e in events if e["type"] == "done")
+
+    # Verify DB rows exist
+    async with session_factory() as session:
+        conversation = (
+            await session.execute(
+                select(Conversation).where(Conversation.id == uuid.UUID(done["conversation_id"]))
+            )
+        ).scalar_one()
+        assert conversation.org_id == org_id
+        assert str(conversation.knowledge_base_id) == notebook_id
+
+        messages = (
+            (
+                await session.execute(
+                    select(MessageRow)
+                    .where(MessageRow.conversation_id == conversation.id)
+                    .order_by(MessageRow.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert [m.role for m in messages] == ["user", "assistant"]
+    assert messages[0].content == "persisted"
+    assert messages[0].citations is None
+    assistant_message = messages[1]
+    assert str(assistant_message.id) == done["message_id"]
+    assert assistant_message.content == done["answer"]
+    assert assistant_message.citations == done["citations"]
+
+
+async def test_stream_refuses_when_notebook_has_no_context(client: AsyncClient) -> None:
+    """Refusal path: a notebook with no attached documents streams the refusal answer
+    and a done event with empty citations."""
+    tokens = await _signup(client, "chatstream-empty@test.com", "StreamEmpty")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    created = await client.post("/notebooks", headers=headers, json={"name": "NB"})
+    notebook_id = created.json()["id"]
+
+    resp = await client.post(
+        "/chat/stream", headers=headers, json={"notebook_id": notebook_id, "query": "anything"}
+    )
+    assert resp.status_code == 200
+
+    events = _parse_sse_events(resp.text)
+    done_events = [e for e in events if e["type"] == "done"]
+
+    assert len(done_events) == 1
+    done = done_events[0]
+    assert done["answer"] == "I don't have that in the provided sources."
+    assert done["citations"] == []
+
+
+async def test_stream_llm_failure_mid_stream_yields_error_event(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Error path: when the LLM fails mid-stream (after yielding at least one token),
+    an error event is sent and HTTP status is still 200 (SSE cannot change status
+    mid-stream). No done event is sent after error."""
+    tokens = await _signup(client, "chatstream-fail@test.com", "StreamFail")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    notebook_id = (await client.post("/notebooks", headers=headers, json={"name": "NB"})).json()[
+        "id"
+    ]
+
+    class _MidStreamFailingLLM:
+        """Yields one token then fails."""
+
+        @property
+        def model(self) -> str:
+            return "mid-stream-failing"
+
+        async def stream(self, messages: list) -> AsyncIterator[str]:
+            yield "partial"
+            raise SeamTransientError("simulated mid-stream failure")
+            yield ""  # pragma: no cover - unreachable
+
+    app.dependency_overrides[get_llm] = lambda: _MidStreamFailingLLM()
+
+    resp = await client.post(
+        "/chat/stream", headers=headers, json={"notebook_id": notebook_id, "query": "q"}
+    )
+    # HTTP status is 200 even though an error occurred mid-stream (SSE constraint)
+    assert resp.status_code == 200
+
+    events = _parse_sse_events(resp.text)
+    token_events = [e for e in events if e["type"] == "token"]
+    error_events = [e for e in events if e["type"] == "error"]
+    done_events = [e for e in events if e["type"] == "done"]
+
+    # At least one token was sent before the error
+    assert len(token_events) >= 1
+    # Error event exists
+    assert len(error_events) >= 1
+    # No done event after error
+    assert len(done_events) == 0
+
+
+async def test_stream_missing_notebook_yields_error(client: AsyncClient) -> None:
+    """Error path: attempting to stream against a nonexistent notebook yields an
+    error event (not an unhandled exception). HTTP status is 200."""
+    tokens = await _signup(client, "chatstream-missing@test.com", "StreamMissing")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    fake_notebook_id = str(uuid.uuid4())
+
+    resp = await client.post(
+        "/chat/stream",
+        headers=headers,
+        json={"notebook_id": fake_notebook_id, "query": "q"},
+    )
+    # SSE endpoint returns 200 even on error (error event is sent instead)
+    assert resp.status_code == 200
+
+    events = _parse_sse_events(resp.text)
+    error_events = [e for e in events if e["type"] == "error"]
+
+    # Error event was sent for missing notebook
+    assert len(error_events) >= 1
+
+
+async def test_stream_citations_in_done_event_resolve_correctly(
+    client: AsyncClient, session_factory
+) -> None:
+    """Citations in the done event must match the stored chunk (provenance round-trip)
+    — the same guarantee as test_ask_citation_provenance_round_trip_matches_stored_chunk
+    but for streaming."""
+    tokens = await _signup(client, "chatstream-cit@test.com", "StreamCit")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "citation resolution content"
+    )
+
+    resp = await client.post(
+        "/chat/stream", headers=headers, json={"notebook_id": notebook_id, "query": "citation"}
+    )
+    assert resp.status_code == 200
+
+    events = _parse_sse_events(resp.text)
+    done = next(e for e in events if e["type"] == "done")
+
+    # Citations must be present in done event
+    assert len(done["citations"]) > 0
+    citation = done["citations"][0]
+
+    # Verify the citation matches the stored chunk
+    async with session_factory() as session:
+        stored_chunk = (
+            await session.execute(select(Chunk).where(Chunk.id == uuid.UUID(citation["chunk_id"])))
+        ).scalar_one()
+
+    assert citation["document_id"] == str(stored_chunk.document_id)
+    assert citation["char_start"] == stored_chunk.char_start
+    assert citation["char_end"] == stored_chunk.char_end
+    assert citation["content"] == stored_chunk.content
+    span = stored_chunk.content[citation["char_start"] : citation["char_end"]]
+    assert span == citation["content"]
+
+
+async def test_stream_cross_org_notebook_yields_error(client: AsyncClient) -> None:
+    """Cross-org isolation: attempting to stream against another org's notebook
+    yields an error event (not an unhandled exception or 404 sent before streaming)."""
+    tokens_a = await _signup(client, "chatstream-isoa@test.com", "StreamIsoA")
+    tokens_b = await _signup(client, "chatstream-isob@test.com", "StreamIsoB")
+    headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}
+    headers_b = {"Authorization": f"Bearer {tokens_b['access_token']}"}
+
+    notebook_id = (
+        await client.post("/notebooks", headers=headers_a, json={"name": "Secret"})
+    ).json()["id"]
+
+    resp = await client.post(
+        "/chat/stream", headers=headers_b, json={"notebook_id": notebook_id, "query": "q"}
+    )
+    # SSE returns 200; error is sent as an event
+    assert resp.status_code == 200
+
+    events = _parse_sse_events(resp.text)
+    error_events = [e for e in events if e["type"] == "error"]
+
+    # Error event for cross-org denial
+    assert len(error_events) >= 1
