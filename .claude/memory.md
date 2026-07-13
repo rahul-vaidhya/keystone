@@ -6,7 +6,57 @@
 
 ---
 
-## Auth hardening: member removal, session revocation, self password-change, login lockout (2026-07-13, this session — UNCOMMITTED)
+## Full-codebase Haiku-swarm review + /chat/stream test suite (2026-07-13, this session — COMMITTED `c7d9b50`)
+
+**A direct ask, not a buildplan item**: review the whole codebase with a swarm of Haiku
+agents (orchestrator delegates all read/write, cross-checks their claims) and report.
+Ran 7 parallel Haiku agents — 5 domain reviewers (auth, documents/access-roles,
+ingestion/seams/storage/queue, retrieval/chat/notebooks, frontend), 1 mechanical
+cross-cutting grep sweep (SQL placement, org_id scoping, seam boundary, stale dotted
+paths, migration chain 0001→0013, import hygiene, route layering), 1 test runner.
+
+**Verdict: codebase healthy.** Every hard rule passed in every slice, confirmed
+independently by both the per-domain reviewers and the mechanical sweep. Test runner
+confirmed the full baseline green at session start (173/173 backend + 1 skip, 52/52
+frontend, ruff/tsc/build clean, app imports).
+
+**Only substantive finding — closed this same session**: `POST /chat/stream` had ZERO
+backend tests (vs 10+ for `/chat/ask`). A Haiku agent wrote 7 tests + a
+`_parse_sse_events` helper, appended to `tests/test_chat.py` (email prefix
+`chatstream-`): token→done event sequence, persistence parity with `/ask`,
+empty-notebook refusal, mid-stream LLM failure → error event (HTTP stays 200), missing
+notebook → error event, citation provenance round-trip via the done event, cross-org
+isolation. Zero production code changed; no bugs surfaced in `stream_ask`.
+Independently re-verified by a second agent (git diff scope, re-run, ruff) before
+commit. **New baseline: 180 passed, 1 skipped.** Committed `c7d9b50`.
+
+**Minor findings deliberately NOT fixed (recorded so they aren't re-discovered):**
+- Dropped-citation logging (`resolve_citations`) logs counts but not which `[n]`
+  markers were dropped — small debuggability improvement if wanted.
+- `_InMemoryObjectStore` fakes in `tests/test_ingestion.py` and
+  `tests/test_ingestion_dispatch.py` lack the `delete()` method the ObjectStore
+  protocol now has (tests never call it; one-liner consistency fix).
+- Broad `IntegrityError` catches in `services/documents/folders.py` /
+  `services/access_roles.py` assume the name-conflict constraint (low risk, known).
+- `_inherited_folder_tags` relies on `list_folders()`'s parent-before-child ordering —
+  a comment-only contract (test coverage would catch a regression).
+- `tests/test_chat.py:17` / `tests/test_seams.py:16` use `from app.config import
+  settings` — works fine via the package re-export (a sweep agent flagged it as a
+  violation; orchestrator re-graded it a style nit — the documented shadowing gotcha
+  only bites module-ALIAS imports, not object imports).
+
+**Design note re-confirmed intentional (not a defect)**: `/chat/stream` emits a
+`{"type":"error"}` SSE event instead of a 404 for a missing/cross-org notebook —
+headers are already sent when the generator runs; inherent SSE constraint.
+
+**Swarm-orchestration lesson**: Haiku reviewers over-grade severity (a missing test
+suite was reported "CRITICAL", an inherent SSE constraint "MAJOR") and can misapply
+documented gotchas (the import-hygiene false positive above) — always re-grade their
+findings against the project record before reporting.
+
+---
+
+## Auth hardening: member removal, session revocation, self password-change, login lockout (2026-07-13, earlier session — COMMITTED `a13d307`)
 
 **Built out of buildplan order**, a direct ask ("go through the login/signup/org/member
 system, verify against internet best practices, implement fixes") rather than an

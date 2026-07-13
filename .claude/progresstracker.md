@@ -522,7 +522,7 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       restart, not a code fix) — see memory.md "Gotcha" for the lesson.
 
 ## Maintenance — Auth hardening (member removal, session revocation, password change, login lockout)
-- [x] Auth hardening (2026-07-13, UNCOMMITTED) — **built out of buildplan order**, a direct
+- [x] Auth hardening (2026-07-13, committed `a13d307`) — **built out of buildplan order**, a direct
       ask to audit login/signup/org/member-management against current best practice and
       close the gaps. Full detail + design rationale: memory.md "Auth hardening" section.
       Migration `0013` adds `is_active`/`failed_login_attempts`/`locked_until`/
@@ -539,6 +539,22 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       password-reset-via-email, MFA. DoD met: 173/173 backend tests (12 new), 52/52
       frontend tests (8 new), ruff/tsc/build clean, migration applied cleanly to a real
       Testcontainers Postgres container as part of the full suite run.
+
+## Maintenance — Full-codebase Haiku-swarm review + /chat/stream tests
+- [x] Codebase health review + streaming test suite (2026-07-13, committed `c7d9b50`) —
+      **a direct ask, not an F-numbered item**: 7 parallel Haiku agents reviewed every
+      slice (5 domain reviewers + 1 mechanical hard-rules grep sweep + 1 test runner).
+      **Verdict: healthy** — all hard rules pass in every slice (SQL-in-repository,
+      thin routes/controllers, org_id scoping, seam boundaries, ingestion idempotency,
+      retry discipline, deterministic arq job_id, linear migration chain 0001→0013);
+      baseline confirmed green by actually running everything. Only substantive
+      finding: `POST /chat/stream` had zero backend tests — closed same session with
+      7 new tests + `_parse_sse_events` helper in `tests/test_chat.py` (happy path,
+      persistence parity, refusal, mid-stream LLM failure → error event, missing
+      notebook, citation provenance round-trip, cross-org isolation), written and
+      verified by agents, independently re-verified before commit. **New test baseline:
+      180 backend passed, 1 skipped** (was 173). Minor findings recorded (not fixed)
+      in memory.md "Full-codebase Haiku-swarm review" section.
 
 ## Phase 6 — Security Hardening (after MVP validated, before real customer data)
 - [ ] F60 Enforced RLS (RLS_ENABLED on; app_user/migrator split; FORCE RLS; teeth-having isolation test)
@@ -663,7 +679,7 @@ role-holding member. See memory.md "Access Roles (tag-based RBAC) + folder tree
 drag-and-drop" for full detail, including the stale-uvicorn-process gotcha hit during
 verification and the `docs/access-roles-dnd-plan.md` design record.
 
-**Auth hardening DONE (2026-07-13, this session, UNCOMMITTED).** Member removal
+**Auth hardening DONE (2026-07-13, committed `a13d307`).** Member removal
 (deactivate/reactivate via `PATCH /auth/users/{id}/status`), instant access revocation
 on deactivation (enforced in `current_user`'s existing per-request DB read), self-service
 `POST /auth/me/password` (invalidates every other session via a new `token_version` JWT
@@ -679,6 +695,13 @@ ALREADY COMMITTED (`cc3faf3`), confirmed via `git log` — a prior "still uncomm
 note here was stale (same class of staleness this file has hit before; always trust
 `git log` over a commit-status claim in these docs). Auth hardening was committed this
 session.
+
+**Full-codebase Haiku-swarm review + /chat/stream test suite DONE (2026-07-13, this
+session, committed `c7d9b50`).** 7-agent review: all hard rules pass everywhere, no
+critical/major bugs. The one substantive gap (zero backend tests for `POST
+/chat/stream`) was closed the same session — 7 new tests in `tests/test_chat.py`,
+suite baseline now **180 passed, 1 skipped**; ruff/tsc/vitest/build all clean. Minor
+findings and a swarm-orchestration lesson recorded in memory.md.
 
 Next action: **F42 admin debug bundle or F60 RLS hardening.**
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
