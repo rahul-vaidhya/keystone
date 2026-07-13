@@ -1,15 +1,58 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import type { ChatResponse, ResolvedCitation } from "../types/chat";
+import type { ChatResponse, MessageTrace, ResolvedCitation } from "../types/chat";
 import type { Document } from "../types/documents";
 import { chatApi } from "../services/chatService";
+import { useAuth } from "../hooks/useAuth";
 import { ChatPanel } from "./ChatPanel";
 
 vi.mock("../services/chatService", () => ({
   chatApi: {
     streamAsk: vi.fn(),
+    getTrace: vi.fn(),
   },
 }));
+
+vi.mock("../hooks/useAuth", () => ({ useAuth: vi.fn() }));
+
+function mockUser(role: "owner" | "admin" | "member" = "member") {
+  vi.mocked(useAuth).mockReturnValue({
+    user: {
+      id: "u-1",
+      org_id: "org-1",
+      email: "u@test.com",
+      role,
+      is_active: true,
+      created_at: "2026-01-01T00:00:00Z",
+    },
+    loading: false,
+    login: vi.fn(),
+    signup: vi.fn(),
+    logout: vi.fn(),
+  });
+}
+
+function makeTrace(overrides: Partial<MessageTrace> = {}): MessageTrace {
+  return {
+    id: "trace-1",
+    message_id: "msg-1",
+    hits: [
+      {
+        index: 1,
+        document_id: "doc-1",
+        chunk_id: "chunk-1",
+        char_start: 0,
+        char_end: 13,
+        content: "relevant text",
+        distance: 0.12,
+      },
+    ],
+    final_prompt: "[system]\n...\n\n[user]\n...",
+    raw_output: "This is the answer [1]",
+    created_at: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
 
 function makeDoc(overrides: Partial<Document> = {}): Document {
   return {
@@ -60,6 +103,8 @@ function makeDoneResponse(overrides: Partial<ChatResponse> = {}): ChatResponse {
 describe("ChatPanel", () => {
   beforeEach(() => {
     vi.mocked(chatApi.streamAsk).mockReset();
+    vi.mocked(chatApi.getTrace).mockReset();
+    mockUser("member");
   });
 
   it("renders an empty chat input and no messages initially", () => {
@@ -151,5 +196,44 @@ describe("ChatPanel", () => {
     await waitFor(() =>
       expect(screen.getByText("Error: LLM unavailable")).toBeInTheDocument(),
     );
+  });
+
+  it("hides the Debug toggle for a non-admin member", async () => {
+    mockUser("member");
+    vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+      callbacks.onDone(makeDoneResponse());
+      return () => {};
+    });
+
+    render(<ChatPanel notebookId="nb-1" documents={[]} />);
+    const input = screen.getByPlaceholderText("Ask a question…");
+    fireEvent.change(input, { target: { value: "test" } });
+    fireEvent.submit(input.closest("form")!);
+
+    await waitFor(() => expect(screen.getByText("[1]")).toBeInTheDocument());
+    expect(screen.queryByText("Debug")).not.toBeInTheDocument();
+  });
+
+  it("shows the Debug toggle for an admin and fetches the trace on click", async () => {
+    mockUser("admin");
+    vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+      callbacks.onDone(makeDoneResponse());
+      return () => {};
+    });
+    vi.mocked(chatApi.getTrace).mockResolvedValue(makeTrace());
+
+    render(<ChatPanel notebookId="nb-1" documents={[]} />);
+    const input = screen.getByPlaceholderText("Ask a question…");
+    fireEvent.change(input, { target: { value: "test" } });
+    fireEvent.submit(input.closest("form")!);
+
+    await waitFor(() => expect(screen.getByText("Debug")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Debug"));
+
+    expect(chatApi.getTrace).toHaveBeenCalledWith("msg-1");
+    await waitFor(() =>
+      expect(screen.getByText("This is the answer [1]")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Hits (1)")).toBeInTheDocument();
   });
 });

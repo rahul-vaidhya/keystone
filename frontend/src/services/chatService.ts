@@ -1,7 +1,11 @@
-import { getStoredAccessToken } from "./http";
-import type { ChatRequest, ChatResponse, SSEEvent } from "../types/chat";
+import { apiFetch, getStoredAccessToken } from "./http";
+import type { ChatRequest, ChatResponse, MessageTrace, SSEEvent } from "../types/chat";
 
 export const chatApi = {
+  // F42 admin debug bundle. Owner/admin only — the backend 403s for a member.
+  getTrace: (messageId: string) => apiFetch<MessageTrace>(`/chat/messages/${messageId}/trace`),
+
+
   /**
    * Streams the answer token-by-token via fetch + ReadableStream (not EventSource —
    * POST bodies require fetch). Returns a cleanup function that aborts the stream;

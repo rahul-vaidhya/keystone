@@ -15,11 +15,12 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.config import settings
-from app.models.chat import Conversation
+from app.models.chat import Conversation, MessageTrace
 from app.models.chat import Message as MessageRow
 from app.models.documents import Document
 from app.models.ingestion import Chunk, Embedding
 from app.services.seams import EMBED_DIM, Message, SeamTransientError, get_llm
+from app.utils.constants import ROLE_MEMBER
 from main import app
 
 FAKE_MODEL = f"fake-embed-{EMBED_DIM}"
@@ -693,3 +694,122 @@ async def test_stream_cross_org_notebook_yields_error(client: AsyncClient) -> No
 
     # Error event for cross-org denial
     assert len(error_events) >= 1
+
+
+# ---- F42 admin debug bundle (GET /chat/messages/{message_id}/trace) ----
+
+
+async def _invite_member(client: AsyncClient, owner_headers: dict, email: str) -> dict:
+    invite = await client.post(
+        "/auth/invite",
+        headers=owner_headers,
+        json={"email": email, "password": "password123", "role": ROLE_MEMBER},
+    )
+    assert invite.status_code == 201
+    login = await client.post("/auth/login", json={"email": email, "password": "password123"})
+    assert login.status_code == 200
+    return login.json()
+
+
+async def test_ask_persists_trace_with_hits_prompt_and_raw_output(
+    client: AsyncClient, session_factory
+) -> None:
+    tokens = await _signup(client, "chattrace-ask@test.com", "Trace")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "trace content about onboarding"
+    )
+
+    resp = await client.post(
+        "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "trace"}
+    )
+    body = resp.json()
+
+    # Persisted directly (source of truth), not just via the endpoint.
+    async with session_factory() as session:
+        stored = (
+            await session.execute(
+                select(MessageTrace).where(MessageTrace.message_id == uuid.UUID(body["message_id"]))
+            )
+        ).scalar_one()
+    assert stored.org_id == org_id
+    assert stored.raw_output == body["answer"]
+    assert len(stored.hits) == 1
+    assert stored.hits[0]["document_id"] == str(doc_id)
+    assert "trace" in stored.final_prompt
+    assert "onboarding" in stored.final_prompt
+
+    trace_resp = await client.get(f"/chat/messages/{body['message_id']}/trace", headers=headers)
+    assert trace_resp.status_code == 200
+    trace = trace_resp.json()
+    assert trace["message_id"] == body["message_id"]
+    assert trace["raw_output"] == body["answer"]
+    assert len(trace["hits"]) == 1
+    assert trace["hits"][0]["chunk_id"] == body["citations"][0]["chunk_id"]
+
+
+async def test_stream_persists_trace(client: AsyncClient, session_factory) -> None:
+    tokens = await _signup(client, "chattrace-stream@test.com", "TraceStream")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "streamed trace content"
+    )
+
+    resp = await client.post(
+        "/chat/stream", headers=headers, json={"notebook_id": notebook_id, "query": "streamed"}
+    )
+    done = next(e for e in _parse_sse_events(resp.text) if e["type"] == "done")
+
+    trace_resp = await client.get(f"/chat/messages/{done['message_id']}/trace", headers=headers)
+    assert trace_resp.status_code == 200
+    trace = trace_resp.json()
+    assert trace["raw_output"] == done["answer"]
+    assert len(trace["hits"]) == 1
+    assert trace["hits"][0]["document_id"] == str(doc_id)
+
+
+async def test_get_trace_requires_admin(client: AsyncClient, session_factory) -> None:
+    owner_tokens = await _signup(client, "chattrace-owner@test.com", "TraceOwner")
+    owner_headers = {"Authorization": f"Bearer {owner_tokens['access_token']}"}
+    org_id = await _org_id(client, owner_headers)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, owner_headers, session_factory, org_id, "member-gated content"
+    )
+    ask = await client.post(
+        "/chat/ask", headers=owner_headers, json={"notebook_id": notebook_id, "query": "q"}
+    )
+    message_id = ask.json()["message_id"]
+
+    member_tokens = await _invite_member(client, owner_headers, "chattrace-member@test.com")
+    member_headers = {"Authorization": f"Bearer {member_tokens['access_token']}"}
+
+    resp = await client.get(f"/chat/messages/{message_id}/trace", headers=member_headers)
+    assert resp.status_code == 403
+
+
+async def test_get_trace_missing_message_404s(client: AsyncClient) -> None:
+    tokens = await _signup(client, "chattrace-missing@test.com", "TraceMissing")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    resp = await client.get(f"/chat/messages/{uuid.uuid4()}/trace", headers=headers)
+    assert resp.status_code == 404
+
+
+async def test_get_trace_cross_org_404s(client: AsyncClient, session_factory) -> None:
+    tokens_a = await _signup(client, "chattrace-isoa@test.com", "TraceIsoA")
+    tokens_b = await _signup(client, "chattrace-isob@test.com", "TraceIsoB")
+    headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}
+    headers_b = {"Authorization": f"Bearer {tokens_b['access_token']}"}
+    org_id_a = await _org_id(client, headers_a)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, headers_a, session_factory, org_id_a, "org A content"
+    )
+    ask = await client.post(
+        "/chat/ask", headers=headers_a, json={"notebook_id": notebook_id, "query": "q"}
+    )
+    message_id = ask.json()["message_id"]
+
+    resp = await client.get(f"/chat/messages/{message_id}/trace", headers=headers_b)
+    assert resp.status_code == 404

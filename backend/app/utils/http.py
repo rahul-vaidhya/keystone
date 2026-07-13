@@ -23,7 +23,7 @@ from app.services.auth import (
     InvalidCredentials,
     TargetUserNotFound,
 )
-from app.services.chat import GenerationFailed
+from app.services.chat import GenerationFailed, MessageTraceNotFound
 from app.services.documents import (
     DocumentNotFound,
     DocumentsError,
@@ -150,6 +150,15 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"detail": "The assistant is temporarily unavailable, please try again."},
+        )
+
+    @app.exception_handler(MessageTraceNotFound)
+    async def _message_trace_not_found(
+        _request: Request, exc: MessageTraceNotFound
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": str(exc) or "Trace not found"},
         )
 
     @app.exception_handler(AuthError)

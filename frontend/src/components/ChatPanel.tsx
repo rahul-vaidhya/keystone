@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { useAuth } from "../hooks/useAuth";
 import { chatApi } from "../services/chatService";
-import type { ChatResponse, ResolvedCitation } from "../types/chat";
+import type { ChatResponse, MessageTrace, ResolvedCitation } from "../types/chat";
 import type { Document } from "../types/documents";
 import { CitationPanel } from "./CitationPanel";
 
@@ -8,7 +9,66 @@ type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   citations?: ResolvedCitation[];
+  messageId?: string;
 };
+
+// F42 admin debug bundle — collapsible, fetched lazily on first open. Cached in this
+// module-level map (not component state, which resets when the toggle closes and
+// unmounts this component) so re-opening the same message's trace never re-fetches.
+const traceCache = new Map<string, MessageTrace>();
+
+function TraceDetails({ messageId }: { messageId: string }) {
+  const [trace, setTrace] = useState<MessageTrace | null>(traceCache.get(messageId) ?? null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (traceCache.has(messageId)) return;
+    let cancelled = false;
+    chatApi
+      .getTrace(messageId)
+      .then((t) => {
+        traceCache.set(messageId, t);
+        if (!cancelled) setTrace(t);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Failed to load trace.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [messageId]);
+
+  if (error) return <p className="text-xs text-red-500 mt-2">{error}</p>;
+  if (!trace) return <p className="text-xs text-muted mt-2 animate-pulse">Loading trace…</p>;
+
+  return (
+    <div className="mt-2 border border-border rounded-md bg-bg text-xs space-y-2 p-3">
+      <div>
+        <p className="font-medium text-muted mb-1">Hits ({trace.hits.length})</p>
+        <ul className="space-y-1">
+          {trace.hits.map((hit) => (
+            <li key={hit.chunk_id} className="font-mono text-muted">
+              [{hit.index}] doc {hit.document_id.slice(0, 8)}… · distance{" "}
+              {hit.distance.toFixed(3)}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div>
+        <p className="font-medium text-muted mb-1">Final prompt</p>
+        <pre className="whitespace-pre-wrap font-mono text-muted max-h-40 overflow-y-auto">
+          {trace.final_prompt}
+        </pre>
+      </div>
+      <div>
+        <p className="font-medium text-muted mb-1">Raw output</p>
+        <pre className="whitespace-pre-wrap font-mono text-muted max-h-40 overflow-y-auto">
+          {trace.raw_output}
+        </pre>
+      </div>
+    </div>
+  );
+}
 
 // Splits answer text at [n] markers and renders resolved citations as clickable buttons.
 function AnswerText({
@@ -56,10 +116,13 @@ export function ChatPanel({
   notebookId: string;
   documents: Document[];
 }) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "owner" || user?.role === "admin";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [query, setQuery] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeCitation, setActiveCitation] = useState<ResolvedCitation | null>(null);
+  const [openTraceIndex, setOpenTraceIndex] = useState<number | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -111,6 +174,7 @@ export function ChatPanel({
               role: "assistant",
               content: response.answer,
               citations: response.citations,
+              messageId: response.message_id,
             };
             return next;
           });
@@ -146,32 +210,51 @@ export function ChatPanel({
             </p>
           )}
 
-          {messages.map((msg, i) => (
-            <div
-              key={i}
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-            >
+          {messages.map((msg, i) => {
+            const isFinalAssistant = msg.role === "assistant" && msg.citations !== undefined;
+            const canDebug = isFinalAssistant && isAdmin && msg.messageId !== undefined;
+            return (
               <div
-                className={`max-w-[80%] rounded-lg px-4 py-3 text-sm ${
-                  msg.role === "user"
-                    ? "bg-accent text-white"
-                    : "bg-surface border border-border text-text"
-                }`}
+                key={i}
+                className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}
               >
-                {msg.role === "assistant" && msg.content === "" && isStreaming ? (
-                  <span className="text-muted animate-pulse">●●●</span>
-                ) : msg.role === "assistant" && msg.citations !== undefined ? (
-                  <AnswerText
-                    content={msg.content}
-                    citations={msg.citations}
-                    onCitationClick={setActiveCitation}
-                  />
-                ) : (
-                  <span className="whitespace-pre-wrap">{msg.content}</span>
+                <div
+                  className={`max-w-[80%] rounded-lg px-4 py-3 text-sm ${
+                    msg.role === "user"
+                      ? "bg-accent text-white"
+                      : "bg-surface border border-border text-text"
+                  }`}
+                >
+                  {msg.role === "assistant" && msg.content === "" && isStreaming ? (
+                    <span className="text-muted animate-pulse">●●●</span>
+                  ) : isFinalAssistant ? (
+                    <AnswerText
+                      content={msg.content}
+                      citations={msg.citations ?? []}
+                      onCitationClick={setActiveCitation}
+                    />
+                  ) : (
+                    <span className="whitespace-pre-wrap">{msg.content}</span>
+                  )}
+                </div>
+
+                {canDebug && (
+                  <div className="max-w-[80%] w-full">
+                    <button
+                      type="button"
+                      onClick={() => setOpenTraceIndex(openTraceIndex === i ? null : i)}
+                      className="text-xs text-muted hover:text-text mt-1 underline"
+                    >
+                      {openTraceIndex === i ? "Hide debug" : "Debug"}
+                    </button>
+                    {openTraceIndex === i && msg.messageId && (
+                      <TraceDetails messageId={msg.messageId} />
+                    )}
+                  </div>
                 )}
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           <div ref={bottomRef} />
         </div>

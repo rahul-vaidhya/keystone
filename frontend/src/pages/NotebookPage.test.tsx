@@ -6,7 +6,10 @@ import type { Document } from "../types/documents";
 import type { Notebook } from "../types/knowledge";
 import { notebooksApi } from "../services/notebooksService";
 import { documentsApi } from "../services/documentsService";
+import { useAuth } from "../hooks/useAuth";
 import { NotebookPage } from "./NotebookPage";
+
+vi.mock("../hooks/useAuth", () => ({ useAuth: vi.fn() }));
 
 vi.mock("../services/notebooksService", () => ({
   notebooksApi: {
@@ -82,6 +85,20 @@ describe("NotebookPage", () => {
     vi.mocked(notebooksApi.attachDocument).mockReset();
     vi.mocked(notebooksApi.detachDocument).mockReset();
     vi.mocked(documentsApi.listDocuments).mockReset();
+    vi.mocked(useAuth).mockReturnValue({
+      user: {
+        id: "u-1",
+        org_id: "org-1",
+        email: "u@test.com",
+        role: "member",
+        is_active: true,
+        created_at: "2026-01-01T00:00:00Z",
+      },
+      loading: false,
+      login: vi.fn(),
+      signup: vi.fn(),
+      logout: vi.fn(),
+    });
   });
 
   it("renders the notebook name in the header", async () => {

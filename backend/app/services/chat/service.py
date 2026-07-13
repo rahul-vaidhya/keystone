@@ -1,8 +1,9 @@
-"""F40 grounded generation + F41 citations: notebook-scoped query -> F31 retrieval ->
-grounded prompt -> LLM seam -> answer -> citation resolution -> persisted
-conversation+message pair. Reaches retrieval ONLY through ``retrieval_service.search`` and
-chunk re-resolution ONLY through ``ingestion_service.get_chunks`` (module-boundary rule) —
-never reimplements scoping/embedding/kNN search, never imports ingestion's models/repository.
+"""F40 grounded generation + F41 citations + F42 admin debug bundle: notebook-scoped
+query -> F31 retrieval -> grounded prompt -> LLM seam -> answer -> citation resolution ->
+persisted conversation+message+trace. Reaches retrieval ONLY through
+``retrieval_service.search`` and chunk re-resolution ONLY through
+``ingestion_service.get_chunks`` (module-boundary rule) — never reimplements
+scoping/embedding/kNN search, never imports ingestion's models/repository.
 """
 
 from __future__ import annotations
@@ -17,9 +18,14 @@ from app.config import db as db_mod
 from app.config.logging import get_logger
 from app.config.settings import settings
 from app.middleware.context import TenantContext
-from app.models.chat import ChatRequest, ChatResponse, Conversation, Message, ResolvedCitation
+from app.models.chat import (
+    ChatRequest,
+    ChatResponse,
+    MessageTraceOut,
+    ResolvedCitation,
+)
 from app.models.retrieval import ContextBlock, RetrievalSearchRequest
-from app.services.base import BaseRepository
+from app.services.chat.repository import ConversationRepository, MessageRepository, TraceRepository
 from app.services.ingestion import ingestion_service
 from app.services.retrieval import retrieval_service
 from app.services.seams import LLM, Embedder, SeamTransientError
@@ -37,45 +43,11 @@ class GenerationFailed(RuntimeError):
     conversation/message row left behind on this failure path."""
 
 
-# ---- repository ----
-class ConversationRepository(BaseRepository[Conversation]):
-    model = Conversation
-
-    async def create(
-        self, *, knowledge_base_id: uuid.UUID, user_id: uuid.UUID | None
-    ) -> Conversation:
-        conversation = Conversation(
-            org_id=self._ctx.org_id, knowledge_base_id=knowledge_base_id, user_id=user_id
-        )
-        self._db.add(conversation)
-        await self._db.flush()
-        return conversation
+class MessageTraceNotFound(RuntimeError):
+    """F42: no trace exists for this message_id within the caller's org — either the
+    message never belonged to this org, or it doesn't exist at all. Mapped to a 404."""
 
 
-class MessageRepository(BaseRepository[Message]):
-    model = Message
-
-    async def create(
-        self,
-        *,
-        conversation_id: uuid.UUID,
-        role: str,
-        content: str,
-        citations: list[dict] | None,
-    ) -> Message:
-        message = Message(
-            org_id=self._ctx.org_id,
-            conversation_id=conversation_id,
-            role=role,
-            content=content,
-            citations=citations,
-        )
-        self._db.add(message)
-        await self._db.flush()
-        return message
-
-
-# ---- service ----
 _CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
 
 _SYSTEM_PROMPT = (
@@ -99,6 +71,12 @@ def build_messages(query: str, blocks: list[ContextBlock]) -> list[SeamMessage]:
         SeamMessage(role="system", content=_SYSTEM_PROMPT),
         SeamMessage(role="user", content=user_content),
     ]
+
+
+def format_prompt_for_trace(messages: list[SeamMessage]) -> str:
+    """Pure function — renders the exact message list sent to the LLM seam into the flat
+    text the F42 debug bundle persists as ``final_prompt``."""
+    return "\n\n".join(f"[{m.role}]\n{m.content}" for m in messages)
 
 
 async def generate_answer(messages: list[SeamMessage], *, llm: LLM) -> AsyncIterator[str]:
@@ -252,7 +230,12 @@ class ChatService:
         )
 
         conversation_id, message_id = await self._persist(
-            ctx, req=req, answer=answer, citations=citations
+            ctx,
+            req=req,
+            answer=answer,
+            citations=citations,
+            hits=retrieval_response.results,
+            final_prompt=format_prompt_for_trace(messages),
         )
 
         return ChatResponse(
@@ -273,11 +256,15 @@ class ChatService:
         req: ChatRequest,
         answer: str,
         citations: list[ResolvedCitation],
+        hits: list[ContextBlock],
+        final_prompt: str,
     ) -> tuple[uuid.UUID, uuid.UUID]:
         """Every ``/chat/ask`` call creates a FRESH conversation and its user/assistant
         message pair — no reuse across calls yet. Reuse only earns its place alongside
         multi-turn history-threading (a future feature); building append-to-conversation
-        with no read side yet would be speculative storage (hard rule #8)."""
+        with no read side yet would be speculative storage (hard rule #8). Also writes the
+        F42 debug bundle (``message_traces``) for the assistant message, in the same
+        transaction — the trace dies with its message, never persisted separately."""
         async with db_mod.sessionmaker() as session, session.begin():
             conversation = await ConversationRepository(session, ctx).create(
                 knowledge_base_id=req.notebook_id, user_id=ctx.user_id
@@ -293,6 +280,12 @@ class ChatService:
                 role="assistant",
                 content=answer,
                 citations=[c.model_dump(mode="json") for c in citations],
+            )
+            await TraceRepository(session, ctx).create(
+                message_id=assistant_message.id,
+                hits=[h.model_dump(mode="json") for h in hits],
+                final_prompt=final_prompt,
+                raw_output=answer,
             )
         return conversation.id, assistant_message.id
 
@@ -335,7 +328,12 @@ class ChatService:
             correlation_id=correlation_id,
         )
         conversation_id, message_id = await self._persist(
-            ctx, req=req, answer=answer, citations=citations
+            ctx,
+            req=req,
+            answer=answer,
+            citations=citations,
+            hits=retrieval_response.results,
+            final_prompt=format_prompt_for_trace(messages),
         )
         yield {
             "type": "done",
@@ -348,6 +346,22 @@ class ChatService:
             "citations": [c.model_dump(mode="json") for c in citations],
             "model": llm.model,
         }
+
+    async def get_trace(self, ctx: TenantContext, message_id: uuid.UUID) -> MessageTraceOut:
+        """F42: read-only, admin-gated at the controller (``require_admin``). Returns the
+        trace verbatim from storage — never recomputed."""
+        async with db_mod.sessionmaker() as session:
+            trace = await TraceRepository(session, ctx).get_by_message_id(message_id)
+        if trace is None:
+            raise MessageTraceNotFound("Trace not found")
+        return MessageTraceOut(
+            id=trace.id,
+            message_id=trace.message_id,
+            hits=[ContextBlock.model_validate(h) for h in trace.hits],
+            final_prompt=trace.final_prompt,
+            raw_output=trace.raw_output,
+            created_at=trace.created_at,
+        )
 
 
 chat_service = ChatService()

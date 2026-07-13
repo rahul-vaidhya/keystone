@@ -16,8 +16,8 @@ from fastapi.responses import StreamingResponse
 
 from app.config.logging import get_logger
 from app.middleware.context import TenantContext
-from app.middleware.deps import get_ctx
-from app.models.chat import ChatRequest, ChatResponse
+from app.middleware.deps import get_ctx, require_admin
+from app.models.chat import ChatRequest, ChatResponse, MessageTraceOut
 from app.services.chat import chat_service
 from app.services.seams import LLM, Embedder, get_embedder, get_llm
 
@@ -74,3 +74,11 @@ async def stream_ask(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+async def get_trace(
+    message_id: uuid.UUID,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+) -> MessageTraceOut:
+    """F42 admin debug bundle. Owner/admin only (``require_admin``)."""
+    return await chat_service.get_trace(ctx, message_id)

@@ -12,11 +12,12 @@ import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, ForeignKey, Text, func
+from sqlalchemy import DateTime, ForeignKey, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.config.db import Base
+from app.models.retrieval import ContextBlock
 
 
 class Conversation(Base):
@@ -71,6 +72,36 @@ class Message(Base):
     )
 
 
+class MessageTrace(Base):
+    """F42 admin debug bundle — the persisted answer trace (hits/scores + final prompt +
+    raw output), one row per message, dies with its message. Never recomputed; read-only,
+    admin-gated at the route level."""
+
+    __tablename__ = "message_traces"
+    __table_args__ = (UniqueConstraint("message_id", name="uq_message_traces_message_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("messages.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    hits: Mapped[list] = mapped_column(JSONB, nullable=False)
+    final_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_output: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 # ---- API schemas ----
 
 
@@ -103,3 +134,15 @@ class ChatResponse(BaseModel):
     answer: str
     citations: list[ResolvedCitation]
     model: str
+
+
+class MessageTraceOut(BaseModel):
+    """F42 admin debug bundle response — the persisted trace for one message, verbatim
+    (never recomputed)."""
+
+    id: uuid.UUID
+    message_id: uuid.UUID
+    hits: list[ContextBlock]
+    final_prompt: str
+    raw_output: str
+    created_at: datetime
