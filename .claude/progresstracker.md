@@ -762,8 +762,25 @@ policies; tenant_session un-drift across all 62 call sites + guard test; teeth-h
 isolation test passes as a genuinely restricted role. New test baseline: **191 passed,
 1 skipped.** Next migration: `0016`. **THE BUILDPLAN IS COMPLETE — all phases 0–6.**
 
+**Full-system live validation + swarm re-review DONE (2026-07-14, no code changes).**
+A direct ask: 6-Haiku-agent full re-review (verdict: healthy, zero critical/major —
+minors recorded in memory.md) + live end-to-end accuracy testing with real OpenRouter
+seams: `pdf/kech104.pdf` → READY (36 pages / 39 sections / 110 chunks / 110
+embeddings), retrieval distances cleanly separate in-scope (0.27–0.56) from
+out-of-scope (0.80+), chat 7/7 factually correct with correct citations + exact
+refusals on out-of-scope and hallucination bait, SSE streaming verified, RBAC 13/13
+(role-gated visibility, live untag effect, admin-gated trace, cross-org 404s), suite
+re-confirmed 191 passed / 1 skipped. **One env defect found+fixed: `pypdf` missing
+from the venv** (declared in pyproject; first real parse FAILED with "No module named
+'pypdf'" — installed 6.14.2). Dev DB upgraded 0012 → 0015 (head); the "still at 0014"
+ops note is closed. Embedding-enrichment decision: quality is good, NOT building
+enrichment; revisit parsing granularity first if quality ever lags. See memory.md
+"Full-system live validation" for the full record.
+
 Next action: none from the buildplan. Future work = V2/V3/Enterprise items
-(architecture.md "Postponed") or direct asks. Ops note before next live dev session:
-`alembic upgrade head` on the dev Postgres (still at 0014) + restart stale uvicorn/arq.
+(architecture.md "Postponed") or direct asks. Ops notes: add
+`OPENAI_API_KEY`/`OPENAI_BASE_URL` (+ `*_MODE=real`, `STORAGE_MODE=local`) to
+backend/.env before user-run real-seam dev sessions; `SEAMS_MODE`/`RLS_ENABLED` lines
+in .env are dead and can be deleted; restart stale uvicorn/arq after backend edits.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

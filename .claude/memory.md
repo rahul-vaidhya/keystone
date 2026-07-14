@@ -6,7 +6,76 @@
 
 ---
 
-## F60 Enforced RLS (2026-07-14, this session — COMMITTED `4f09623`)
+## Full-system live validation + Haiku-swarm re-review (2026-07-14, this session — NO code changes)
+
+**A direct ask, not a buildplan item**: full-codebase re-review with a Haiku swarm
+(orchestrator re-grades findings) + live accuracy testing of parsing, embedding,
+retrieval, chat, and RBAC with the real OpenRouter key, ending in a correct-vs-wrong
+report. Zero production code was changed; only env fixes + throwaway scratchpad scripts.
+
+**Swarm (6 Haiku agents: auth/RLS, documents+access-roles, ingestion+seams,
+retrieval+chat+notebooks, frontend, mechanical hard-rules sweep): verdict HEALTHY —
+zero critical/major.** All hard rules pass in every slice (mechanical sweep: 10/10
+PASS, migration chain linear 0001→0015). Accepted minors (recorded, not fixed):
+`UserNotFound` from change_password maps to HTTP 400 where 404 fits better
+(`utils/http.py`; `TargetUserNotFound` already gets 404); `middleware/deps.py` omits
+`refresh()`'s password_hash-null guard (theoretical — nothing nulls it);
+`get_parse_artifact_key` raises bare KeyError when metadata is missing (masked into
+FAILED by the broad stage catch, but error_detail would be cryptic); frontend
+trace cache never evicts (fine for MVP); UsersPage test mocks but doesn't assert
+`setStoredAccessToken`. **Re-graded/rejected Haiku claims** (same lesson as the
+2026-07-13 swarm): "signup deviates from design — org_id should be client-generated"
+misreads the F60 record ("client-side" = app-code-side vs DB server default, which IS
+what's implemented); "embedding upsert untested" is contradicted by the existing
+idempotent re-embed tests.
+
+**Live E2E (in-process ASGI client, real PARSER/EMBEDDER/LLM via OpenRouter,
+STORAGE_MODE=local, no-op job queue, stages driven via the ingestion endpoints —
+the established validation pattern): everything passed.**
+- `pdf/kech104.pdf` → READY: 36 pages, lang=en, 39 sections, 110 chunks,
+  110 embeddings (exact historical baseline). Parse ~6s, embed ~4.5s.
+- Retrieval quality (the user's "are embeddings good enough" ask): in-scope
+  distances 0.27–0.56 vs out-of-scope 0.80+, clean separation; a zero-lexical-overlap
+  paraphrase ("Why do atoms join together to make compounds?") still retrieved the
+  right chunk. **Verdict: embedding quality is good — AI chunk-enrichment NOT needed
+  now.** If quality ever lags on real corp docs, fix parsing granularity FIRST (the
+  bigger lever), not embeddings.
+- Chat: 7/7 factually correct answers with correct citations (octet rule, its 3
+  exceptions incl. examples, N2 bond order=3, VSEPR, covalent bond via SSE — 83 token
+  events + done event with citations); exact refusal string + 0 citations on both the
+  out-of-scope question AND a hallucination bait. Zero hallucinations.
+- RBAC 13/13: member w/o role → 0 hits + exact chat refusal; member with role → 5
+  hits; owner bypass → 5; untag folder → outsider sees hits IMMEDIATELY (live effect),
+  re-tag hides again; trace endpoint owner 200 / member 403; cross-org search + trace
+  both 404. Upload dedupe (200, same id) and PATCH move-document verified en route.
+- Full backend suite re-confirmed after everything: **191 passed, 1 skipped**.
+- Parser structure re-confirmed page-level only (`document.pdf > Metadata > Contents >
+  Page N`) — the known vendor characteristic; answers unaffected.
+
+**THE gotcha of this session: `pypdf` was missing from the venv** — first live parse
+FAILED instantly (`failed_stage=PARSING`, `error_detail="No module named 'pypdf'"`).
+pypdf IS declared in `pyproject.toml` (>=4.0); the venv was stale (deps were installed
+ad hoc historically, e.g. openai). Fixed with `pip install pypdf` (6.14.2). Any fresh
+environment should `pip install -e .` before trusting real-parser runs. Graceful-
+degradation observed while broken: chat correctly refused (no hallucination), all RBAC
+codes still correct — a useful resilience data point.
+
+**Env findings (backend/.env):**
+- Dev DB was actually at migration **0012** (this file's earlier "still at 0014" was
+  itself stale) — upgraded to **0015 (head)** this session; 0013/0014/0015 all applied
+  cleanly to real dev data. That ops note is CLOSED.
+- `OPENAI_API_KEY`/`OPENAI_BASE_URL` are NOT set in .env — the embedder/LLM seams read
+  those, so a user-run uvicorn/arq with `*_MODE=real` would fail until they're added
+  (point them at OpenRouter, same key). The tests injected them as process env only.
+- `SEAMS_MODE=fake` and `RLS_ENABLED=false` in .env are dead settings (SEAMS_MODE was
+  replaced by per-seam modes in F23; RLS_ENABLED is vestigial post-F60) — safe to
+  delete from .env.
+- 3 throwaway `livetest-*` orgs (+2 earlier failed-parse orgs) now live in the dev DB —
+  harmless test data, purge on request.
+
+---
+
+## F60 Enforced RLS (2026-07-14, earlier session — COMMITTED `4f09623`)
 
 **The last buildplan item. Every phase (0–6) is now complete.** Built via the full
 `/architect` → implement → `/review` loop; user delegated all four design decisions
@@ -81,9 +150,10 @@ only). Frontend untouched.
 - `deps.py`/`refresh()` read `payload["org_id"]` unguarded — a validly-SIGNED token
   missing the claim would 500 not 401; unreachable without JWT-secret compromise,
   consistent with the existing unguarded `payload["sub"]` style.
-- **The running dev Postgres is still at head `0014`** — run `alembic upgrade head`
-  (and restart any stale uvicorn/arq — the documented gotcha) before the next live dev
-  session.
+- ~~The running dev Postgres is still at head `0014`~~ **CLOSED 2026-07-14**: it was
+  actually at `0012`; upgraded to `0015 (head)` during the live-validation session
+  (0013/0014/0015 applied cleanly to real dev data). The restart-stale-uvicorn/arq
+  gotcha still applies whenever backend code changes mid-session.
 - Dev runtime still connects as the compose superuser (RLS bypassed in dev) — accepted
   in planning; provisioning a dev `app_user` is an opt-in ops step. CI's teeth suite is
   the parity guarantee.
