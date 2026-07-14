@@ -430,7 +430,7 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       hard rule #8 and judged still one cohesive pipeline). DoD met. 99/99 suite green (1
       pre-existing real-parser test deselected), ruff clean. Independent code-review pass:
       zero violations against hard rules #1/#3/#4/#8.
-- [x] F42 Admin debug bundle (uncommitted) — new `message_traces` table (migration `0014`,
+- [x] F42 Admin debug bundle (`8dfe315`) — new `message_traces` table (migration `0014`,
       schema exactly as designed in architecture.md), persisting per-answer hits+distances,
       the exact final prompt sent to the LLM, and the raw model output — written in the same
       transaction as the conversation+message pair (`ChatService._persist`), for both
@@ -576,7 +576,30 @@ Definition of Done (see `buildplan.md`) is met. Add the commit ref next to compl
       in memory.md "Full-codebase Haiku-swarm review" section.
 
 ## Phase 6 — Security Hardening (after MVP validated, before real customer data)
-- [ ] F60 Enforced RLS (RLS_ENABLED on; app_user/migrator split; FORCE RLS; teeth-having isolation test)
+- [x] F60 Enforced RLS (2026-07-14, committed `4f09623`) — migration `0015` applies
+      `ENABLE`+`FORCE ROW LEVEL SECURITY` + a `tenant_isolation` policy to all 18 tenant
+      tables UNCONDITIONALLY (no flag gate — isolation must never depend on config;
+      `RLS_ENABLED` is vestigial, default true, kept only because migration 0002 imports
+      it), plus the `app_user`/`migrator` role split (migrator BYPASSRLS; app_user
+      NOLOGIN — LOGIN provisioning per-environment) and grants. **The real work was
+      un-drifting the plumbing**: the F02 `tenant_session` design had drifted — nothing
+      called it; all ~62 session-opening call sites used bare `sessionmaker()`, so the
+      GUC the policies key on was never set on any real path. All refactored to
+      `tenant_session(ctx.org_id)`; new `auth_session(email)`/`set_org_guc` power the
+      pre-tenant auth bootstrap (signup pre-generates the org id + sets the GUC before
+      the INSERTs; login switches into the matched org mid-transaction for lockout
+      writes; two SELECT-only `auth_email_lookup` policies scope the cross-org email
+      reads to exactly the named email). New `MIGRATIONS_DATABASE_URL` (app runs as
+      app_user in prod, Alembic as owner). A guard test bans bare `sessionmaker()`
+      outside `config/db.py` so the drift can't return. **Real bug found by the teeth
+      tests**: the policy predicate needs `NULLIF(current_setting(...), '')::uuid` — a
+      committed transaction-local GUC resets to `''` (not NULL) on the pooled connection
+      and `''::uuid` raises. DoD met: `tests/test_rls.py` connects as the restricted
+      `app_user`, omits the app-level filter, and reads zero cross-tenant rows (plus
+      unset-GUC → zero rows, WITH CHECK rejects cross-org writes, and a golden-path
+      HTTP flow driven end-to-end as app_user). 191/191 backend tests (1 skip),
+      ruff clean, fresh-DB chain 0001→0015 applied by the suite. See memory.md
+      "F60 Enforced RLS" for full detail + ops notes (dev DB still at 0014).
 
 ---
 **Demoable milestone reached:** [x] end of Phase 4 (`e0d67df` — F4x SSE + F52 Notebook/Chat UI complete)
@@ -722,7 +745,7 @@ critical/major bugs. The one substantive gap (zero backend tests for `POST
 suite baseline now **180 passed, 1 skipped**; ruff/tsc/vitest/build all clean. Minor
 findings and a swarm-orchestration lesson recorded in memory.md.
 
-**F42 Admin debug bundle DONE (2026-07-13, this session, UNCOMMITTED).** New
+**F42 Admin debug bundle DONE (2026-07-13, committed `8dfe315`; docs `f50200d`).** New
 `message_traces` table (migration `0014`) persists hits/final_prompt/raw_output per
 answer, written in the same transaction as the conversation+message pair, for both
 `/chat/ask` and `/chat/stream`. New admin-gated `GET /chat/messages/{id}/trace`.
@@ -733,6 +756,14 @@ zero logic change. **185/185 backend + 54/54 frontend tests green, ruff/tsc/buil
 clean. This completes Phase 4 — only F60 (RLS) remains on the buildplan.** See
 memory.md "F42 Admin debug bundle" for full detail.
 
-Next action: **F60 RLS hardening** (the only item left on the buildplan).
+**F60 Enforced RLS DONE (2026-07-14, committed `4f09623`).** Migration `0015`: FORCE RLS
++ policies on all 18 tenant tables, app_user/migrator split, auth_email bootstrap
+policies; tenant_session un-drift across all 62 call sites + guard test; teeth-having
+isolation test passes as a genuinely restricted role. New test baseline: **191 passed,
+1 skipped.** Next migration: `0016`. **THE BUILDPLAN IS COMPLETE — all phases 0–6.**
+
+Next action: none from the buildplan. Future work = V2/V3/Enterprise items
+(architecture.md "Postponed") or direct asks. Ops note before next live dev session:
+`alembic upgrade head` on the dev Postgres (still at 0014) + restart stale uvicorn/arq.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".

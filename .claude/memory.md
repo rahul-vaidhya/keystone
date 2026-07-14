@@ -6,7 +6,93 @@
 
 ---
 
-## F42 Admin debug bundle (2026-07-13, this session — UNCOMMITTED)
+## F60 Enforced RLS (2026-07-14, this session — COMMITTED `4f09623`)
+
+**The last buildplan item. Every phase (0–6) is now complete.** Built via the full
+`/architect` → implement → `/review` loop; user delegated all four design decisions
+("decide what's best"), then confirmed the plan.
+
+**The load-bearing homework finding that reshaped the feature:** the F02 design named
+`tenant_session(org_id)` the only sanctioned session opener, but the codebase had
+drifted — NOTHING called it; all ~62 session-opening call sites opened
+`db_mod.sessionmaker()` directly. "Flip the flag" would have done nothing (the GUC the
+policies key on was never set on any real path). F60 = migration + un-drifting the
+plumbing + the auth bootstrap design + teeth tests.
+
+**What was built:**
+1. **Migration `0015`** — UNCONDITIONAL (no flag gate — isolation must never depend on
+   config), idempotent against both 0002 states (roles IF-NOT-EXISTS; DROP POLICY IF
+   EXISTS before CREATE). `ENABLE`+`FORCE RLS` + `tenant_isolation` policy (FOR ALL) on
+   all 18 tenant tables (verified 18/18 against `Base.metadata`, `organizations` keys on
+   `id`, everything else `org_id`), DML+schema+sequence grants to `app_user`, `migrator`
+   gets `BYPASSRLS` (future data-backfill migrations must not be blocked by FORCE).
+   Roles stay NOLOGIN — LOGIN/password provisioning is per-environment, never in a
+   migration. **Every future tenant table must ship its own ENABLE/FORCE + policy +
+   grant in its own migration.**
+2. **`tenant_session` sets the GUC unconditionally** (`config/db.py`); `RLS_ENABLED` is
+   now vestigial — default `true`, kept as a field ONLY because migration 0002 imports
+   it at runtime (deleting it would crash fresh-DB migration runs). Do not gate new
+   code on it. All 54 non-auth call sites scripted-replaced to
+   `tenant_session(ctx.org_id)` (AST-verified every enclosing function binds `ctx`),
+   8 auth sites + `middleware/deps.py` by hand. `current_user`/`refresh` scope their
+   user lookup by the token's `org_id` claim (mismatched claim → zero rows → 401,
+   plus an explicit `user.org_id != org_id` check for RLS-bypassing dev connections).
+   Dead `AuthService.me` (zero callers — the route maps `current_user` directly) deleted.
+3. **Pre-tenant auth bootstrap** — new `auth_session(email)` + `set_org_guc(session,
+   org_id)` in `config/db.py`. A second transaction-local GUC `app.auth_email` +
+   two permissive SELECT-only `auth_email_lookup` policies (on `users`: `email =
+   current_setting('app.auth_email', true)`; on `organizations`: id IN the subquery
+   over those users) let signup's global email check and login's cross-org candidate
+   search read exactly the named email's rows and their orgs, nothing else. **Signup
+   pre-generates the org id client-side** (overriding the column's server default) and
+   switches the GUC to it BEFORE the org+owner INSERTs (WITH CHECK). **Login switches
+   into the matched org mid-transaction** via `set_org_guc` so the lockout-counter
+   writes run under the ordinary tenant policy (auth_email_lookup is SELECT-only).
+4. **`MIGRATIONS_DATABASE_URL`** (fallback `DATABASE_URL`): prod runs the app as
+   `app_user`, Alembic as the owner. `conftest` patches BOTH URLs so a developer's
+   `.env` can never leak migrations into a test run. Dev/test keep one superuser URL —
+   superusers bypass RLS even under FORCE, which is why the whole pre-existing suite
+   passed unmodified.
+5. **`tests/test_rls.py`** — the teeth-having DoD test as a genuinely restricted role
+   (fixture ALTER-ROLEs `app_user` to LOGIN inside the Testcontainers DB, rebinds
+   `db_mod` to an app_user engine): filter-omitted raw SELECTs see only the GUC's org;
+   unset GUC reads ZERO rows; WITH CHECK rejects a cross-org INSERT; the auth_email
+   policy is exactly one email wide. Plus a golden-path HTTP flow (signup → login incl.
+   wrong-password lockout write → me → invite → folders → cross-org 404) driven
+   end-to-end AS app_user. Plus a **guard test** banning bare `sessionmaker()` in
+   `app/` outside `config/db.py` — the drift this feature closed can't silently return.
+
+**Real bug found by the tests, not by review — THE gotcha of this feature:** the plan's
+policy predicate `current_setting('app.org_id', true)::uuid` crashes
+(`InvalidTextRepresentationError: invalid input syntax for type uuid: ""`) on any pooled
+connection where a PREVIOUS transaction had set_config'd the GUC: at transaction end a
+transaction-local GUC resets to `''` (empty string, NOT missing/NULL), and `''::uuid`
+raises. Fix: `NULLIF(current_setting('app.org_id', true), '')::uuid` — turns both
+"never set" (NULL) and "reset" ('') into NULL → zero rows, fail-closed. (0002's old
+un-NULLIF'd policies are superseded — 0015 drops and recreates them.)
+
+**Verification:** 191 passed, 1 skipped (185 baseline + 5 new RLS + net +1
+tenant-session: `test_tenant_session.py` rewritten to the always-set contract, was
+asserting the old flag-gated behavior) against a fresh Testcontainers Postgres running
+the full 0001→0015 chain. ruff check/format clean (3 standing `scripts/` findings
+only). Frontend untouched.
+
+**Known minor/ops notes (from `/review`, accepted, not fixed):**
+- `deps.py`/`refresh()` read `payload["org_id"]` unguarded — a validly-SIGNED token
+  missing the claim would 500 not 401; unreachable without JWT-secret compromise,
+  consistent with the existing unguarded `payload["sub"]` style.
+- **The running dev Postgres is still at head `0014`** — run `alembic upgrade head`
+  (and restart any stale uvicorn/arq — the documented gotcha) before the next live dev
+  session.
+- Dev runtime still connects as the compose superuser (RLS bypassed in dev) — accepted
+  in planning; provisioning a dev `app_user` is an opt-in ops step. CI's teeth suite is
+  the parity guarantee.
+
+**Next migration is now `0016`.**
+
+---
+
+## F42 Admin debug bundle (2026-07-13 — COMMITTED `8dfe315`, docs `f50200d`)
 
 Built via the full `/architect` → implement → `/review` loop, in buildplan order (Phase 4's
 last item). New `message_traces` table (migration `0014`, schema exactly as designed in
@@ -52,7 +138,8 @@ random message_id, 404 cross-org), migration `0014` applied cleanly via the real
 Testcontainers run. Frontend: 54 tests (52 prior + 2 new: Debug hidden for a member,
 Debug shown + fetches for an admin). ruff check/format clean (only the 3 standing
 `scripts/inspect_document.py` findings), `tsc -b` clean, `vite build` clean.
-**All work UNCOMMITTED** — staged in the working tree, not yet committed.
+**Committed as `8dfe315`** (feature) + `f50200d` (docs) — confirmed via `git log` 2026-07-13
+(a prior "UNCOMMITTED" note here was stale; same class of staleness as before).
 
 **This closes Phase 4 entirely** (F40, F4x, F41, F42 all done). Only F60 (enforced RLS,
 Phase 6) remains on the buildplan.
@@ -667,7 +754,7 @@ about heading recovery — corrected a stale claim in `progresstracker.md`'s F23
 
 ## Current phase / what is done
 
-**Phase 0–3 COMPLETE. Phase 4 COMPLETE. Phase 5 mostly done.**
+**ALL PHASES (0–6) COMPLETE. The buildplan is finished.**
 
 | Feature | Commit | Notes |
 |---------|--------|-------|
@@ -690,9 +777,10 @@ about heading recovery — corrected a stale claim in `progresstracker.md`'s F23
 | F41 Citations | migration 0009 | `parse_citation_markers` → `resolve_citations`; fresh chunk read (provenance round-trip); conversation+message persisted |
 | F4x SSE streaming | `e0d67df` | `POST /chat/stream`; `ChatService.stream_ask` async generator; no mid-stream retry |
 | F52 Notebook + Chat UI | `e0d67df` | NotebookList/NotebookPage/ChatPanel/CitationPanel; fetch+ReadableStream SSE; 30/30 frontend tests |
-| F42 Admin debug bundle | uncommitted | `message_traces` (migration 0014); `GET /chat/messages/{id}/trace` admin-gated; `services/chat/` split into repository.py+service.py |
+| F42 Admin debug bundle | `8dfe315` | `message_traces` (migration 0014); `GET /chat/messages/{id}/trace` admin-gated; `services/chat/` split into repository.py+service.py |
+| F60 Enforced RLS | `4f09623` | Migration 0015: FORCE RLS + policies on all 18 tables, app_user/migrator split; tenant_session un-drift (62 call sites); auth_email bootstrap policies; teeth tests |
 
-**Remaining: F60 (RLS) only — Phase 4 is now fully complete.**
+**Nothing remains on the buildplan. Future work is V2/V3/Enterprise (see architecture.md) or direct asks.**
 
 ---
 
@@ -711,6 +799,8 @@ about heading recovery — corrected a stale claim in `progresstracker.md`'s F23
 - **F24 pipeline composed at `app/controllers/documents.py`** (was `documents/router.py` pre-MVC-refactor), not `app.services.documents`, to avoid a circular import (`app.services.ingestion` already imports `app.services.documents`).
 - **Deterministic arq `job_id` (`f"ingestion:{stage}:{document_id}"`)** is the REAL concurrency guarantee against double-enqueue under redelivery — a before/after DB status check alone is NOT sufficient (two concurrent deliveries can both read the same "before" status in separate transactions before either writes).
 - **F41 citations persist every call as a fresh Conversation + user Message + assistant Message** — no conversation reuse/multi-turn threading until a future feature builds history-threading alongside reuse (they must arrive together).
+- **RLS is enforced UNCONDITIONALLY (F60, migration 0015)** — never gate it on config. `RLS_ENABLED` is vestigial (kept only because migration 0002 imports it at runtime; deleting the field crashes fresh-DB migration runs). `tenant_session(ctx.org_id)` / `auth_session(email)` in `config/db.py` are the ONLY sanctioned session openers — a guard test in `tests/test_rls.py` bans bare `sessionmaker()` in `app/` outside `config/db.py`. Every FUTURE tenant table ships its own ENABLE/FORCE + `tenant_isolation` policy + `app_user` grant in its own migration.
+- **RLS policy predicate must be `NULLIF(current_setting('app.org_id', true), '')::uuid`** — the NULLIF is load-bearing (see F60 gotcha below).
 - **`resolve_allowed_documents(ctx)`** is the ONLY hook where V2 groups/grants permission logic slots in — MVP returns all org docs.
 - **Chat (`app/services/chat/` + `app/models/chat.py`):** stateless was F40; F41 added persistence (migration 0009); F42 added the `message_traces` debug bundle (migration 0014) and split `services/chat.py` into `services/chat/repository.py` (Conversation/Message/MessageTrace repos) + `service.py` (pipeline logic) once it crossed the package-layout threshold — see "F42 Admin debug bundle" above for why this is the reference example for a repository/service-axis split (vs. `documents/`'s by-subdomain split or `ingestion/`'s by-pipeline-stage split).
 
@@ -720,6 +810,8 @@ about heading recovery — corrected a stale claim in `progresstracker.md`'s F23
 
 - **Testcontainers + Docker Desktop/Windows:** Ryuk reaper flakes → `TESTCONTAINERS_RYUK_DISABLED=true` in conftest + CI. Docker daemon needs ~30–60s before serving after launch.
 - **`SET LOCAL app.org_id = :bind` is INVALID Postgres.** Use `SELECT set_config('app.org_id', :org, true)` (third arg `is_local => true`, accepts bind params). `SET LOCAL` takes a literal token only.
+- **A committed transaction-local GUC resets to `''` (empty string), NOT to missing/NULL** — on that pooled connection, `current_setting('app.org_id', true)` returns `''` forever after, and a bare `''::uuid` cast in an RLS policy RAISES (`invalid input syntax for type uuid: ""`) instead of matching nothing. Every GUC-casting policy needs `NULLIF(current_setting(...), '')::uuid`. Found by the F60 teeth tests on the second transaction of a pooled connection — invisible on a fresh connection.
+- **Superusers bypass RLS even under `FORCE ROW LEVEL SECURITY`** — that's why the whole ordinary test suite (Testcontainers superuser `veratas`) is unaffected by migration 0015, and why teeth tests MUST connect as the restricted `app_user` (the `app_user_engine` fixture in `tests/test_rls.py` ALTER-ROLEs it to LOGIN per-container). Also means dev-as-superuser exercises zero RLS — don't mistake a working dev run for RLS proof.
 - **`onupdate=func.now()` + immediate `model_validate` raises `MissingGreenlet`** inside an async session. Set `updated_at = datetime.now(UTC)` explicitly in the repository `update` method instead.
 - **Shared Testcontainers DB across test files:** `pg_url` is session-scoped. Each test file MUST use a unique email prefix (e.g. `docs-`, `kg-`) or it collides with other files' signups.
 - **Object-store test fixture must be a shared instance, not a fresh lambda.** `app.dependency_overrides[get_object_store] = lambda: _InMemoryObjectStore()` creates a NEW empty store per request. Hoist the instance: `store = _InMemoryObjectStore(); overrides[...] = lambda: store`.
@@ -758,7 +850,11 @@ about heading recovery — corrected a stale claim in `progresstracker.md`'s F23
 | messages | 0009 | id, org_id, conversation_id, role, content, citations jsonb, created_at |
 | message_traces | 0014 | id, org_id, message_id (unique), hits jsonb, final_prompt, raw_output, created_at |
 
-**Next migration: 0015.**
+Migration `0015` (F60) adds no tables — it applies `ENABLE`+`FORCE RLS` + `tenant_isolation`
+policies to all 18 tables above, the two `auth_email_lookup` bootstrap policies
+(users/organizations), and the `app_user`/`migrator` role split + grants.
+
+**Next migration: 0016.**
 
 ---
 
