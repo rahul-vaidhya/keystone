@@ -265,7 +265,7 @@ class ChatService:
         with no read side yet would be speculative storage (hard rule #8). Also writes the
         F42 debug bundle (``message_traces``) for the assistant message, in the same
         transaction — the trace dies with its message, never persisted separately."""
-        async with db_mod.sessionmaker() as session, session.begin():
+        async with db_mod.tenant_session(ctx.org_id) as session:
             conversation = await ConversationRepository(session, ctx).create(
                 knowledge_base_id=req.notebook_id, user_id=ctx.user_id
             )
@@ -350,7 +350,7 @@ class ChatService:
     async def get_trace(self, ctx: TenantContext, message_id: uuid.UUID) -> MessageTraceOut:
         """F42: read-only, admin-gated at the controller (``require_admin``). Returns the
         trace verbatim from storage — never recomputed."""
-        async with db_mod.sessionmaker() as session:
+        async with db_mod.tenant_session(ctx.org_id) as session:
             trace = await TraceRepository(session, ctx).get_by_message_id(message_id)
         if trace is None:
             raise MessageTraceNotFound("Trace not found")

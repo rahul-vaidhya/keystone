@@ -29,15 +29,24 @@ class Settings(BaseSettings):
     REFRESH_COOKIE_NAME: str = "veratas_refresh"
 
     # --- Postgres (async driver) ---
+    # DATABASE_URL is what the RUNNING APP (API + arq worker) connects with — in an
+    # RLS-enforced deployment that's the restricted `app_user` role. Migrations need the
+    # privileged table-owning role (`migrator`/owner), so Alembic prefers
+    # MIGRATIONS_DATABASE_URL when set and falls back to DATABASE_URL (dev/test use one
+    # superuser URL for both; superusers bypass RLS even under FORCE).
     DATABASE_URL: str = "postgresql+asyncpg://veratas:veratas@localhost:5432/veratas"
+    MIGRATIONS_DATABASE_URL: str | None = None
 
     # --- Redis (arq queue) ---
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # --- Tenancy ---
-    # Enforced RLS is DESIGNED now and switched on in Phase 6. App-level org_id scoping
-    # is ALWAYS on regardless of this flag. Keep OFF in dev/test.
-    RLS_ENABLED: bool = False
+    # F60 (Phase 6) made RLS enforcement UNCONDITIONAL: migration 0015 applies policies +
+    # FORCE RLS regardless of any flag, and tenant_session always sets the app.org_id
+    # GUC. This flag is now vestigial — it survives only because migration 0002's
+    # (historically flag-gated, superseded-by-0015) body imports it at runtime; deleting
+    # the field would crash every fresh-DB migration run. Do not gate new code on it.
+    RLS_ENABLED: bool = True
 
     # --- Seams ---
     # fake | real, ONE SWITCH PER SEAM (decided F23 — was a single SEAMS_MODE before).

@@ -121,7 +121,7 @@ def _to_folder_out(folder: Folder, tag_ids: list[uuid.UUID]) -> FolderOut:
 
 
 async def create_folder(ctx: TenantContext, req: FolderCreate) -> FolderOut:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = FolderRepository(session, ctx)
         path = req.name
         if req.parent_id is not None:
@@ -153,7 +153,7 @@ async def list_folders(ctx: TenantContext) -> list[FolderOut]:
     # same precedent as documents.py's upload_document (see memory.md).
     from app.services.documents.tags import FolderTagRepository
 
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         folders = await FolderRepository(session, ctx).list()
         tag_ids_by_folder = await FolderTagRepository(session, ctx).list_tag_ids_by_folders(
             [f.id for f in folders]
@@ -164,7 +164,7 @@ async def list_folders(ctx: TenantContext) -> list[FolderOut]:
 async def get_folder(ctx: TenantContext, folder_id: uuid.UUID) -> FolderOut:
     from app.services.documents.tags import FolderTagRepository
 
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         folder = await FolderRepository(session, ctx).get_by_id(folder_id)
         if folder is None:
             raise FolderNotFound("Folder not found")
@@ -211,7 +211,7 @@ async def _relocate_folder(
 ) -> FolderOut:
     from app.services.documents.tags import FolderTagRepository
 
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = FolderRepository(session, ctx)
         folder = await repo.get_by_id(folder_id)
         if folder is None:
@@ -272,7 +272,7 @@ DeleteMode = Literal["block", "cascade", "reflow"]
 async def delete_folder(
     ctx: TenantContext, folder_id: uuid.UUID, *, mode: DeleteMode = "block"
 ) -> None:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = FolderRepository(session, ctx)
         folder = await repo.get_by_id(folder_id)
         if folder is None:

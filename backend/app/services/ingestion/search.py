@@ -21,7 +21,7 @@ async def search_chunks(
     k: int,
 ) -> list[ChunkHit]:
     """All SQL lives in ``EmbeddingRepository.search_chunks``; this is pure orchestration."""
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         return await EmbeddingRepository(session, ctx).search_chunks(
             query_vector, document_ids, model, k
         )
@@ -31,7 +31,7 @@ async def get_chunks(ctx: TenantContext, chunk_ids: list[uuid.UUID]) -> list[Chu
     """F41 citation resolution's entry point — re-fetches chunk rows by id, org-scoped
     via ``ChunkRepository.get_by_ids``, so a caller (``chat.service``) can rebuild a
     citation from the source-of-truth row rather than trusting an earlier in-request copy."""
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         chunks = await ChunkRepository(session, ctx).get_by_ids(chunk_ids)
     return [
         ChunkRecord(

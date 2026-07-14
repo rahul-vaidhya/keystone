@@ -1,9 +1,12 @@
-"""F02 — the ``tenant_session`` GUC plumbing, against a real Postgres.
+"""The ``tenant_session``/``auth_session`` GUC plumbing, against a real Postgres.
 
-Proves the flag semantics that the RLS backstop (Phase 6) will rely on:
-- ``RLS_ENABLED`` OFF (MVP default): the ``app.org_id`` GUC is NEVER set.
-- ``RLS_ENABLED`` ON: it is set inside the transaction via ``SET LOCAL`` (which Postgres
-  scopes to the transaction, so it cannot leak across a pooled-connection checkout).
+F02 originally proved flag-gated semantics (GUC set only when ``RLS_ENABLED``). F60 made
+the GUC unconditional — RLS enforcement must never depend on config — so this now proves:
+- ``tenant_session`` ALWAYS sets ``app.org_id`` inside its transaction;
+- the setting is transaction-local: a following transaction on the same (pooled) engine
+  reads it back as NULL or '' — never a leaked org_id (the RLS policies' NULLIF guard
+  turns both into zero rows);
+- ``auth_session`` does the same for ``app.auth_email``.
 
 Skipped when Docker is unavailable (see conftest).
 """
@@ -12,34 +15,44 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
 from sqlalchemy import TextClause, text
 
-from app.config.db import tenant_session
-from app.config.settings import settings as app_settings
+from app.config.db import auth_session, tenant_session
 
 
-def _read_guc() -> TextClause:
+def _read_guc(name: str = "app.org_id") -> TextClause:
     # missing_ok=true → unset GUC returns NULL rather than erroring.
-    return text("SELECT current_setting('app.org_id', true)")
+    return text(f"SELECT current_setting('{name}', true)")
 
 
-async def test_guc_unset_when_flag_off(tenant_engine: None) -> None:
+async def test_guc_always_set_inside_transaction(tenant_engine: None) -> None:
     org_id = uuid.uuid4()
-    assert app_settings.RLS_ENABLED is False  # MVP default
     async with tenant_session(org_id) as session:
         got = await session.scalar(_read_guc())
-    # Unset GUC reads back as NULL or empty string — never the org_id.
+    assert got == str(org_id)  # set transaction-locally, unconditionally (F60)
+
+
+async def test_guc_is_transaction_scoped_never_leaks(tenant_engine: None) -> None:
+    org_id = uuid.uuid4()
+    async with tenant_session(org_id) as session:
+        assert await session.scalar(_read_guc()) == str(org_id)
+
+    # A later transaction (potentially the same pooled connection) must never inherit
+    # the previous tenant: the GUC reads back NULL or '' — both fail-closed under the
+    # policies' NULLIF(current_setting(...), '')::uuid guard.
+    async with tenant_session(uuid.uuid4()) as session:
+        pass
+    from app.config import db as db_mod
+
+    async with db_mod.sessionmaker() as session:
+        got = await session.scalar(_read_guc())
     assert not got
 
 
-async def test_guc_set_and_transaction_scoped_when_flag_on(
-    tenant_engine: None,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(app_settings, "RLS_ENABLED", True)
-    org_id = uuid.uuid4()
-
-    async with tenant_session(org_id) as session:
-        got = await session.scalar(_read_guc())
-    assert got == str(org_id)  # SET LOCAL applied inside the transaction
+async def test_auth_session_sets_auth_email_guc(tenant_engine: None) -> None:
+    async with auth_session("guc-probe@test.com") as session:
+        got = await session.scalar(_read_guc("app.auth_email"))
+        assert got == "guc-probe@test.com"
+        # And the tenant GUC stays unset — the bootstrap session is pre-tenant.
+        org_guc = await session.scalar(_read_guc())
+        assert not org_guc

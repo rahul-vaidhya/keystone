@@ -129,26 +129,26 @@ current single-MVC paths.
    **No business logic in `routes/<domain>.py` or `controllers/<domain>.py`.** Routes wire paths; controllers
    validate requests and call services; services hold logic; repositories hold SQL.
 3. **Every query is scoped by `org_id`.** A `TenantContext` carries it; the base repository (`BaseRepository` in
-   `app/services/base.py`) applies the app-level `WHERE org_id = :org` filter on **every** query, **always**
-   (independent of any flag). Postgres **RLS** is the backstop — but it is **deferred to Phase 6 (Security Hardening),
-   gated by `RLS_ENABLED` (default OFF in dev/test)**. The schema, policies, and role split are designed now;
-   the teeth are switched on before real customer data. App-level scoping is the MVP guarantee.
+   `app/services/base.py`) applies the app-level `WHERE org_id = :org` filter on **every** query, **always**.
+   Postgres **RLS** is the always-on backstop since F60 (migration `0015`): policies + `FORCE ROW LEVEL
+   SECURITY` on every tenant table, unconditionally — enforcement does not depend on any flag (`RLS_ENABLED`
+   is vestigial; it survives as a settings field only because migration 0002 imports it at runtime).
+   App-level scoping is the first line; RLS holds even when that filter is forgotten.
 4. External services are reached **only through a seam** (`Parser`, `Embedder`, `LLM`). Tests use fakes.
    Seams live in `app/services/seams/` (protocols, fakes, and real adapters).
 
-### Tenancy plumbing (built NOW; enforcement gated)
+### Tenancy plumbing (ENFORCED since F60 — migration `0015`)
 - **Every tenant-scoped table carries `org_id`** — including join tables (`document_tags`,
   `knowledge_base_documents`) and child tables (`messages`, `message_traces`). No "scope via parent
   join" exceptions; the base repository can always filter directly.
-- **One transaction-scoped, HTTP-agnostic session helper, used by BOTH requests AND workers:**
+- **One transaction-scoped, HTTP-agnostic session helper, used by BOTH requests AND workers —
+  and since F60 it is the ONLY sanctioned way to open a session** (a guard test in
+  `tests/test_rls.py` fails the build on any bare `sessionmaker()` outside `config/db.py`):
   ```python
   @asynccontextmanager
   async def tenant_session(org_id):
       async with sessionmaker() as s, s.begin():
-          if settings.RLS_ENABLED:                       # OFF in MVP dev/test
-              await s.execute(
-                  text("SELECT set_config('app.org_id', :org, true)"), {"org": str(org_id)}
-              )
+          await set_org_guc(s, org_id)      # ALWAYS — enforcement never depends on a flag
           yield s
   ```
   - Use `set_config('app.org_id', :org, true)`, **not** `SET LOCAL app.org_id = :org` — Postgres
@@ -159,16 +159,30 @@ current single-MVC paths.
     cannot leak one request's `org_id` into the next.
   - The **arq worker calls the SAME helper** with `org_id` from the job payload — closing the
     background-job tenancy gap (workers have no HTTP request, but they have this helper).
-- **Repositories ALWAYS apply `WHERE org_id = :org`** regardless of `RLS_ENABLED` (functional
-  correctness, near-zero friction).
-- **Designed now, enabled in Phase 6 (do NOT turn on yet):** the RLS policies, `FORCE ROW LEVEL
-  SECURITY`, and the DB-role split — a restricted non-owner **`app_user`** role (subject to RLS) vs a
-  privileged **`migrator`** role (runs Alembic, owns tables). Migrations/Testcontainers run as
-  `migrator` (RLS bypassed) today; Phase 6 switches the app to connect as `app_user`.
-- **RLS predicate notes (for the Phase 6 migration):**
-  - `organizations` keys on `id = current_setting('app.org_id', true)::uuid` (it has no `org_id`).
-  - `users` and all other tenant tables use the normal `org_id = current_setting('app.org_id', true)::uuid`.
-  - The `true` (missing_ok) form means an **unset GUC → NULL → zero rows** (fail-closed).
+- **Repositories ALWAYS apply `WHERE org_id = :org`** on top of RLS (belt and suspenders).
+- **The DB-role split (live since F60):** the app (API + arq worker) connects as the restricted
+  **`app_user`** role (subject to RLS, `NOLOGIN` in the migration — LOGIN/password provisioning is
+  per-environment); Alembic runs as the privileged table-owning role via `MIGRATIONS_DATABASE_URL`
+  (falls back to `DATABASE_URL`; dev/test use one superuser URL for both — superusers bypass RLS
+  even under FORCE, which is why the ordinary test suite is unaffected). `migrator` has `BYPASSRLS`
+  so future data-backfill migrations aren't blocked by FORCE RLS.
+- **RLS predicate notes (as shipped in migration `0015`):**
+  - `organizations` keys on `id`; `users` and all other tenant tables key on `org_id`.
+  - The predicate is `NULLIF(current_setting('app.org_id', true), '')::uuid` — the NULLIF is
+    load-bearing: once any transaction on a pooled connection has set_config'd the GUC, it resets
+    to `''` (empty string, NOT missing) at transaction end, and a bare `''::uuid` cast RAISES
+    instead of matching nothing. NULLIF turns both "never set" (NULL) and "reset" (`''`) into
+    NULL → **zero rows (fail-closed)**.
+  - **Pre-tenant auth bootstrap:** signup/login can't run under an org GUC (no org known yet), so
+    `auth_session(email)` (`config/db.py`) sets a second transaction-local GUC, `app.auth_email`,
+    and two permissive SELECT-only policies (`auth_email_lookup` on `users` and `organizations`)
+    widen reads to exactly the named email's user rows and their orgs — nothing else. Login
+    switches INTO the matched org's scope mid-transaction via `set_org_guc` before its
+    lockout-counter writes; signup pre-generates the new org's id client-side and sets the GUC
+    before the org+owner INSERTs (so `WITH CHECK` passes).
+  - **Every future tenant-scoped table must ship its own `ENABLE`/`FORCE` + `tenant_isolation`
+    policy + `app_user` grant in its own migration** — 0015 only covers the 18 tables that existed
+    at F60.
 
 ## The 3 seams (and only these)
 ```python
@@ -419,7 +433,7 @@ relationships(id uuid pk, org_id fk, subject_entity_id fk, predicate text,
 | Concern | Build now | Postponed (designed-for) |
 |---|---|---|
 | Tenancy (app-level) | `org_id` on every table + always-on app filter + `tenant_session` plumbing | — |
-| Tenancy (enforced RLS) | policies + role split WRITTEN, flag OFF | **Phase 6:** `RLS_ENABLED` on, `app_user`/`migrator` split, `FORCE RLS` |
+| Tenancy (enforced RLS) | **DONE (F60, migration `0015`):** unconditional policies + `FORCE RLS` on all 18 tables, `app_user`/`migrator` split, teeth-having isolation test | — |
 | Tenancy (isolation model) | shared DB, `org_id` rows | per-tenant DB/schema (Enterprise) |
 | Permissions | Access Roles: tag-granted resource access (2026-07-12) | per-user grants, connectors, browsing-endpoint gating (V2) |
 | Folders/tags | full nav tree + tags | connector-sourced folders |

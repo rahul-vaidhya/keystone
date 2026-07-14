@@ -73,8 +73,12 @@ def pg_url() -> Iterator[str]:
     # Apply the real baseline migration against the container (F01 DoD).
     from app.config.settings import settings as app_settings
 
+    # Patch BOTH URLs: migrations/env.py prefers MIGRATIONS_DATABASE_URL when set, so a
+    # developer's .env pointing it at the dev DB must never leak into a test run.
     original = app_settings.DATABASE_URL
+    original_migrations = app_settings.MIGRATIONS_DATABASE_URL
     app_settings.DATABASE_URL = url
+    app_settings.MIGRATIONS_DATABASE_URL = url
     cfg = Config(str(BACKEND / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND / "migrations"))
     try:
@@ -82,6 +86,7 @@ def pg_url() -> Iterator[str]:
         yield url
     finally:
         app_settings.DATABASE_URL = original
+        app_settings.MIGRATIONS_DATABASE_URL = original_migrations
         container.stop()
 
 

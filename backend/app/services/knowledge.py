@@ -117,19 +117,19 @@ class NotebookDocumentRepository(BaseRepository[NotebookDocument]):
 
 class KnowledgeService:
     async def create_notebook(self, ctx: TenantContext, req: NotebookCreate) -> NotebookOut:
-        async with db_mod.sessionmaker() as session, session.begin():
+        async with db_mod.tenant_session(ctx.org_id) as session:
             notebook = await NotebookRepository(session, ctx).create(
                 name=req.name, description=req.description, created_by=ctx.user_id
             )
         return NotebookOut.model_validate(notebook)
 
     async def list_notebooks(self, ctx: TenantContext) -> list[NotebookOut]:
-        async with db_mod.sessionmaker() as session:
+        async with db_mod.tenant_session(ctx.org_id) as session:
             notebooks = await NotebookRepository(session, ctx).list()
         return [NotebookOut.model_validate(n) for n in notebooks]
 
     async def get_notebook(self, ctx: TenantContext, notebook_id: uuid.UUID) -> NotebookOut:
-        async with db_mod.sessionmaker() as session:
+        async with db_mod.tenant_session(ctx.org_id) as session:
             notebook = await NotebookRepository(session, ctx).get_by_id(notebook_id)
         if notebook is None:
             raise NotebookNotFound("Notebook not found")
@@ -138,7 +138,7 @@ class KnowledgeService:
     async def update_notebook(
         self, ctx: TenantContext, notebook_id: uuid.UUID, req: NotebookUpdate
     ) -> NotebookOut:
-        async with db_mod.sessionmaker() as session, session.begin():
+        async with db_mod.tenant_session(ctx.org_id) as session:
             repo = NotebookRepository(session, ctx)
             notebook = await repo.get_by_id(notebook_id)
             if notebook is None:
@@ -148,7 +148,7 @@ class KnowledgeService:
         return out
 
     async def delete_notebook(self, ctx: TenantContext, notebook_id: uuid.UUID) -> None:
-        async with db_mod.sessionmaker() as session, session.begin():
+        async with db_mod.tenant_session(ctx.org_id) as session:
             repo = NotebookRepository(session, ctx)
             notebook = await repo.get_by_id(notebook_id)
             if notebook is None:
@@ -162,7 +162,7 @@ class KnowledgeService:
         org (via ``documents_service.get_document``, which raises ``DocumentNotFound`` if not
         — re-raised as-is since both modules' "not found" exceptions map to 404 the same way)
         before attaching."""
-        async with db_mod.sessionmaker() as session, session.begin():
+        async with db_mod.tenant_session(ctx.org_id) as session:
             notebook = await NotebookRepository(session, ctx).get_by_id(notebook_id)
             if notebook is None:
                 raise NotebookNotFound("Notebook not found")
@@ -172,13 +172,13 @@ class KnowledgeService:
     async def detach_document(
         self, ctx: TenantContext, notebook_id: uuid.UUID, document_id: uuid.UUID
     ) -> None:
-        async with db_mod.sessionmaker() as session, session.begin():
+        async with db_mod.tenant_session(ctx.org_id) as session:
             await NotebookDocumentRepository(session, ctx).detach(notebook_id, document_id)
 
     async def list_notebook_documents(
         self, ctx: TenantContext, notebook_id: uuid.UUID
     ) -> list[DocumentOut]:
-        async with db_mod.sessionmaker() as session:
+        async with db_mod.tenant_session(ctx.org_id) as session:
             notebook = await NotebookRepository(session, ctx).get_by_id(notebook_id)
             if notebook is None:
                 raise NotebookNotFound("Notebook not found")

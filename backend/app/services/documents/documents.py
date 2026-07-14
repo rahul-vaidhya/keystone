@@ -180,7 +180,7 @@ async def list_documents(
     folder_id: uuid.UUID | None = None,
     tag_id: uuid.UUID | None = None,
 ) -> list[DocumentOut]:
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         docs = await DocumentRepository(session, ctx).list(folder_id=folder_id, tag_id=tag_id)
     return [DocumentOut.model_validate(d) for d in docs]
 
@@ -200,7 +200,7 @@ async def upload_document(
     from app.services.documents.folders import FolderRepository
 
     checksum = hashlib.sha256(data).hexdigest()
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = DocumentRepository(session, ctx)
         if folder_id is not None:
             if await FolderRepository(session, ctx).get_by_id(folder_id) is None:
@@ -229,7 +229,7 @@ async def begin_parsing(ctx: TenantContext, document_id: uuid.UUID) -> DocumentO
     rule) to claim a document for the parsing stage. Returns the document unchanged, with
     whatever status it already had, when parsing isn't eligible to (re)start — the caller
     checks the returned status to decide whether to proceed."""
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         document = await DocumentRepository(session, ctx).begin_parsing(document_id)
         if document is None:
             raise DocumentNotFound("Document not found")
@@ -245,7 +245,7 @@ async def complete_parsing(
     page_count: int,
     artifact_key: str,
 ) -> DocumentOut:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = DocumentRepository(session, ctx)
         document = await repo.get_by_id(document_id)
         if document is None:
@@ -260,7 +260,7 @@ async def complete_parsing(
 async def fail_stage(
     ctx: TenantContext, document_id: uuid.UUID, *, failed_stage: str, error_detail: str
 ) -> DocumentOut:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = DocumentRepository(session, ctx)
         document = await repo.get_by_id(document_id)
         if document is None:
@@ -274,7 +274,7 @@ async def begin_structuring(ctx: TenantContext, document_id: uuid.UUID) -> Docum
     """Called by ``ingestion.service`` (never the repository directly — module boundary
     rule) to claim a document for the structuring stage. Returns the document unchanged
     when structuring isn't eligible to (re)start — the caller checks the returned status."""
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         document = await DocumentRepository(session, ctx).begin_structuring(document_id)
         if document is None:
             raise DocumentNotFound("Document not found")
@@ -283,7 +283,7 @@ async def begin_structuring(ctx: TenantContext, document_id: uuid.UUID) -> Docum
 
 
 async def complete_structuring(ctx: TenantContext, document_id: uuid.UUID) -> DocumentOut:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = DocumentRepository(session, ctx)
         document = await repo.get_by_id(document_id)
         if document is None:
@@ -297,7 +297,7 @@ async def begin_embedding(ctx: TenantContext, document_id: uuid.UUID) -> Documen
     """Called by ``ingestion.service`` (never the repository directly — module boundary
     rule) to claim a document for the embedding stage. Returns the document unchanged
     when embedding isn't eligible to (re)start — the caller checks the returned status."""
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         document = await DocumentRepository(session, ctx).begin_embedding(document_id)
         if document is None:
             raise DocumentNotFound("Document not found")
@@ -306,7 +306,7 @@ async def begin_embedding(ctx: TenantContext, document_id: uuid.UUID) -> Documen
 
 
 async def complete_embedding(ctx: TenantContext, document_id: uuid.UUID) -> DocumentOut:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = DocumentRepository(session, ctx)
         document = await repo.get_by_id(document_id)
         if document is None:
@@ -322,7 +322,7 @@ async def get_document(ctx: TenantContext, document_id: uuid.UUID) -> DocumentOu
     validates a document belongs to the attaching org before joining it into a notebook —
     a plain FK can't express that, since it only proves the document exists somewhere, not
     that it's in the same org as the notebook."""
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         document = await DocumentRepository(session, ctx).get_by_id(document_id)
     if document is None:
         raise DocumentNotFound("Document not found")
@@ -334,7 +334,7 @@ async def list_by_ids(ctx: TenantContext, document_ids: list[uuid.UUID]) -> list
     ``knowledge.service`` resolving the document rows attached to a notebook — knowledge
     owns the join table, not ``documents`` itself, so it asks this service rather than
     reading the ``documents`` table directly."""
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         documents = await DocumentRepository(session, ctx).list_by_ids(document_ids)
     return [DocumentOut.model_validate(d) for d in documents]
 
@@ -344,7 +344,7 @@ async def get_parse_artifact_key(ctx: TenantContext, document_id: uuid.UUID) -> 
     artifact key, written into ``metadata_`` by ``complete_parsing``. A dedicated method
     rather than exposing ``metadata`` on ``DocumentOut`` — keeps the internal storage
     layout out of the public HTTP response shape."""
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         document = await DocumentRepository(session, ctx).get_by_id(document_id)
         if document is None:
             raise DocumentNotFound("Document not found")
@@ -361,7 +361,7 @@ async def delete_document(
     we're left with an orphaned blob (an accepted, already-named gap — the future orphan
     sweep's job), which is far safer than the reverse order (a DB delete failing after the
     blob is already gone would leave a document pointing at nothing)."""
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = DocumentRepository(session, ctx)
         document = await repo.get_by_id(document_id)
         if document is None:
@@ -385,7 +385,7 @@ async def move_document(
     materialized path of its own."""
     from app.services.documents.folders import FolderRepository
 
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = DocumentRepository(session, ctx)
         document = await repo.get_by_id(document_id)
         if document is None:

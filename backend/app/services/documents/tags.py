@@ -116,20 +116,20 @@ class FolderTagRepository(BaseRepository[FolderTag]):
 
 
 async def create_tag(ctx: TenantContext, req: TagCreate) -> TagOut:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = TagRepository(session, ctx)
         tag = await repo.get_by_name(req.name) or await repo.create(name=req.name)
     return TagOut.model_validate(tag)
 
 
 async def list_tags(ctx: TenantContext) -> list[TagOut]:
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         tags = await TagRepository(session, ctx).list()
     return [TagOut.model_validate(t) for t in tags]
 
 
 async def delete_tag(ctx: TenantContext, tag_id: uuid.UUID) -> None:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = TagRepository(session, ctx)
         tag = await repo.get_by_id(tag_id)
         if tag is None:
@@ -138,7 +138,7 @@ async def delete_tag(ctx: TenantContext, tag_id: uuid.UUID) -> None:
 
 
 async def tag_document(ctx: TenantContext, document_id: uuid.UUID, tag_id: uuid.UUID) -> None:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         if await DocumentRepository(session, ctx).get_by_id(document_id) is None:
             raise DocumentNotFound("Document not found")
         if await TagRepository(session, ctx).get_by_id(tag_id) is None:
@@ -147,7 +147,7 @@ async def tag_document(ctx: TenantContext, document_id: uuid.UUID, tag_id: uuid.
 
 
 async def untag_document(ctx: TenantContext, document_id: uuid.UUID, tag_id: uuid.UUID) -> None:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         await DocumentTagRepository(session, ctx).detach(document_id, tag_id)
 
 
@@ -156,7 +156,7 @@ async def get_tag(ctx: TenantContext, tag_id: uuid.UUID) -> TagOut:
     caller: ``access_roles.service``, validating a tag exists before granting it to an
     Access Role — a plain FK can't express "in the same org," only "exists somewhere."
     """
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         tag = await TagRepository(session, ctx).get_by_id(tag_id)
     if tag is None:
         raise TagNotFound("Tag not found")
@@ -168,7 +168,7 @@ async def tag_folder(ctx: TenantContext, folder_id: uuid.UUID, tag_id: uuid.UUID
     # same precedent as documents.py's upload_document (see memory.md).
     from app.services.documents.folders import FolderRepository
 
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         if await FolderRepository(session, ctx).get_by_id(folder_id) is None:
             raise FolderNotFound("Folder not found")
         if await TagRepository(session, ctx).get_by_id(tag_id) is None:
@@ -177,19 +177,19 @@ async def tag_folder(ctx: TenantContext, folder_id: uuid.UUID, tag_id: uuid.UUID
 
 
 async def untag_folder(ctx: TenantContext, folder_id: uuid.UUID, tag_id: uuid.UUID) -> None:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         await FolderTagRepository(session, ctx).detach(folder_id, tag_id)
 
 
 async def list_folder_tag_ids(ctx: TenantContext, folder_id: uuid.UUID) -> list[uuid.UUID]:
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         return await FolderTagRepository(session, ctx).list_tag_ids(folder_id)
 
 
 async def list_folder_tag_ids_by_folders(
     ctx: TenantContext, folder_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, list[uuid.UUID]]:
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         return await FolderTagRepository(session, ctx).list_tag_ids_by_folders(folder_ids)
 
 
@@ -199,5 +199,5 @@ async def list_document_tag_ids_by_documents(
     """Narrow accessor for OTHER modules (module-boundary rule). First caller:
     ``retrieval.resolve_allowed_documents``, computing each document's own direct tags
     for the tag-based access check."""
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         return await DocumentTagRepository(session, ctx).list_tag_ids_by_documents(document_ids)

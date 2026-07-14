@@ -227,7 +227,7 @@ async def run_structuring_stage(
             error_detail=str(exc),
         )
 
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         section_repo = SectionRepository(session, ctx)
         chunk_repo = ChunkRepository(session, ctx)
         await chunk_repo.delete_for_document(document_id)

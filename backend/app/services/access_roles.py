@@ -157,7 +157,7 @@ def _to_access_role_out(
 
 
 async def create_access_role(ctx: TenantContext, req: AccessRoleCreate) -> AccessRoleOut:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = AccessRoleRepository(session, ctx)
         if await repo.exists_name_conflict(req.name):
             raise AccessRoleNameConflict("An Access Role with that name already exists")
@@ -172,7 +172,7 @@ async def create_access_role(ctx: TenantContext, req: AccessRoleCreate) -> Acces
 
 
 async def list_access_roles(ctx: TenantContext) -> list[AccessRoleOut]:
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         roles = await AccessRoleRepository(session, ctx).list()
         role_ids = [r.id for r in roles]
         tag_ids_by_role = await AccessRoleTagRepository(session, ctx).list_tag_ids_by_roles(
@@ -188,7 +188,7 @@ async def list_access_roles(ctx: TenantContext) -> list[AccessRoleOut]:
 
 
 async def delete_access_role(ctx: TenantContext, role_id: uuid.UUID) -> None:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         repo = AccessRoleRepository(session, ctx)
         role = await repo.get_by_id(role_id)
         if role is None:
@@ -204,14 +204,14 @@ async def grant_tag(ctx: TenantContext, role_id: uuid.UUID, tag_id: uuid.UUID) -
 
     await documents_service.get_tag(ctx, tag_id)
 
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         if await AccessRoleRepository(session, ctx).get_by_id(role_id) is None:
             raise AccessRoleNotFound("Access Role not found")
         await AccessRoleTagRepository(session, ctx).attach(role_id, tag_id)
 
 
 async def revoke_tag(ctx: TenantContext, role_id: uuid.UUID, tag_id: uuid.UUID) -> None:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         await AccessRoleTagRepository(session, ctx).detach(role_id, tag_id)
 
 
@@ -220,14 +220,14 @@ async def assign_user(ctx: TenantContext, role_id: uuid.UUID, user_id: uuid.UUID
 
     await auth_service.get_user(ctx, user_id)
 
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         if await AccessRoleRepository(session, ctx).get_by_id(role_id) is None:
             raise AccessRoleNotFound("Access Role not found")
         await UserAccessRoleRepository(session, ctx).attach(user_id, role_id)
 
 
 async def remove_user(ctx: TenantContext, role_id: uuid.UUID, user_id: uuid.UUID) -> None:
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         await UserAccessRoleRepository(session, ctx).detach(user_id, role_id)
 
 
@@ -237,7 +237,7 @@ async def resolve_user_granted_tags(ctx: TenantContext) -> set[uuid.UUID]:
     ``resolve_access_controlling_tags``)."""
     if ctx.user_id is None:
         return set()
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         role_ids = await UserAccessRoleRepository(session, ctx).list_role_ids_for_user(ctx.user_id)
         if not role_ids:
             return set()
@@ -253,5 +253,5 @@ async def resolve_user_granted_tags(ctx: TenantContext) -> set[uuid.UUID]:
 async def resolve_access_controlling_tags(ctx: TenantContext) -> set[uuid.UUID]:
     """Every tag that has EVER been granted to ANY Access Role in this org — a resource
     carrying none of these tags is open to everyone, regardless of role."""
-    async with db_mod.sessionmaker() as session:
+    async with db_mod.tenant_session(ctx.org_id) as session:
         return await AccessRoleTagRepository(session, ctx).list_all_granted_tag_ids()

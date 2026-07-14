@@ -80,8 +80,12 @@ class OrganizationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._db = session
 
-    async def create(self, name: str) -> Organization:
-        org = Organization(name=name)
+    async def create(self, name: str, *, org_id: uuid.UUID | None = None) -> Organization:
+        """``org_id`` is passed by signup (F60): the tenant GUC must be set to the new
+        org's id BEFORE this INSERT so the RLS ``WITH CHECK`` passes, which means the id
+        has to exist before the row does — client-generated, overriding the column's
+        ``gen_random_uuid()`` server default."""
+        org = Organization(name=name) if org_id is None else Organization(id=org_id, name=name)
         self._db.add(org)
         await self._db.flush()
         return org
@@ -184,13 +188,20 @@ class UserRepository(BaseRepository[User]):
 
 class AuthService:
     async def signup(self, req: SignupRequest) -> tuple[TokenResponse, str]:
-        async with db_mod.sessionmaker() as session, session.begin():
+        # Pre-tenant bootstrap (F60): no org exists yet, so this opens auth_session —
+        # the app.auth_email GUC lets the global email-uniqueness check see exactly the
+        # rows matching this email across orgs, nothing else. The new org's id is then
+        # generated CLIENT-side and the tenant GUC switched to it before any INSERT, so
+        # the org + owner rows pass their tenant_isolation WITH CHECK.
+        async with db_mod.auth_session(req.email) as session:
             auth_repo = AuthRepository(session)
             if await auth_repo.email_exists_globally(req.email):
                 raise EmailTaken("Email already registered")
 
+            new_org_id = uuid.uuid4()
+            await db_mod.set_org_guc(session, new_org_id)
             org_repo = OrganizationRepository(session)
-            org = await org_repo.create(req.org_name)
+            org = await org_repo.create(req.org_name, org_id=new_org_id)
             user = await auth_repo.create_user(
                 org_id=org.id,
                 email=req.email,
@@ -217,7 +228,10 @@ class AuthService:
         pending_error: AuthError | None = None
         user: User | None = None
 
-        async with db_mod.sessionmaker() as session, session.begin():
+        # Pre-tenant bootstrap (F60): the cross-org candidate search runs under the
+        # app.auth_email GUC (users matching this email + their orgs' names for
+        # AmbiguousLogin — the two auth_email_lookup policies from migration 0015).
+        async with db_mod.auth_session(req.email) as session:
             auth_repo = AuthRepository(session)
             candidates = await auth_repo.find_login_candidates(req.email)
 
@@ -236,6 +250,11 @@ class AuthService:
                 user, _ = matched[0]
             else:
                 user, _ = candidates[0]
+
+            # Candidate matched → switch INTO that org's tenant scope for the rest of
+            # the transaction: the lockout-counter/lock-reset UPDATEs below run under
+            # the ordinary tenant_isolation policy (auth_email_lookup is SELECT-only).
+            await db_mod.set_org_guc(session, user.org_id)
 
             now = datetime.now(UTC)
             if user.locked_until is not None and user.locked_until > now:
@@ -277,12 +296,17 @@ class AuthService:
             raise InvalidCredentials("Invalid refresh token") from exc
 
         user_id = uuid.UUID(payload["sub"])
-        async with db_mod.sessionmaker() as session:
+        org_id = uuid.UUID(payload["org_id"])
+        # The refresh token's org claim scopes the lookup (F60) — under RLS a mismatched
+        # claim reads nothing → InvalidCredentials. The explicit org check below keeps
+        # the same guarantee on RLS-bypassing connections (dev/test superuser).
+        async with db_mod.tenant_session(org_id) as session:
             auth_repo = AuthRepository(session)
             user = await auth_repo.get_user_by_id(user_id)
 
         if (
             user is None
+            or user.org_id != org_id
             or not user.password_hash
             or not user.is_active
             or user.token_version != payload.get("tv")
@@ -301,21 +325,13 @@ class AuthService:
         )
         return TokenResponse(access_token=access), new_refresh
 
-    async def me(self, user_id: uuid.UUID) -> UserOut:
-        async with db_mod.sessionmaker() as session:
-            auth_repo = AuthRepository(session)
-            user = await auth_repo.get_user_by_id(user_id)
-        if user is None:
-            raise UserNotFound("User not found")
-        return UserOut.model_validate(user)
-
     async def invite(self, ctx: TenantContext, req: InviteRequest) -> UserOut:
         if ctx.role not in ADMIN_ROLES:
             raise Forbidden("Only owners and admins can invite users")
         if req.role not in ROLES or req.role == ROLE_OWNER:
             raise Forbidden("Invalid invite role")
 
-        async with db_mod.sessionmaker() as session, session.begin():
+        async with db_mod.tenant_session(ctx.org_id) as session:
             user_repo = UserRepository(session, ctx)
             if await user_repo.get_by_email(req.email):
                 raise EmailTaken("Email already in this organization")
@@ -331,7 +347,7 @@ class AuthService:
         return UserOut.model_validate(user)
 
     async def list_org_users(self, ctx: TenantContext) -> list[UserOut]:
-        async with db_mod.sessionmaker() as session:
+        async with db_mod.tenant_session(ctx.org_id) as session:
             user_repo = UserRepository(session, ctx)
             users = await user_repo.list()
         return [UserOut.model_validate(u) for u in users]
@@ -340,7 +356,7 @@ class AuthService:
         """Org-scoped existence lookup for OTHER modules (module-boundary rule). First
         caller: ``access_roles.service``, validating a member exists in this org before
         assigning them an Access Role."""
-        async with db_mod.sessionmaker() as session:
+        async with db_mod.tenant_session(ctx.org_id) as session:
             user = await UserRepository(session, ctx).get_by_id(user_id)
         if user is None:
             raise TargetUserNotFound("User not found")
@@ -356,7 +372,7 @@ class AuthService:
         if target_user_id == ctx.user_id:
             raise Forbidden("Cannot change your own role")
 
-        async with db_mod.sessionmaker() as session, session.begin():
+        async with db_mod.tenant_session(ctx.org_id) as session:
             user_repo = UserRepository(session, ctx)
             target = await user_repo.get_by_id(target_user_id)
             if target is None:
@@ -380,7 +396,7 @@ class AuthService:
         if target_user_id == ctx.user_id:
             raise Forbidden("Cannot change your own active status")
 
-        async with db_mod.sessionmaker() as session, session.begin():
+        async with db_mod.tenant_session(ctx.org_id) as session:
             user_repo = UserRepository(session, ctx)
             target = await user_repo.get_by_id(target_user_id)
             if target is None:
@@ -398,7 +414,7 @@ class AuthService:
         """Self-service only (``ctx.user_id`` — no admin-reset path exists). Rotates
         ``token_version``, which invalidates every other session; returns a fresh token
         pair so the session making the change keeps working."""
-        async with db_mod.sessionmaker() as session, session.begin():
+        async with db_mod.tenant_session(ctx.org_id) as session:
             user_repo = UserRepository(session, ctx)
             user = await user_repo.get_by_id(ctx.user_id)  # type: ignore[arg-type]
             if user is None:
@@ -421,7 +437,7 @@ class AuthService:
         return TokenResponse(access_token=access), refresh
 
     async def get_org(self, ctx: TenantContext) -> OrganizationOut:
-        async with db_mod.sessionmaker() as session:
+        async with db_mod.tenant_session(ctx.org_id) as session:
             org = await OrganizationRepository(session).get(ctx.org_id)
         return OrganizationOut.model_validate(org)
 
@@ -429,7 +445,7 @@ class AuthService:
         if ctx.role not in ADMIN_ROLES:
             raise Forbidden("Only owners and admins can rename the organization")
 
-        async with db_mod.sessionmaker() as session, session.begin():
+        async with db_mod.tenant_session(ctx.org_id) as session:
             org_repo = OrganizationRepository(session)
             org = await org_repo.get(ctx.org_id)
             updated = await org_repo.update_name(org, new_name)

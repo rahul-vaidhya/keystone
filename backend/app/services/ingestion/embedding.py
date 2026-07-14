@@ -35,7 +35,7 @@ async def run_embedding_stage(
         return document
 
     try:
-        async with db_mod.sessionmaker() as session:
+        async with db_mod.tenant_session(ctx.org_id) as session:
             chunks = await ChunkRepository(session, ctx).list_for_document(document_id)
         vectors = await embedder.embed([chunk.content for chunk in chunks])
     except Exception as exc:  # the only seam call here — record, never swallow
@@ -61,7 +61,7 @@ async def run_embedding_stage(
         }
         for chunk, vector in zip(chunks, vectors, strict=True)
     ]
-    async with db_mod.sessionmaker() as session, session.begin():
+    async with db_mod.tenant_session(ctx.org_id) as session:
         await EmbeddingRepository(session, ctx).upsert_chunk_embeddings(document_id, rows)
 
     return await documents_service.complete_embedding(ctx, document_id)

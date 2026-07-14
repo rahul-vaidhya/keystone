@@ -29,7 +29,11 @@ from app.config.db import Base
 from app.config.settings import settings
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Migrations run as the privileged table-owning role (F60 app_user/migrator split):
+# prefer MIGRATIONS_DATABASE_URL when set; dev/test leave it unset and use the one
+# superuser DATABASE_URL for both the app and migrations.
+_migrations_url = settings.MIGRATIONS_DATABASE_URL or settings.DATABASE_URL
+config.set_main_option("sqlalchemy.url", _migrations_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -39,7 +43,7 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=settings.DATABASE_URL,
+        url=_migrations_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
