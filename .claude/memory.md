@@ -6,6 +6,30 @@
 
 ---
 
+## Semantic outline + enrichment + hierarchical retrieval — V2 activated (2026-07-15, this session — COMMITTED `ce3eebd`)
+
+**A direct ask**: replace the page-level parser structure with an LLM semantic parser and build hierarchical (V2) retrieval. Orchestrated by Fable with ALL reads/writes performed by Haiku subagents (4 recon, 3 implementation slices, test-runner, independent reviewer, 3 fix agents, live validators).
+
+**Three flag-gated features, ZERO migrations** (schema was pre-designed for this: `sections.summary`/`topics` existed since 0006; `embeddings.owner_type` generalizes):
+
+1. **SEMANTIC_OUTLINE_ENABLED** (default false) + **SEMANTIC_OUTLINE_WINDOW_CHARS=24000** — in `run_structuring_stage`: when parser outline is degenerate/page-level (`outline_is_degenerate` in new `app/services/ingestion/semantic_outline.py`), the LLM seam proposes heading strings verbatim; offsets located ONLY by `text.find()` with a forward cursor (never fabricated; unfound headings dropped); `char_end` via the same-or-shallower-level rule; result cached as `artifacts/semantic_outline.json` (reused on re-run; deleted in document hard-delete). EVERY failure path falls back to the parser outline — the stage never fails because of the post-pass. LLM threaded as optional kwarg (controller `Depends(get_llm)`; `tasks.py` `get_llm()`).
+
+2. **ENRICHMENT_ENABLED** (default false) + **ENRICHMENT_SECTION_CHAR_LIMIT=6000** — new `app/services/ingestion/enrichment.py` + `POST /ingestion/documents/{id}/enrich` + `run_enrichment_stage_job` (registered in `worker.py`; embedding job chains it with `job_id ingestion:enrichment:{id}` only when the doc ADVANCED to READY and the flag is on). Per-section LLM JSON `{summary, topics}` → `sections.summary/topics`; summaries embedded → upsert `owner_type='section'` (`EmbeddingRepository.upsert_embeddings` generalized; `upsert_chunk_embeddings` kept as delegator). DELIBERATE deviation from the terminal-stage-goes-FAILED precedent: enrichment NEVER mutates document status (doc already READY/queryable; enrichment is additive) — broad `except` logs and returns.
+
+3. **HIERARCHICAL_RETRIEVAL_ENABLED** (default false) + **HIERARCHICAL_TOP_SECTIONS=8** — `RetrievalService._retrieve_hits`: coarse kNN over section embeddings (new `SectionHit` model, `EmbeddingRepository.search_sections`, service accessor) then fine chunk kNN filtered by `section_ids` (new optional filter on `search_chunks`); falls back to flat on zero section hits OR zero chunk hits (logs `retrieval.hierarchical_fallback_no_sections` / `_no_chunks` at INFO, `retrieval.hierarchical_used` at DEBUG). `ContextBlock`/response shape unchanged — chat untouched. Flag-off path byte-identical to flat MVP.
+
+**THE bug of this session, found ONLY by live real-LLM validation (fakes passed)**: `enrichment.py` passed plain `{"role":...}` dicts to `llm.stream()`; `RealLLM` does `m.role` attribute access → every section failed (`'dict' object has no attribute 'role'`) and hierarchical correctly fell back to flat. Root cause of the test blind spot: the in-test fake LLM ignored its messages argument. Fixed to `Message(...)` dataclasses AND all test fakes hardened to access `m.role`/`m.content` so dict-passing can never pass tests again. **LESSON**: any new seam call site needs either a live real-seam check or a fake that exercises the seam's argument contract.
+
+**Live validation** (real OpenRouter parser/embedder/LLM, disposable pgvector container on `:55433`, in-process ASGI, `pdf/kech104.pdf` — the historical page-level worst case): semantic outline recovered 31–32 of ~34 sections as REAL headings ("4.1 KÖSSEL-LEwiS AppROACH tOCHEMiCAL BOnDinG", "4.1.1 Octet Rule", "4.2.1 Lattice Enthalpy", VSEPR, hybridisation, MO sections...) vs the old `document.pdf > Metadata > Contents > Page N` wrapper — the OCR-mangled fused headings WERE quoted verbatim by `gpt-4o-mini` and located by exact `find()`. Enrichment after the fix: 33/33 sections summarized + 33 `owner_type='section'` embeddings (~120s, one LLM call per section). Hierarchical retrieval CONFIRMED serving the in-scope query: `retrieval.hierarchical_used` captured verbatim in a DEBUG re-check; for the live run proof-by-elimination (neither fallback INFO event fired while other INFO events printed; 8 hits, distances 0.345–0.622). Chat: grounded answer + 1 resolved citation in-scope; exact refusal + 0 citations on FIFA bait. **NOTE**: `retrieval.hierarchical_used` logs at DEBUG — invisible at the default INFO level; fallbacks log at INFO.
+
+**Test-fix trail** (all by Haiku agents): `enrichment` status `.value` AttributeError (`DocumentOut.status` is `str`); test fakes returning outline dicts instead of `OutlineNode`; `@pytest.mark.anyio` markers caused asyncio+trio double-parametrization colliding on signup emails (suite convention is `pytest-asyncio` `asyncio_mode=auto`, NO markers); event-loop-closed fixed by depending on `tenant_engine`; worker function count 3 → 4; a genuine distance-TIE flake (two chunks seeded with identical vectors → Postgres tie order nondeterministic — never assert rank between equidistant vectors).
+
+**Verification:** full suite **218 passed, 1 skipped** (was 191+1) — run twice for stability; `ruff check`/`ruff format` clean; independent Haiku review 13/13 hard-rule checks PASS (no findings). New test files: `test_semantic_outline.py` (10, offline), `test_semantic_structuring.py` (4, prefix `semstr-`), `test_enrichment.py` (8, prefix `enrich-`), `test_retrieval_hierarchical.py` (5, prefix `hier-`).
+
+**Committed `ce3eebd` (feature) same session, docs commit followed.** Next migration still `0016` (none added).
+
+---
+
 ## Full-system live validation + Haiku-swarm re-review (2026-07-14, this session — NO code changes)
 
 **A direct ask, not a buildplan item**: full-codebase re-review with a Haiku swarm

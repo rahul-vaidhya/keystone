@@ -777,6 +777,44 @@ ops note is closed. Embedding-enrichment decision: quality is good, NOT building
 enrichment; revisit parsing granularity first if quality ever lags. See memory.md
 "Full-system live validation" for the full record.
 
+## Maintenance — Semantic outline + enrichment + hierarchical retrieval (V2 activated)
+- [x] Semantic outline + enrichment + hierarchical retrieval (2026-07-15, committed `ce3eebd`).
+      **A direct ask**: replace page-level parser structure with LLM semantic parser + build
+      hierarchical (V2) retrieval. Orchestrated by Fable, all reads/writes by Haiku subagents
+      (4 recon, 3 implementation slices, test-runner, independent reviewer, 3 fix agents, live
+      validators). Three flag-gated features, ZERO migrations (schema pre-designed: `sections.
+      summary`/`topics` existed since migration 0006; `embeddings.owner_type` generalizes):
+      (1) **SEMANTIC_OUTLINE_ENABLED** (default false) + **SEMANTIC_OUTLINE_WINDOW_CHARS=24000**
+      — new `app/services/ingestion/semantic_outline.py`, LLM proposes headings verbatim,
+      offsets located by `text.find()` (never fabricated; unfound dropped), cached as
+      `artifacts/semantic_outline.json` (reused on re-run), every failure falls back to parser
+      outline (stage never fails). (2) **ENRICHMENT_ENABLED** (default false) +
+      **ENRICHMENT_SECTION_CHAR_LIMIT=6000** — new `app/services/ingestion/enrichment.py` +
+      `POST /ingestion/documents/{id}/enrich`, per-section LLM JSON `{summary, topics}`
+      → `sections.summary/topics` + `owner_type='section'` embeddings (idempotent upsert),
+      NEVER mutates document status (doc already READY/queryable; enrichment additive). (3)
+      **HIERARCHICAL_RETRIEVAL_ENABLED** (default false) + **HIERARCHICAL_TOP_SECTIONS=8** —
+      coarse kNN over section embeddings (new `SectionHit`, `search_sections`) then fine chunk
+      kNN filtered by `section_ids`, falls back to flat on zero section/chunk hits (logs INFO),
+      `ContextBlock`/response unchanged, flag-off path byte-identical to flat MVP. **THE bug:
+      enrichment.py passed plain dicts to `llm.stream()`; `RealLLM` does attribute access
+      → every section failed; root cause: test fake LLM ignored messages argument.** Fixed
+      to `Message(...)` dataclasses + all fakes hardened to access `m.role`/`m.content` so
+      dict-passing can never pass tests. **LESSON**: any new seam call site needs live
+      real-seam check or fake exercising seam's argument contract. **Live validation** (real
+      OpenRouter on `pdf/kech104.pdf` — historical page-level worst case): semantic outline
+      recovered 31–32 of ~34 sections as REAL headings vs old `Page N` wrapper; enrichment
+      35/35 sections summarized + 35 `owner_type='section'` embeddings (~120s); hierarchical
+      retrieval confirmed serving in-scope query (`retrieval.hierarchical_used` DEBUG,
+      fallbacks INFO); chat grounded + citations on-scope, exact refusal on bait. DoD met:
+      full suite **218 passed, 1 skipped** (run twice for stability), `ruff check`/`ruff
+      format` clean, independent review 13/13 hard-rule checks PASS. New test files:
+      `test_semantic_outline.py` (10), `test_semantic_structuring.py` (4, prefix `semstr-`),
+      `test_enrichment.py` (8, prefix `enrich-`), `test_retrieval_hierarchical.py` (5, prefix
+      `hier-`). Committed `ce3eebd`. Next migration: `0016`.
+
+**Semantic outline + enrichment + hierarchical retrieval (V2 ACTIVATED, 2026-07-15, committed `ce3eebd`).** Three flag-gated features built with zero migrations (schema pre-designed): (1) **SEMANTIC_OUTLINE_ENABLED** replaces page-level parser structure with LLM semantic headings (cached artifacts/semantic_outline.json, every failure falls back to parser outline, stage never fails); (2) **ENRICHMENT_ENABLED** runs per-section LLM JSON extraction (summary/topics → sections.summary/topics + owner_type='section' embeddings), never mutates document status (doc already READY); (3) **HIERARCHICAL_RETRIEVAL_ENABLED** coarse kNN over section embeddings then fine chunk kNN, falls back to flat on zero section/chunk hits. **THE bug**: enrichment.py passed dicts to `llm.stream()`; RealLLM attribute-access failed; fixed with Message(...) dataclasses + hardened test fakes. **Live validation** on `pdf/kech104.pdf` (historical page-level worst case): semantic outline recovered 31–32 of ~34 real headings; enrichment 33/33 sections; hierarchical retrieval confirmed serving in-scope query. Chat: grounded answer + citations on-scope, exact refusal on bait. **New suite baseline: 218 passed, 1 skipped.** Independent review 13/13 hard-rule checks PASS. Committed `ce3eebd`.
+
 Next action: none from the buildplan. Future work = V2/V3/Enterprise items
 (architecture.md "Postponed") or direct asks. Ops notes: add
 `OPENAI_API_KEY`/`OPENAI_BASE_URL` (+ `*_MODE=real`, `STORAGE_MODE=local`) to
