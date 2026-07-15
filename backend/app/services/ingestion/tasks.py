@@ -27,12 +27,13 @@ from __future__ import annotations
 
 import uuid
 
+from app.config.settings import settings
 from app.middleware.context import TenantContext
 from app.models.documents import DocumentStatus
 from app.services.documents import documents_service
 from app.services.ingestion import ingestion_service
 from app.services.queue import JobQueue
-from app.services.seams import get_embedder, get_parser
+from app.services.seams import get_embedder, get_llm, get_parser
 from app.services.storage import get_object_store
 
 
@@ -60,7 +61,7 @@ async def run_structuring_stage_job(ctx: dict, *, org_id: str, document_id: str)
 
     before = await documents_service.get_document(tenant_ctx, doc_id)
     after = await ingestion_service.run_structuring_stage(
-        tenant_ctx, doc_id, object_store=get_object_store()
+        tenant_ctx, doc_id, object_store=get_object_store(), llm=get_llm()
     )
     if before.status != after.status and after.status == DocumentStatus.EMBEDDING:
         job_queue: JobQueue = ctx["job_queue"]
@@ -76,5 +77,29 @@ async def run_embedding_stage_job(ctx: dict, *, org_id: str, document_id: str) -
     tenant_ctx = TenantContext(org_id=uuid.UUID(org_id))
     doc_id = uuid.UUID(document_id)
 
-    # Terminal stage: the document lands on READY or FAILED, nothing further to chain.
-    await ingestion_service.run_embedding_stage(tenant_ctx, doc_id, embedder=get_embedder())
+    before = await documents_service.get_document(tenant_ctx, doc_id)
+    after = await ingestion_service.run_embedding_stage(tenant_ctx, doc_id, embedder=get_embedder())
+
+    # If the document reached READY and enrichment is enabled, enqueue the enrichment job.
+    if (
+        before.status != after.status
+        and after.status == DocumentStatus.READY
+        and settings.ENRICHMENT_ENABLED
+    ):
+        job_queue: JobQueue = ctx["job_queue"]
+        await job_queue.enqueue(
+            "run_enrichment_stage_job",
+            job_id=f"ingestion:enrichment:{document_id}",
+            org_id=org_id,
+            document_id=document_id,
+        )
+
+
+async def run_enrichment_stage_job(ctx: dict, *, org_id: str, document_id: str) -> None:
+    tenant_ctx = TenantContext(org_id=uuid.UUID(org_id))
+    doc_id = uuid.UUID(document_id)
+
+    # Terminal V2 stage: enrichment is non-fatal, never raises or chains further.
+    await ingestion_service.run_enrichment_stage(
+        tenant_ctx, doc_id, llm=get_llm(), embedder=get_embedder(), object_store=get_object_store()
+    )

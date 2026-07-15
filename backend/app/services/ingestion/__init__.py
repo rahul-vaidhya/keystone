@@ -15,17 +15,22 @@ exactly as before.
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 
 from app.middleware.context import TenantContext
 from app.models.documents import DocumentOut
-from app.models.ingestion import ChunkHit, ChunkRecord
+from app.models.ingestion import ChunkHit, ChunkRecord, SectionHit
 from app.services.ingestion import embedding as _embedding
+from app.services.ingestion import enrichment as _enrichment
 from app.services.ingestion import parsing as _parsing
 from app.services.ingestion import search as _search
 from app.services.ingestion import structuring as _structuring
 from app.services.queue import JobQueue
 from app.services.seams import Embedder, Parser
 from app.services.storage import ObjectStore
+
+if TYPE_CHECKING:
+    from app.services.seams import LLM
 
 
 class IngestionService:
@@ -62,8 +67,11 @@ class IngestionService:
         document_id: uuid.UUID,
         *,
         object_store: ObjectStore,
+        llm: LLM | None = None,
     ) -> DocumentOut:
-        return await _structuring.run_structuring_stage(ctx, document_id, object_store=object_store)
+        return await _structuring.run_structuring_stage(
+            ctx, document_id, object_store=object_store, llm=llm
+        )
 
     async def run_embedding_stage(
         self,
@@ -74,6 +82,19 @@ class IngestionService:
     ) -> DocumentOut:
         return await _embedding.run_embedding_stage(ctx, document_id, embedder=embedder)
 
+    async def run_enrichment_stage(
+        self,
+        ctx: TenantContext,
+        document_id: uuid.UUID,
+        *,
+        llm: LLM,
+        embedder: Embedder,
+        object_store,
+    ) -> DocumentOut:
+        return await _enrichment.run_enrichment_stage(
+            ctx, document_id, llm=llm, embedder=embedder, object_store=object_store
+        )
+
     async def search_chunks(
         self,
         ctx: TenantContext,
@@ -82,9 +103,28 @@ class IngestionService:
         document_ids: list[uuid.UUID],
         model: str,
         k: int,
+        section_ids: list[uuid.UUID] | None = None,
     ) -> list[ChunkHit]:
         return await _search.search_chunks(
-            ctx, query_vector=query_vector, document_ids=document_ids, model=model, k=k
+            ctx,
+            query_vector=query_vector,
+            document_ids=document_ids,
+            model=model,
+            k=k,
+            section_ids=section_ids,
+        )
+
+    async def search_sections(
+        self,
+        ctx: TenantContext,
+        *,
+        query_vector: list[float],
+        document_ids: list[uuid.UUID],
+        model: str,
+        s: int,
+    ) -> list[SectionHit]:
+        return await _search.search_sections(
+            ctx, query_vector=query_vector, document_ids=document_ids, model=model, s=s
         )
 
     async def get_chunks(self, ctx: TenantContext, chunk_ids: list[uuid.UUID]) -> list[ChunkRecord]:

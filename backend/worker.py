@@ -13,6 +13,7 @@ from app.config.logging import configure_logging
 from app.config.settings import settings
 from app.services.ingestion.tasks import (
     run_embedding_stage_job,
+    run_enrichment_stage_job,
     run_parsing_stage_job,
     run_structuring_stage_job,
 )
@@ -33,6 +34,7 @@ class WorkerSettings:
         run_parsing_stage_job,
         run_structuring_stage_job,
         run_embedding_stage_job,
+        run_enrichment_stage_job,
     ]
     redis_settings = RedisSettings.from_dsn(settings.REDIS_URL)
     on_startup = startup

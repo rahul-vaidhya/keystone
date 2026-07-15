@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import uuid
 
+from app.config.logging import get_logger
+from app.config.settings import settings
 from app.middleware.context import TenantContext
 from app.models.documents import FolderOut
 from app.models.ingestion import ChunkHit
@@ -18,6 +20,8 @@ from app.services.ingestion import ingestion_service
 from app.services.knowledge import knowledge_service
 from app.services.seams import Embedder
 from app.utils.constants import ADMIN_ROLES
+
+logger = get_logger(__name__)
 
 
 async def resolve_allowed_documents(ctx: TenantContext) -> list[uuid.UUID]:
@@ -104,7 +108,9 @@ class RetrievalService:
     ) -> RetrievalSearchResponse:
         """``flat_vector`` MVP retrieval: scope = notebook ∩ allowed, embed the query,
         search, assemble. ``req.k`` is passed straight through to the SQL ``LIMIT`` — no
-        over-fetch (no reranker exists in F31 to justify fetching more than asked for)."""
+        over-fetch (no reranker exists in F31 to justify fetching more than asked for).
+        When HIERARCHICAL_RETRIEVAL_ENABLED, uses coarse-to-fine search with fallback to
+        flat if enrichment is incomplete."""
         notebook_docs = await knowledge_service.list_notebook_documents(ctx, req.notebook_id)
         allowed = set(await resolve_allowed_documents(ctx))
         scope = [doc.id for doc in notebook_docs if doc.id in allowed]
@@ -112,14 +118,73 @@ class RetrievalService:
             return assemble_context(req.query, [])
 
         [query_vector] = await embedder.embed([req.query])
+        hits = await self._retrieve_hits(ctx, query_vector, scope, embedder.model, req.k)
+        return assemble_context(req.query, hits)
+
+    async def _retrieve_hits(
+        self,
+        ctx: TenantContext,
+        query_vector: list[float],
+        scope: list[uuid.UUID],
+        model: str,
+        k: int,
+    ) -> list[ChunkHit]:
+        """Retrieve hits using the active strategy: hierarchical (coarse-to-fine) if
+        enabled, flat otherwise. Hierarchical always has a fallback to flat if the corpus
+        lacks enrichment or returns no results."""
+        if not settings.HIERARCHICAL_RETRIEVAL_ENABLED:
+            return await ingestion_service.search_chunks(
+                ctx, query_vector=query_vector, document_ids=scope, model=model, k=k
+            )
+
+        # Coarse pass: search section embeddings.
+        section_hits = await ingestion_service.search_sections(
+            ctx,
+            query_vector=query_vector,
+            document_ids=scope,
+            model=model,
+            s=max(k, settings.HIERARCHICAL_TOP_SECTIONS),
+        )
+        if not section_hits:
+            # No section embeddings exist (enrichment hasn't run yet) — fall back to flat.
+            logger.info(
+                "retrieval.hierarchical_fallback_no_sections",
+                org_id=str(ctx.org_id),
+                scope_count=len(scope),
+            )
+            return await ingestion_service.search_chunks(
+                ctx, query_vector=query_vector, document_ids=scope, model=model, k=k
+            )
+
+        # Fine pass: search chunks within those sections.
+        section_ids = [h.section_id for h in section_hits]
         hits = await ingestion_service.search_chunks(
             ctx,
             query_vector=query_vector,
             document_ids=scope,
-            model=embedder.model,
-            k=req.k,
+            model=model,
+            k=k,
+            section_ids=section_ids,
         )
-        return assemble_context(req.query, hits)
+        if not hits:
+            # Hierarchical filtered to zero results — fall back to flat.
+            logger.info(
+                "retrieval.hierarchical_fallback_no_chunks",
+                org_id=str(ctx.org_id),
+                section_count=len(section_hits),
+            )
+            return await ingestion_service.search_chunks(
+                ctx, query_vector=query_vector, document_ids=scope, model=model, k=k
+            )
+
+        # Hierarchical succeeded.
+        logger.debug(
+            "retrieval.hierarchical_used",
+            org_id=str(ctx.org_id),
+            section_count=len(section_hits),
+            chunk_count=len(hits),
+        )
+        return hits
 
 
 retrieval_service = RetrievalService()

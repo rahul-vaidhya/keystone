@@ -12,7 +12,7 @@ from app.middleware.context import TenantContext
 from app.models.documents import Document, DocumentOut, DocumentStatus, DocumentTag
 from app.services.base import BaseRepository
 from app.services.documents.exceptions import DocumentNotFound, FolderNotFound
-from app.services.storage import ObjectStore, build_storage_key
+from app.services.storage import ObjectStore, build_artifact_key, build_storage_key
 
 # ---- exceptions (imported from documents.exceptions) ----
 # Re-exported here for backwards compatibility
@@ -374,6 +374,9 @@ async def delete_document(
         await object_store.delete(storage_key)
     if artifact_key:
         await object_store.delete(artifact_key)
+    # Delete the deterministic semantic outline artifact if it was cached.
+    semantic_key = build_artifact_key(ctx.org_id, document_id, "semantic_outline")
+    await object_store.delete(semantic_key)
 
 
 async def move_document(

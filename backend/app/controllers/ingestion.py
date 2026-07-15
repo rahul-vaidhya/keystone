@@ -13,8 +13,8 @@ from app.middleware.context import TenantContext
 from app.middleware.deps import get_ctx
 from app.models.documents import DocumentOut
 from app.services.ingestion import ingestion_service
-from app.services.seams import Embedder, Parser, get_embedder, get_parser
-from app.services.storage import ObjectStore, get_object_store
+from app.services.seams import LLM, Embedder, Parser, get_embedder, get_llm, get_parser
+from app.services.storage import ObjectStore, get_object_store  # noqa: F401
 
 
 async def parse_document(
@@ -32,9 +32,10 @@ async def structure_document(
     document_id: uuid.UUID,
     ctx: Annotated[TenantContext, Depends(get_ctx)],
     object_store: Annotated[ObjectStore, Depends(get_object_store)],
+    llm: Annotated[LLM, Depends(get_llm)],
 ) -> DocumentOut:
     return await ingestion_service.run_structuring_stage(
-        ctx, document_id, object_store=object_store
+        ctx, document_id, object_store=object_store, llm=llm
     )
 
 
@@ -44,3 +45,15 @@ async def embed_document(
     embedder: Annotated[Embedder, Depends(get_embedder)],
 ) -> DocumentOut:
     return await ingestion_service.run_embedding_stage(ctx, document_id, embedder=embedder)
+
+
+async def enrich_document(
+    document_id: uuid.UUID,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+    llm: Annotated[LLM, Depends(get_llm)],
+    embedder: Annotated[Embedder, Depends(get_embedder)],
+    object_store: Annotated[ObjectStore, Depends(get_object_store)],
+) -> DocumentOut:
+    return await ingestion_service.run_enrichment_stage(
+        ctx, document_id, llm=llm, embedder=embedder, object_store=object_store
+    )

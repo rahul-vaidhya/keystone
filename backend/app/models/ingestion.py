@@ -135,6 +135,21 @@ class Embedding(Base):
 # ---- API schemas ----
 
 
+class SectionHit(BaseModel):
+    """One coarse-pass hit over section embeddings (owner_type='section') — the shape
+    ``EmbeddingRepository.search_sections`` produces from its embeddings/sections join
+    (V2 hierarchical retrieval). ``distance`` is cosine distance (smaller = closer), per
+    the ``vector_cosine_ops`` HNSW index from migration 0007."""
+
+    section_id: uuid.UUID
+    document_id: uuid.UUID
+    heading: str | None
+    path: str
+    distance: float
+
+    model_config = {"from_attributes": True}
+
+
 class ChunkHit(BaseModel):
     """One flat_vector search hit — the row shape ``EmbeddingRepository.search_chunks``
     produces from its embeddings/chunks join. ``distance`` is cosine distance (smaller =

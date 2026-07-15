@@ -76,6 +76,18 @@ class Settings(BaseSettings):
     PARSER_MODEL: str = "openai/gpt-4o-mini"
     PARSER_OCR_FALLBACK_MIN_CHARS_PER_PAGE: int = 20
 
+    # --- Semantic structuring / V2 (semantic outline post-pass) ---
+    SEMANTIC_OUTLINE_ENABLED: bool = False
+    SEMANTIC_OUTLINE_WINDOW_CHARS: int = 24000
+
+    # --- Enrichment / V2 (section summaries + section embeddings) ---
+    ENRICHMENT_ENABLED: bool = False
+    ENRICHMENT_SECTION_CHAR_LIMIT: int = 6000
+
+    # --- Hierarchical retrieval / V2 (coarse-to-fine) ---
+    HIERARCHICAL_RETRIEVAL_ENABLED: bool = False
+    HIERARCHICAL_TOP_SECTIONS: int = 8
+
     # --- Chat (F40) ---
     # The LLM seam call gets an explicit timeout + retry-with-backoff, but ONLY on
     # transient failures (SeamTransientError from the seam, or our own timeout) — never on

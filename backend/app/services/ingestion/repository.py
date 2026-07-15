@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.models.ingestion import Chunk, ChunkHit, Embedding, Section
+from app.models.ingestion import Chunk, ChunkHit, Embedding, Section, SectionHit
 from app.services.base import BaseRepository
 
 
@@ -30,6 +30,27 @@ class SectionRepository(BaseRepository[Section]):
     async def bulk_create(self, sections: list[Section]) -> None:
         self._db.add_all(sections)
         await self._db.flush()
+
+    async def list_for_document(self, document_id: uuid.UUID) -> list[Section]:
+        """V2 enrichment stage's input: every section built for this document, in
+        document order (by char_start), so summaries are produced in a stable order too."""
+        stmt = (
+            select(Section)
+            .where(Section.org_id == self._ctx.org_id, Section.document_id == document_id)
+            .order_by(Section.char_start)
+        )
+        return list(await self._db.scalars(stmt))
+
+    async def update_enrichment(self, rows: list[dict]) -> None:
+        """Updates summary and topics for successful enriched sections. Each row is a dict
+        with ``id`` (section uuid), ``summary`` (str), and ``topics`` (list[str])."""
+        for row in rows:
+            stmt = (
+                update(Section)
+                .where(Section.id == row["id"], Section.org_id == self._ctx.org_id)
+                .values(summary=row["summary"], topics=row["topics"])
+            )
+            await self._db.execute(stmt)
 
 
 class ChunkRepository(BaseRepository[Chunk]):
@@ -69,22 +90,24 @@ class ChunkRepository(BaseRepository[Chunk]):
 class EmbeddingRepository(BaseRepository[Embedding]):
     model = Embedding
 
-    async def upsert_chunk_embeddings(
+    async def upsert_embeddings(
         self,
         document_id: uuid.UUID,
+        owner_type: str,
         rows: list[dict],
     ) -> None:
-        """Upsert ``owner_type='chunk'`` rows on ``unique(owner_type, owner_id, model)`` —
-        re-embedding the same chunk under the same model updates the vector in place
-        instead of inserting a duplicate. ``rows`` are plain dicts (``owner_id``, ``model``,
-        ``dim``, ``embedding``); ``org_id``/``document_id``/``owner_type`` are filled in here."""
+        """Upsert embeddings on ``unique(owner_type, owner_id, model)`` — re-embedding the
+        same resource under the same model updates the vector in place instead of inserting
+        a duplicate. ``rows`` are plain dicts (``owner_id``, ``model``, ``dim``,
+        ``embedding``); ``org_id``/``document_id``/``owner_type`` are filled in here.
+        Used for both chunks (F22) and sections (V2 enrichment)."""
         if not rows:
             return
         values = [
             {
                 "org_id": self._ctx.org_id,
                 "document_id": document_id,
-                "owner_type": "chunk",
+                "owner_type": owner_type,
                 **row,
             }
             for row in rows
@@ -99,12 +122,25 @@ class EmbeddingRepository(BaseRepository[Embedding]):
         )
         await self._db.execute(stmt)
 
+    async def upsert_chunk_embeddings(
+        self,
+        document_id: uuid.UUID,
+        rows: list[dict],
+    ) -> None:
+        """Upsert ``owner_type='chunk'`` rows on ``unique(owner_type, owner_id, model)`` —
+        re-embedding the same chunk under the same model updates the vector in place
+        instead of inserting a duplicate. ``rows`` are plain dicts (``owner_id``, ``model``,
+        ``dim``, ``embedding``); ``org_id``/``document_id``/``owner_type`` are filled in here."""
+        await self.upsert_embeddings(document_id, "chunk", rows)
+
     async def search_chunks(
         self,
         query_vector: list[float],
         document_ids: list[uuid.UUID],
         model: str,
         k: int,
+        *,
+        section_ids: list[uuid.UUID] | None = None,
     ) -> list[ChunkHit]:
         """The MVP ``flat_vector`` retrieval query (librarydocs.md "pgvector",
         architecture.md ``retrieve()``). Filters ``org_id`` directly — an independent
@@ -113,9 +149,18 @@ class EmbeddingRepository(BaseRepository[Embedding]):
         test) — plus ``owner_type='chunk'`` and ``model = :active_model`` so a re-embed
         under a new model name never returns duplicate hits per chunk. Caller passes ``k``
         straight through to ``LIMIT``; no over-fetch (no reranker exists yet to justify one).
-        """
+        When ``section_ids`` is provided (V2 hierarchical retrieval), narrows chunks to those
+        sections only."""
         if not document_ids:
             return []
+        where_clauses = [
+            Embedding.org_id == self._ctx.org_id,
+            Embedding.owner_type == "chunk",
+            Embedding.model == model,
+            Embedding.document_id.in_(document_ids),
+        ]
+        if section_ids and section_ids:
+            where_clauses.append(Chunk.section_id.in_(section_ids))
         stmt = (
             select(
                 Embedding.owner_id.label("chunk_id"),
@@ -126,14 +171,43 @@ class EmbeddingRepository(BaseRepository[Embedding]):
                 Embedding.embedding.cosine_distance(query_vector).label("distance"),
             )
             .join(Chunk, Chunk.id == Embedding.owner_id)
-            .where(
-                Embedding.org_id == self._ctx.org_id,
-                Embedding.owner_type == "chunk",
-                Embedding.model == model,
-                Embedding.document_id.in_(document_ids),
-            )
+            .where(*where_clauses)
             .order_by("distance")
             .limit(k)
         )
         rows = await self._db.execute(stmt)
         return [ChunkHit(**row._mapping) for row in rows]
+
+    async def search_sections(
+        self,
+        query_vector: list[float],
+        document_ids: list[uuid.UUID],
+        model: str,
+        s: int,
+    ) -> list[SectionHit]:
+        """V2 hierarchical (coarse-to-fine) retrieval's coarse pass: kNN over section
+        embeddings (owner_type='section'). Filters ``org_id`` directly (independent
+        backstop) plus ``owner_type='section'`` and ``model = :active_model``. Caller
+        passes ``s`` (top-sections count) straight through to ``LIMIT``."""
+        if not document_ids:
+            return []
+        stmt = (
+            select(
+                Embedding.owner_id.label("section_id"),
+                Section.document_id,
+                Section.heading,
+                Section.path,
+                Embedding.embedding.cosine_distance(query_vector).label("distance"),
+            )
+            .join(Section, Section.id == Embedding.owner_id)
+            .where(
+                Embedding.org_id == self._ctx.org_id,
+                Embedding.owner_type == "section",
+                Embedding.model == model,
+                Embedding.document_id.in_(document_ids),
+            )
+            .order_by("distance")
+            .limit(s)
+        )
+        rows = await self._db.execute(stmt)
+        return [SectionHit(**row._mapping) for row in rows]

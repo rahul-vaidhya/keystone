@@ -8,15 +8,24 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from app.config import db as db_mod
 from app.config.logging import get_logger
+from app.config.settings import settings
 from app.middleware.context import TenantContext
 from app.models.documents import DocumentOut, DocumentStatus
 from app.models.ingestion import Chunk, Section
 from app.services.documents import documents_service
 from app.services.ingestion.repository import ChunkRepository, SectionRepository
-from app.services.storage import ObjectStore
+from app.services.ingestion.semantic_outline import (
+    derive_semantic_outline,
+    outline_is_degenerate,
+)
+from app.services.storage import ObjectStore, build_artifact_key
+
+if TYPE_CHECKING:
+    from app.services.seams import LLM
 
 logger = get_logger(__name__)
 
@@ -189,6 +198,7 @@ async def run_structuring_stage(
     document_id: uuid.UUID,
     *,
     object_store: ObjectStore,
+    llm: LLM | None = None,
 ) -> DocumentOut:
     """STRUCTURING -> EMBEDDING, or -> FAILED with failed_stage=STRUCTURING.
 
@@ -197,6 +207,10 @@ async def run_structuring_stage(
     STRUCTURING or previously FAILED at this stage is rebuilt from scratch — its
     existing sections/chunks are deleted and replaced inside one transaction before the
     status advances, so a re-run never leaves duplicates or a partial tree.
+
+    If SEMANTIC_OUTLINE_ENABLED and llm is not None, and the parser outline is degenerate,
+    attempts to recover real headings via an LLM post-pass. On any failure, degrades
+    gracefully to the parser outline.
     """
     document = await documents_service.begin_structuring(ctx, document_id)
     if document.status != DocumentStatus.STRUCTURING:
@@ -206,11 +220,54 @@ async def run_structuring_stage(
         artifact_key = await documents_service.get_parse_artifact_key(ctx, document_id)
         raw = await object_store.get(artifact_key)
         artifact = json.loads(raw)
+        outline = artifact["outline"]
+
+        # Semantic outline post-pass: if the parser outline is degenerate and the flag
+        # is on, attempt to recover real headings from the text.
+        if settings.SEMANTIC_OUTLINE_ENABLED and llm is not None and outline_is_degenerate(outline):
+            semantic_key = build_artifact_key(ctx.org_id, document_id, "semantic_outline")
+            try:
+                # Try to load a cached semantic outline from a prior run.
+                try:
+                    cached_raw = await object_store.get(semantic_key)
+                    cached = json.loads(cached_raw)
+                    if isinstance(cached, list) and cached:
+                        outline = cached
+                        logger.info("ingestion.semantic_outline_cache_hit")
+                except Exception:
+                    # Cache miss (or any error) — continue to derive.
+                    pass
+
+                # If we still have the degenerate outline, try to derive.
+                if outline == artifact["outline"]:
+                    semantic = await derive_semantic_outline(
+                        artifact["text"],
+                        artifact["page_count"],
+                        llm,
+                    )
+                    if semantic:
+                        # Persist the semantic outline for future idempotent re-runs.
+                        await object_store.put(
+                            semantic_key,
+                            json.dumps(semantic).encode("utf-8"),
+                            "application/json",
+                        )
+                        outline = semantic
+                    else:
+                        logger.info("ingestion.semantic_outline_empty")
+            except Exception as exc:
+                logger.warning(
+                    "ingestion.semantic_outline_failed",
+                    document_id=str(document_id),
+                    error=str(exc),
+                )
+                # Degrade to parser outline.
+
         sections, chunks = _build_sections_and_chunks(
             ctx.org_id,
             document_id,
             artifact["text"],
-            artifact["outline"],
+            outline,
             artifact["page_count"],
         )
     except Exception as exc:  # artifact fetch/decode — record, never swallow

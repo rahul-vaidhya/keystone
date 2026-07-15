@@ -8,7 +8,7 @@ import uuid
 
 from app.config import db as db_mod
 from app.middleware.context import TenantContext
-from app.models.ingestion import ChunkHit, ChunkRecord
+from app.models.ingestion import ChunkHit, ChunkRecord, SectionHit
 from app.services.ingestion.repository import ChunkRepository, EmbeddingRepository
 
 
@@ -19,11 +19,28 @@ async def search_chunks(
     document_ids: list[uuid.UUID],
     model: str,
     k: int,
+    section_ids: list[uuid.UUID] | None = None,
 ) -> list[ChunkHit]:
     """All SQL lives in ``EmbeddingRepository.search_chunks``; this is pure orchestration."""
     async with db_mod.tenant_session(ctx.org_id) as session:
         return await EmbeddingRepository(session, ctx).search_chunks(
-            query_vector, document_ids, model, k
+            query_vector, document_ids, model, k, section_ids=section_ids
+        )
+
+
+async def search_sections(
+    ctx: TenantContext,
+    *,
+    query_vector: list[float],
+    document_ids: list[uuid.UUID],
+    model: str,
+    s: int,
+) -> list[SectionHit]:
+    """V2 hierarchical retrieval's coarse pass: all SQL lives in
+    ``EmbeddingRepository.search_sections``; this is pure orchestration."""
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        return await EmbeddingRepository(session, ctx).search_sections(
+            query_vector, document_ids, model, s
         )
 
 

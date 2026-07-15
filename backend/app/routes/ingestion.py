@@ -18,3 +18,6 @@ router.post("/documents/{document_id}/structure", response_model=DocumentOut)(
 router.post("/documents/{document_id}/embed", response_model=DocumentOut)(
     controllers.ingestion.embed_document
 )
+router.post("/documents/{document_id}/enrich", response_model=DocumentOut)(
+    controllers.ingestion.enrich_document
+)
