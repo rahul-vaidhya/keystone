@@ -146,3 +146,18 @@ class MessageTraceOut(BaseModel):
     final_prompt: str
     raw_output: str
     created_at: datetime
+
+
+class MessageOut(BaseModel):
+    """One persisted message, returned by the notebook history endpoint (chat history
+    hydration on navigation). ``citations`` round-trips straight from the JSONB column —
+    it was written in exactly this ``ResolvedCitation`` shape by ``ChatService._persist``."""
+
+    id: uuid.UUID
+    conversation_id: uuid.UUID
+    role: str
+    content: str
+    citations: list[ResolvedCitation] | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

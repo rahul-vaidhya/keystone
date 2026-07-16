@@ -878,6 +878,24 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
 
 **V2 hardening + real-seam eval harness (2026-07-16, this session).** Part 1: promoted `retrieval.hierarchical_used` to INFO; surfaced dormant `sections.topics` via a DEBUG log only (chat response shape untouched); hardened `semantic_outline.py` (junk-heading filtering + overlapping windows with adjacent-window dedup, fixing both gaps the 2026-07-15 validation named); added admin-gated `POST /ingestion/enrich-backfill` for pre-existing READY documents. New suite baseline: **229 passed, 0 skipped, 2 deselected**, ruff clean, independent review PASS on all 8 hard rules. Part 2 (the primary ask): `test_hierarchical_eval.py`, an opt-in real-seam eval harness — ingested `pdf/kech104.pdf` once with all 3 V2 flags on, ran 8 golden questions × 3 retrieval modes + real `/chat/ask` grading + 2 bait questions. **Result: hierarchical tied flat on every question (0 wins either way)** — correct but no measured grounding improvement on this single-document corpus, extending (not contradicting) the 2026-07-14 "AI enrichment not needed now" finding. Recommend keeping the flag off by default until a large multi-document notebook creates real pressure on flat's precision. A genuine new gotcha found: `structlog.testing.capture_logs()` doesn't lift the app's INFO log-level floor, so DEBUG-event assertions need a temporary wrapper_class swap. See memory.md for the full report table and verdict.
 
+## Maintenance — UX audit: 4 critical findings fixed (2026-07-16, this session — UNCOMMITTED)
+- [x] Fixed and live-verified all 4 CRITICAL findings from the published "Veratas —
+      Product UX Audit" artifact: (1) chat history vanishing on navigation (new
+      `GET /chat/notebooks/{id}/messages`, `ChatPanel.tsx` hydrates on mount); (2)
+      `[object Object]` rendered for Pydantic validation errors (`http.ts`'s
+      `extractErrorDetail` now joins `.msg` fields); (3) drag-only document move (new
+      always-visible move-to-folder `<select>` in `DocumentList.tsx`, reuses the
+      existing `PATCH /documents/{id}/folder`); (4) invite-by-typing-a-password
+      (new migration `0016` `invite_tokens` table — first new tenant table since F60,
+      ships its own RLS — + `POST /auth/accept-invite`, self-serve one-time invite
+      links). 15 new backend tests + several frontend tests, all green; ruff/tsc/build
+      clean. See memory.md "UX audit — 4 critical findings fixed" for full detail
+      including two gotchas (stale dev uvicorn on port 8010; dev Postgres needs its
+      own manual `alembic upgrade head`, separate from the test suite's Testcontainers
+      run). **Work is UNCOMMITTED — ask before committing.** Next migration: `0017`.
+      The remaining 11 non-critical findings (High/Medium/Low) from the same audit are
+      untouched.
+
 Next action: none from the buildplan. Future work = V2/V3/Enterprise items
 (architecture.md "Postponed") or direct asks. Ops notes: add
 `OPENAI_API_KEY`/`OPENAI_BASE_URL` (+ `*_MODE=real`, `STORAGE_MODE=local`) to

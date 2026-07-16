@@ -29,15 +29,21 @@ async def _signup(client: AsyncClient, email: str, org_name: str) -> dict:
 
 
 async def _invite_member(client: AsyncClient, owner_headers: dict, email: str) -> dict:
+    """Invites a member and accepts the invite (self-serve link flow — the invitee sets
+    their own password), returning their own token dict."""
     invite = await client.post(
         "/auth/invite",
         headers=owner_headers,
-        json={"email": email, "password": "password123", "role": ROLE_MEMBER},
+        json={"email": email, "role": ROLE_MEMBER},
     )
     assert invite.status_code == 201
-    login = await client.post("/auth/login", json={"email": email, "password": "password123"})
-    assert login.status_code == 200
-    return login.json()
+    body = invite.json()
+    accept = await client.post(
+        "/auth/accept-invite",
+        json={"org_id": body["org_id"], "token": body["invite_token"], "password": "password123"},
+    )
+    assert accept.status_code == 200
+    return accept.json()
 
 
 async def test_create_and_list_access_role(client: AsyncClient) -> None:

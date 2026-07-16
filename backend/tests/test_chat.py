@@ -700,15 +700,21 @@ async def test_stream_cross_org_notebook_yields_error(client: AsyncClient) -> No
 
 
 async def _invite_member(client: AsyncClient, owner_headers: dict, email: str) -> dict:
+    """Invites a member and accepts the invite (self-serve link flow — the invitee sets
+    their own password), returning their own token dict."""
     invite = await client.post(
         "/auth/invite",
         headers=owner_headers,
-        json={"email": email, "password": "password123", "role": ROLE_MEMBER},
+        json={"email": email, "role": ROLE_MEMBER},
     )
     assert invite.status_code == 201
-    login = await client.post("/auth/login", json={"email": email, "password": "password123"})
-    assert login.status_code == 200
-    return login.json()
+    body = invite.json()
+    accept = await client.post(
+        "/auth/accept-invite",
+        json={"org_id": body["org_id"], "token": body["invite_token"], "password": "password123"},
+    )
+    assert accept.status_code == 200
+    return accept.json()
 
 
 async def test_ask_persists_trace_with_hits_prompt_and_raw_output(
@@ -795,6 +801,128 @@ async def test_get_trace_missing_message_404s(client: AsyncClient) -> None:
 
     resp = await client.get(f"/chat/messages/{uuid.uuid4()}/trace", headers=headers)
     assert resp.status_code == 404
+
+
+# ---- Chat history hydration (GET /chat/notebooks/{notebook_id}/messages) ----
+
+
+async def test_list_messages_returns_chronological_pairs_from_multiple_asks(
+    client: AsyncClient, session_factory
+) -> None:
+    tokens = await _signup(client, "chathist-multi@test.com", "Hist")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "history content about onboarding"
+    )
+
+    first = await client.post(
+        "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "history"}
+    )
+    second = await client.post(
+        "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "history again"}
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    resp = await client.get(f"/chat/notebooks/{notebook_id}/messages", headers=headers)
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert len(body) == 4
+    assert [m["role"] for m in body] == ["user", "assistant", "user", "assistant"]
+    assert body[0]["content"] == "history"
+    assert body[0]["citations"] is None
+    assert body[2]["content"] == "history again"
+
+    first_body = first.json()
+    second_body = second.json()
+    assert body[1]["content"] == first_body["answer"]
+    assert body[1]["citations"] == first_body["citations"]
+    assert body[1]["id"] == first_body["message_id"]
+    assert body[3]["content"] == second_body["answer"]
+    assert body[3]["citations"] == second_body["citations"]
+    assert body[3]["id"] == second_body["message_id"]
+
+    # Chronological order: created_at strictly non-decreasing.
+    created_ats = [m["created_at"] for m in body]
+    assert created_ats == sorted(created_ats)
+
+
+async def test_list_messages_empty_notebook_returns_empty_list_not_404(
+    client: AsyncClient,
+) -> None:
+    tokens = await _signup(client, "chathist-empty@test.com", "HistEmpty")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    created = await client.post("/notebooks", headers=headers, json={"name": "NB"})
+    notebook_id = created.json()["id"]
+
+    resp = await client.get(f"/chat/notebooks/{notebook_id}/messages", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_list_messages_nonexistent_notebook_404s(client: AsyncClient) -> None:
+    tokens = await _signup(client, "chathist-missing@test.com", "HistMissing")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    resp = await client.get(f"/chat/notebooks/{uuid.uuid4()}/messages", headers=headers)
+    assert resp.status_code == 404
+
+
+async def test_list_messages_cross_org_notebook_404s(client: AsyncClient, session_factory) -> None:
+    tokens_a = await _signup(client, "chathist-isoa@test.com", "HistIsoA")
+    tokens_b = await _signup(client, "chathist-isob@test.com", "HistIsoB")
+    headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}
+    headers_b = {"Authorization": f"Bearer {tokens_b['access_token']}"}
+    org_id_a = await _org_id(client, headers_a)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, headers_a, session_factory, org_id_a, "org A history content"
+    )
+    ask = await client.post(
+        "/chat/ask", headers=headers_a, json={"notebook_id": notebook_id, "query": "q"}
+    )
+    assert ask.status_code == 200
+
+    resp = await client.get(f"/chat/notebooks/{notebook_id}/messages", headers=headers_b)
+    assert resp.status_code == 404
+
+
+async def test_list_messages_excludes_other_notebooks_in_same_org(
+    client: AsyncClient, session_factory
+) -> None:
+    tokens = await _signup(client, "chathist-scope@test.com", "HistScope")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_a, _doc_a = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "notebook A content"
+    )
+    notebook_b, _doc_b = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "notebook B content"
+    )
+
+    await client.post(
+        "/chat/ask", headers=headers, json={"notebook_id": notebook_a, "query": "about A"}
+    )
+    await client.post(
+        "/chat/ask", headers=headers, json={"notebook_id": notebook_b, "query": "about B"}
+    )
+
+    resp_a = await client.get(f"/chat/notebooks/{notebook_a}/messages", headers=headers)
+    resp_b = await client.get(f"/chat/notebooks/{notebook_b}/messages", headers=headers)
+    assert resp_a.status_code == 200
+    assert resp_b.status_code == 200
+
+    body_a = resp_a.json()
+    body_b = resp_b.json()
+    assert len(body_a) == 2
+    assert len(body_b) == 2
+    assert body_a[0]["content"] == "about A"
+    assert body_b[0]["content"] == "about B"
+    # No cross-contamination: the ids are disjoint.
+    ids_a = {m["id"] for m in body_a}
+    ids_b = {m["id"] for m in body_b}
+    assert ids_a.isdisjoint(ids_b)
 
 
 async def test_get_trace_cross_org_404s(client: AsyncClient, session_factory) -> None:

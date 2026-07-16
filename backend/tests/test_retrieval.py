@@ -43,18 +43,23 @@ async def _org_id(client: AsyncClient, headers: dict) -> uuid.UUID:
 
 
 async def _invite_member(client: AsyncClient, owner_headers: dict, email: str) -> dict:
-    """Invites a member into the owner's org and logs them in, returning their own token
-    dict — the only way to get a real `member`-role TenantContext through the API rather
-    than constructing one by hand."""
+    """Invites a member into the owner's org and accepts the invite (self-serve link
+    flow — the invitee sets their own password), returning their own token dict — the
+    only way to get a real `member`-role TenantContext through the API rather than
+    constructing one by hand."""
     invite = await client.post(
         "/auth/invite",
         headers=owner_headers,
-        json={"email": email, "password": "password123", "role": ROLE_MEMBER},
+        json={"email": email, "role": ROLE_MEMBER},
     )
     assert invite.status_code == 201
-    login = await client.post("/auth/login", json={"email": email, "password": "password123"})
-    assert login.status_code == 200
-    return login.json()
+    body = invite.json()
+    accept = await client.post(
+        "/auth/accept-invite",
+        json={"org_id": body["org_id"], "token": body["invite_token"], "password": "password123"},
+    )
+    assert accept.status_code == 200
+    return accept.json()
 
 
 def _vector(seed: int, dim: int = EMBED_DIM) -> list[float]:

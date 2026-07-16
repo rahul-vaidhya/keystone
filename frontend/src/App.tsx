@@ -8,6 +8,7 @@ import { NotebookList } from "./pages/NotebookList";
 import { NotebookPage } from "./pages/NotebookPage";
 import { LoginPage } from "./pages/LoginPage";
 import { SignupPage } from "./pages/SignupPage";
+import { AcceptInvitePage } from "./pages/AcceptInvitePage";
 import { UsersPage } from "./pages/UsersPage";
 import { AccessRolesPage } from "./pages/AccessRolesPage";
 import { AuthProvider } from "./context/AuthContext";
@@ -23,6 +24,7 @@ export default function App() {
             <Route path="/" element={<Navigate to="/app" replace />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/signup" element={<SignupPage />} />
+            <Route path="/accept-invite" element={<AcceptInvitePage />} />
             <Route element={<ProtectedRoute />}>
               <Route path="/app" element={<AppShell />}>
                 <Route index element={<HomePage />} />

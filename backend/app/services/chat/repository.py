@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import uuid
 
+from sqlalchemy import select
+
 from app.models.chat import Conversation, Message, MessageTrace
 from app.services.base import BaseRepository
 
@@ -47,6 +49,24 @@ class MessageRepository(BaseRepository[Message]):
         self._db.add(message)
         await self._db.flush()
         return message
+
+    async def list_for_notebook(self, knowledge_base_id: uuid.UUID) -> list[Message]:
+        """History hydration for a notebook: every message from every (fresh,
+        non-reused — see ``ChatService.ask``'s docstring) conversation that belongs to
+        this notebook, oldest first. Joins to ``Conversation`` to filter by
+        ``knowledge_base_id`` but scopes BOTH tables by ``org_id`` independently — the
+        join alone is never trusted as the isolation boundary (hard rule: every query
+        scoped by org_id)."""
+        stmt = (
+            self._scoped(select(Message))
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(
+                Conversation.knowledge_base_id == knowledge_base_id,
+                Conversation.org_id == self._ctx.org_id,
+            )
+            .order_by(Message.created_at.asc())
+        )
+        return list(await self._db.scalars(stmt))
 
 
 class TraceRepository(BaseRepository[MessageTrace]):

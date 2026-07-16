@@ -21,6 +21,28 @@ async function parseJson(res: Response): Promise<unknown> {
   }
 }
 
+// FastAPI's own manually-raised HTTPException(detail="...") calls (e.g. Forbidden,
+// NotFoundError-style exceptions mapped by app/utils/http.py) put a plain string in
+// `detail`. Pydantic validation errors (422) instead put an ARRAY of
+// `{loc, msg, type}` objects in `detail` — String()-ing that array produces
+// "[object Object]" rather than a readable message, so it needs its own branch.
+function extractErrorDetail(body: unknown, fallback: string): string {
+  if (typeof body !== "object" || !body || !("detail" in body)) return fallback;
+  const detail = (body as { detail: unknown }).detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) =>
+        item && typeof item === "object" && "msg" in item
+          ? String((item as { msg: unknown }).msg)
+          : null,
+      )
+      .filter((msg): msg is string => msg !== null);
+    if (messages.length > 0) return messages.join("; ");
+  }
+  return fallback;
+}
+
 export async function apiFetch<T>(
   path: string,
   init: RequestInit = {},
@@ -44,10 +66,7 @@ export async function apiFetch<T>(
 
   const body = await parseJson(res);
   if (!res.ok) {
-    const detail =
-      typeof body === "object" && body && "detail" in body
-        ? String((body as { detail: unknown }).detail)
-        : res.statusText;
+    const detail = extractErrorDetail(body, res.statusText);
     throw new ApiError(res.status, detail, body);
   }
   return body as T;

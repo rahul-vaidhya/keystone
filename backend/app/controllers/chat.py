@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from app.config.logging import get_logger
 from app.middleware.context import TenantContext
 from app.middleware.deps import get_ctx, require_admin
-from app.models.chat import ChatRequest, ChatResponse, MessageTraceOut
+from app.models.chat import ChatRequest, ChatResponse, MessageOut, MessageTraceOut
 from app.services.chat import chat_service
 from app.services.seams import LLM, Embedder, get_embedder, get_llm
 
@@ -82,3 +82,12 @@ async def get_trace(
 ) -> MessageTraceOut:
     """F42 admin debug bundle. Owner/admin only (``require_admin``)."""
     return await chat_service.get_trace(ctx, message_id)
+
+
+async def list_messages(
+    notebook_id: uuid.UUID,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+) -> list[MessageOut]:
+    """Chat history hydration for a notebook — every member can see it, same access
+    level as asking a question in the notebook."""
+    return await chat_service.list_messages(ctx, notebook_id)

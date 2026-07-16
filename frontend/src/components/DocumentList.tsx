@@ -2,7 +2,7 @@ import { useRef } from "react";
 import { useMutation, useQuery, useQueryClient, type Query } from "@tanstack/react-query";
 import { documentsApi } from "../services/documentsService";
 import { ApiError } from "../types/auth";
-import type { Document } from "../types/documents";
+import type { Document, Folder } from "../types/documents";
 import { StatusBadge } from "./StatusBadge";
 import { DRAG_MIME, type DragPayload } from "./FolderTree";
 
@@ -27,6 +27,11 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
     refetchInterval: pollIntervalFor,
   });
 
+  // Same ["folders"] query key FolderTree uses — React Query dedupes this against
+  // FolderTree's identical query when both are mounted, so this doesn't add a second
+  // network round trip in the normal (FolderTree + DocumentList together) layout.
+  const foldersQuery = useQuery({ queryKey: ["folders"], queryFn: documentsApi.listFolders });
+
   const uploadMutation = useMutation({
     mutationFn: (file: File) => documentsApi.uploadDocument(file, currentFolderId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["documents"] }),
@@ -39,6 +44,14 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["documents"] }),
     onError: (err) =>
       window.alert(err instanceof ApiError ? err.message : "Failed to delete document"),
+  });
+
+  const moveMutation = useMutation({
+    mutationFn: ({ documentId, folderId }: { documentId: string; folderId: string | null }) =>
+      documentsApi.moveDocument(documentId, folderId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["documents"] }),
+    onError: (err) =>
+      window.alert(err instanceof ApiError ? err.message : "Failed to move document"),
   });
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -56,6 +69,15 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
     const payload: DragPayload = { type: "document", id: documentId };
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
+  }
+
+  // Keyboard/screen-reader/touch-accessible alternative to the drag-and-drop-only move
+  // path above — always visible (never hover-gated), since the whole point is it must
+  // work without a mouse.
+  function handleMoveSelect(doc: Document, value: string) {
+    const folderId = value === "" ? null : value;
+    if (folderId === doc.folder_id) return; // no-op: selecting the current folder
+    moveMutation.mutate({ documentId: doc.id, folderId });
   }
 
   return (
@@ -95,7 +117,7 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
                 <tr className="text-left text-muted border-b border-border">
                   <th className="px-4 py-2 font-medium">Title</th>
                   <th className="px-4 py-2 font-medium">Status</th>
-                  <th className="px-4 py-2 font-medium w-8" />
+                  <th className="px-4 py-2 font-medium w-48" />
                 </tr>
               </thead>
               <tbody>
@@ -114,15 +136,31 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
                       )}
                     </td>
                     <td className="px-4 py-2 text-right">
-                      <button
-                        type="button"
-                        aria-label={`Delete ${doc.title}`}
-                        onClick={() => handleDelete(doc)}
-                        disabled={deleteMutation.isPending}
-                        className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger px-1 disabled:opacity-50"
-                      >
-                        ×
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        <select
+                          aria-label={`Move ${doc.title} to folder`}
+                          value={doc.folder_id ?? ""}
+                          onChange={(e) => handleMoveSelect(doc, e.target.value)}
+                          disabled={moveMutation.isPending}
+                          className="bg-bg border border-border rounded-sm text-xs text-muted px-1 py-0.5 disabled:opacity-50"
+                        >
+                          <option value="">Repository root</option>
+                          {(foldersQuery.data ?? []).map((folder: Folder) => (
+                            <option key={folder.id} value={folder.id}>
+                              {folder.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          aria-label={`Delete ${doc.title}`}
+                          onClick={() => handleDelete(doc)}
+                          disabled={deleteMutation.isPending}
+                          className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger px-1 disabled:opacity-50"
+                        >
+                          ×
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

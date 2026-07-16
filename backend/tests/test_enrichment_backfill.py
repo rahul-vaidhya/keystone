@@ -222,16 +222,22 @@ async def test_backfill_requires_admin(client: AsyncClient) -> None:
     invite = await client.post(
         "/auth/invite",
         headers=headers_owner,
-        json={"email": "enrichbf-member@test.com", "password": "password123", "role": ROLE_MEMBER},
+        json={"email": "enrichbf-member@test.com", "role": ROLE_MEMBER},
     )
     assert invite.status_code == 201
+    invite_body = invite.json()
 
-    # Login as the member to get their tokens.
-    login_resp = await client.post(
-        "/auth/login", json={"email": "enrichbf-member@test.com", "password": "password123"}
+    # Accept the invite (self-serve link flow) to get the member's own tokens.
+    accept_resp = await client.post(
+        "/auth/accept-invite",
+        json={
+            "org_id": invite_body["org_id"],
+            "token": invite_body["invite_token"],
+            "password": "password123",
+        },
     )
-    assert login_resp.status_code == 200
-    tokens_member = login_resp.json()
+    assert accept_resp.status_code == 200
+    tokens_member = accept_resp.json()
     headers_member = {"Authorization": f"Bearer {tokens_member['access_token']}"}
 
     # Try to call backfill as a member — should get 403.

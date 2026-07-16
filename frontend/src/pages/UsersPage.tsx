@@ -24,9 +24,10 @@ export function UsersPage() {
   const [renamingOrg, setRenamingOrg] = useState(false);
 
   const [inviteEmail, setInviteEmail] = useState("");
-  const [invitePassword, setInvitePassword] = useState("");
   const [inviteRole, setInviteRole] = useState<"admin" | "member">("member");
   const [inviting, setInviting] = useState(false);
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   const [showPasswordForm, setShowPasswordForm] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -55,19 +56,29 @@ export function UsersPage() {
 
   async function handleInvite(e: FormEvent) {
     e.preventDefault();
-    if (!inviteEmail.trim() || !invitePassword) return;
+    if (!inviteEmail.trim()) return;
     setInviting(true);
     try {
-      await authApi.invite(inviteEmail.trim(), invitePassword, inviteRole);
+      const result = await authApi.invite(inviteEmail.trim(), inviteRole);
       await queryClient.invalidateQueries({ queryKey: ["users"] });
+      // This is the ONLY moment the raw token is ever visible — build the link now and
+      // show it; it can never be refetched or re-derived later.
+      const link = `${window.location.origin}/accept-invite?org=${result.org_id}&token=${result.invite_token}`;
+      setInviteLink(link);
+      setLinkCopied(false);
       setInviteEmail("");
-      setInvitePassword("");
       setInviteRole("member");
     } catch (err) {
       window.alert(err instanceof ApiError ? err.message : "Failed to invite user");
     } finally {
       setInviting(false);
     }
+  }
+
+  async function handleCopyInviteLink() {
+    if (!inviteLink) return;
+    await navigator.clipboard.writeText(inviteLink);
+    setLinkCopied(true);
   }
 
   async function handleRoleChange(userId: string, role: "admin" | "member") {
@@ -234,7 +245,7 @@ export function UsersPage() {
         {isAdmin && (
           <form
             onSubmit={handleInvite}
-            className="bg-surface border border-border rounded-lg p-4 mb-6 flex flex-wrap items-end gap-2"
+            className="bg-surface border border-border rounded-lg p-4 mb-4 flex flex-wrap items-end gap-2"
           >
             <div className="flex flex-col gap-1">
               <label htmlFor="invite-email" className="text-xs text-muted">
@@ -246,20 +257,6 @@ export function UsersPage() {
                 required
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
-                className="bg-bg border border-border rounded-md px-2 py-1 text-sm"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label htmlFor="invite-password" className="text-xs text-muted">
-                Initial password
-              </label>
-              <input
-                id="invite-password"
-                type="password"
-                required
-                minLength={8}
-                value={invitePassword}
-                onChange={(e) => setInvitePassword(e.target.value)}
                 className="bg-bg border border-border rounded-md px-2 py-1 text-sm"
               />
             </div>
@@ -285,6 +282,39 @@ export function UsersPage() {
               Invite
             </button>
           </form>
+        )}
+
+        {isAdmin && inviteLink && (
+          <div className="bg-surface border border-border rounded-lg p-4 mb-6 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-muted">
+                Invite link — send this to the new teammate. It only works once and won&apos;t
+                be shown again.
+              </p>
+              <button
+                type="button"
+                onClick={() => setInviteLink(null)}
+                className="text-xs text-muted hover:text-fg"
+              >
+                Dismiss
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                readOnly
+                value={inviteLink}
+                onFocus={(e) => e.target.select()}
+                className="flex-1 bg-bg border border-border rounded-md px-2 py-1 text-sm font-mono"
+              />
+              <button
+                type="button"
+                onClick={() => void handleCopyInviteLink()}
+                className="text-xs bg-accent text-white rounded-md px-2 py-1.5 hover:opacity-90"
+              >
+                {linkCopied ? "Copied" : "Copy"}
+              </button>
+            </div>
+          </div>
         )}
 
         {usersQuery.isLoading && <p className="text-muted text-sm">Loading…</p>}

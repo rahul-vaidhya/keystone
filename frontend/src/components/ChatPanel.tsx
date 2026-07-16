@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../hooks/useAuth";
 import { chatApi } from "../services/chatService";
-import type { ChatResponse, MessageTrace, ResolvedCitation } from "../types/chat";
+import type {
+  ChatHistoryMessage,
+  ChatResponse,
+  MessageTrace,
+  ResolvedCitation,
+} from "../types/chat";
 import type { Document } from "../types/documents";
 import { CitationPanel } from "./CitationPanel";
 
@@ -119,6 +124,7 @@ export function ChatPanel({
   const { user } = useAuth();
   const isAdmin = user?.role === "owner" || user?.role === "admin";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [query, setQuery] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeCitation, setActiveCitation] = useState<ResolvedCitation | null>(null);
@@ -132,6 +138,41 @@ export function ChatPanel({
       abortRef.current?.();
     };
   }, []);
+
+  // Hydrate the conversation on mount and whenever the notebook changes — this is the
+  // fix for "conversation vanishes on navigation": messages previously lived only in
+  // this component's local state, with nothing reading conversations/messages back.
+  useEffect(() => {
+    let cancelled = false;
+    setMessages([]);
+    setIsLoadingHistory(true);
+    chatApi
+      .listMessages(notebookId)
+      .then((history: ChatHistoryMessage[]) => {
+        if (cancelled) return;
+        // Guard against clobbering an in-flight ask the user fired off before history
+        // finished loading: only apply history onto a still-empty conversation.
+        setMessages((prev) =>
+          prev.length === 0
+            ? history.map((m) => ({
+                role: m.role,
+                content: m.content,
+                citations: m.citations ?? [],
+                messageId: m.id,
+              }))
+            : prev,
+        );
+      })
+      .catch(() => {
+        /* history hydration failure isn't fatal — the panel still works for new asks */
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingHistory(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [notebookId]);
 
   // Auto-scroll to bottom whenever messages update.
   // Use ?.() so jsdom (which doesn't implement scrollIntoView) doesn't throw in tests.
@@ -204,7 +245,7 @@ export function ChatPanel({
       <div className="flex flex-col flex-1 min-h-0">
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.length === 0 && (
+          {messages.length === 0 && !isLoadingHistory && (
             <p className="text-muted text-sm text-center mt-8">
               Ask a question about the documents in this notebook.
             </p>

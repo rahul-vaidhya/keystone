@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -11,7 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import db as db_mod
 from app.middleware.context import TenantContext
 from app.models.auth import (
+    AcceptInviteRequest,
+    InviteOut,
     InviteRequest,
+    InviteToken,
     LoginRequest,
     Organization,
     OrganizationOut,
@@ -30,6 +35,11 @@ from app.utils.constants import (
 )
 from app.utils.passwords import hash_password, verify_password
 from app.utils.tokens import issue_access_token, issue_refresh_token
+
+# Self-serve invite links (replaces the admin-typed-initial-password flow) expire 7
+# days after creation — a reasonable fixed default, not worth a settings field for one
+# constant.
+_INVITE_TOKEN_TTL_DAYS = 7
 
 
 # ---- exceptions ----
@@ -71,6 +81,14 @@ class AccountLocked(AuthError):
     def __init__(self, locked_until: datetime) -> None:
         self.locked_until = locked_until
         super().__init__("Account temporarily locked")
+
+
+class InvalidInviteToken(AuthError):
+    """One generic exception/message covers not-found, wrong-org, expired, AND
+    already-used — mirroring this file's own ``InvalidCredentials`` precedent of
+    collapsing distinct failure causes into one message to avoid giving an attacker an
+    oracle (e.g. distinguishing "expired" from "already used" would leak whether a
+    given link was ever valid)."""
 
 
 # ---- repository ----
@@ -135,7 +153,7 @@ class AuthRepository:
         *,
         org_id: uuid.UUID,
         email: str,
-        password_hash: str,
+        password_hash: str | None,
         role: str,
     ) -> User:
         user = User(org_id=org_id, email=email, password_hash=password_hash, role=role)
@@ -177,10 +195,44 @@ class UserRepository(BaseRepository[User]):
         user.password_hash = password_hash
         # Bumping token_version invalidates every OTHER session (every already-issued
         # access/refresh token carries the OLD version in its "tv" claim and will fail
-        # the check in current_user/refresh) without needing a token denylist.
+        # the check in current_user/refresh) without needing a token denylist. Harmless
+        # here too when called from accept-invite: a brand-new user has no prior
+        # sessions to invalidate.
         user.token_version += 1
         await self._db.flush()
         return user
+
+
+class InviteTokenRepository(BaseRepository[InviteToken]):
+    model = InviteToken
+
+    async def create(
+        self, *, user_id: uuid.UUID, expires_at: datetime, token_hash: str
+    ) -> InviteToken:
+        invite = InviteToken(
+            org_id=self._ctx.org_id,
+            user_id=user_id,
+            token_hash=token_hash,
+            expires_at=expires_at,
+        )
+        self._db.add(invite)
+        await self._db.flush()
+        return invite
+
+    async def get_valid_by_hash(self, token_hash: str) -> InviteToken | None:
+        """Org-scoped (via ``_scoped()``) plus unused plus unexpired. Deliberately does
+        NOT distinguish "not found" from "expired" from "used" at the SQL layer — the
+        service raises one generic ``InvalidInviteToken`` for all of them."""
+        stmt = self._scoped().where(
+            InviteToken.token_hash == token_hash,
+            InviteToken.used_at.is_(None),
+            InviteToken.expires_at > datetime.now(UTC),
+        )
+        return await self._db.scalar(stmt)
+
+    async def mark_used(self, invite: InviteToken) -> None:
+        invite.used_at = datetime.now(UTC)
+        await self._db.flush()
 
 
 # ---- service ----
@@ -325,11 +377,20 @@ class AuthService:
         )
         return TokenResponse(access_token=access), new_refresh
 
-    async def invite(self, ctx: TenantContext, req: InviteRequest) -> UserOut:
+    async def invite(self, ctx: TenantContext, req: InviteRequest) -> InviteOut:
+        """Creates the user with NO password yet (``password_hash=None`` — ``login()``'s
+        existing ``if not user.password_hash`` branch already rejects login for them)
+        plus a one-time, hashed invite token. The RAW token is returned exactly once
+        here, in ``InviteOut.invite_token`` — never persisted, never logged. The
+        inviting admin builds a link from it and sends it to the invitee by whatever
+        channel they like; the invitee sets their OWN password via ``accept_invite``."""
         if ctx.role not in ADMIN_ROLES:
             raise Forbidden("Only owners and admins can invite users")
         if req.role not in ROLES or req.role == ROLE_OWNER:
             raise Forbidden("Invalid invite role")
+
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
 
         async with db_mod.tenant_session(ctx.org_id) as session:
             user_repo = UserRepository(session, ctx)
@@ -340,11 +401,55 @@ class AuthService:
             user = await auth_repo.create_user(
                 org_id=ctx.org_id,
                 email=req.email,
-                password_hash=hash_password(req.password),
+                password_hash=None,
                 role=req.role,
             )
 
-        return UserOut.model_validate(user)
+            invite_repo = InviteTokenRepository(session, ctx)
+            await invite_repo.create(
+                user_id=user.id,
+                expires_at=datetime.now(UTC) + timedelta(days=_INVITE_TOKEN_TTL_DAYS),
+                token_hash=token_hash,
+            )
+
+        return InviteOut(
+            user=UserOut.model_validate(user), org_id=ctx.org_id, invite_token=raw_token
+        )
+
+    async def accept_invite(self, req: AcceptInviteRequest) -> tuple[TokenResponse, str]:
+        """The invitee sets their OWN password. ``org_id`` is a routing identifier
+        carried by the link (not the secret — the token is), so this can use the
+        ordinary ``tenant_session`` rather than a second pre-tenant bootstrap system.
+        On success the invitee is logged straight in, mirroring ``signup``'s tail."""
+        token_hash = hashlib.sha256(req.token.encode()).hexdigest()
+
+        async with db_mod.tenant_session(req.org_id) as session:
+            ctx = TenantContext(org_id=req.org_id)
+            invite_repo = InviteTokenRepository(session, ctx)
+            invite = await invite_repo.get_valid_by_hash(token_hash)
+            if invite is None:
+                raise InvalidInviteToken("Invalid or expired invite link")
+
+            user_repo = UserRepository(session, ctx)
+            user = await user_repo.get_by_id(invite.user_id)
+            if user is None:
+                # Defensive/unreachable given the FK — never leak which failure mode.
+                raise InvalidInviteToken("Invalid or expired invite link")
+
+            updated = await user_repo.update_password(user, hash_password(req.password))
+            await invite_repo.mark_used(invite)
+
+        access = issue_access_token(
+            user_id=updated.id,
+            org_id=updated.org_id,
+            role=updated.role,
+            email=updated.email,
+            token_version=updated.token_version,
+        )
+        refresh = issue_refresh_token(
+            user_id=updated.id, org_id=updated.org_id, token_version=updated.token_version
+        )
+        return TokenResponse(access_token=access), refresh
 
     async def list_org_users(self, ctx: TenantContext) -> list[UserOut]:
         async with db_mod.tenant_session(ctx.org_id) as session:

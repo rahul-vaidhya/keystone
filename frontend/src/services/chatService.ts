@@ -1,9 +1,19 @@
 import { apiFetch, getStoredAccessToken } from "./http";
-import type { ChatRequest, ChatResponse, MessageTrace, SSEEvent } from "../types/chat";
+import type {
+  ChatHistoryMessage,
+  ChatRequest,
+  ChatResponse,
+  MessageTrace,
+  SSEEvent,
+} from "../types/chat";
 
 export const chatApi = {
   // F42 admin debug bundle. Owner/admin only — the backend 403s for a member.
   getTrace: (messageId: string) => apiFetch<MessageTrace>(`/chat/messages/${messageId}/trace`),
+
+  // Chat history hydration — every prior message in a notebook, chronological.
+  listMessages: (notebookId: string) =>
+    apiFetch<ChatHistoryMessage[]>(`/chat/notebooks/${notebookId}/messages`),
 
 
   /**

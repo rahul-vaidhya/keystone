@@ -9,7 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from app.models.auth import Organization, User
+from app.models.auth import InviteToken, Organization, User
 from app.utils.constants import LOGIN_LOCKOUT_THRESHOLD, ROLE_MEMBER, ROLE_OWNER
 from app.utils.passwords import hash_password
 from main import app
@@ -19,6 +19,23 @@ from main import app
 async def client(session_factory, tenant_engine) -> AsyncClient:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
+
+
+async def _accept_invite(
+    client: AsyncClient, invite_body: dict, password: str = "password123"
+) -> dict:
+    """Accept a self-serve invite link (``InviteOut`` response body) and return the
+    resulting ``TokenResponse`` JSON — the invitee's own log-straight-in tokens."""
+    resp = await client.post(
+        "/auth/accept-invite",
+        json={
+            "org_id": invite_body["org_id"],
+            "token": invite_body["invite_token"],
+            "password": password,
+        },
+    )
+    assert resp.status_code == 200
+    return resp.json()
 
 
 async def test_signup_login_me_and_refresh(
@@ -83,10 +100,10 @@ async def test_invite_requires_admin(
     invite = await client.post(
         "/auth/invite",
         headers=headers,
-        json={"email": "newbie@test.com", "password": "password123", "role": ROLE_MEMBER},
+        json={"email": "newbie@test.com", "role": ROLE_MEMBER},
     )
     assert invite.status_code == 201
-    assert invite.json()["role"] == ROLE_MEMBER
+    assert invite.json()["user"]["role"] == ROLE_MEMBER
 
     users = await client.get("/auth/users", headers=headers)
     assert users.status_code == 200
@@ -108,9 +125,9 @@ async def test_change_role_admin_can_promote_member(
     invite = await client.post(
         "/auth/invite",
         headers=owner_headers,
-        json={"email": "promotee@test.com", "password": "password123", "role": ROLE_MEMBER},
+        json={"email": "promotee@test.com", "role": ROLE_MEMBER},
     )
-    target_id = invite.json()["id"]
+    target_id = invite.json()["user"]["id"]
 
     resp = await client.patch(
         f"/auth/users/{target_id}/role",
@@ -134,14 +151,12 @@ async def test_change_role_member_forbidden(
     invite = await client.post(
         "/auth/invite",
         headers=owner_headers,
-        json={"email": "plainmember@test.com", "password": "password123", "role": ROLE_MEMBER},
+        json={"email": "plainmember@test.com", "role": ROLE_MEMBER},
     )
-    target_id = invite.json()["id"]
+    target_id = invite.json()["user"]["id"]
 
-    login = await client.post(
-        "/auth/login", json={"email": "plainmember@test.com", "password": "password123"}
-    )
-    member_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    tokens = await _accept_invite(client, invite.json())
+    member_headers = {"Authorization": f"Bearer {tokens['access_token']}"}
 
     resp = await client.patch(
         f"/auth/users/{target_id}/role",
@@ -186,13 +201,11 @@ async def test_change_role_cannot_self_change(
     invite = await client.post(
         "/auth/invite",
         headers=owner_headers,
-        json={"email": "selfadmin@test.com", "password": "password123", "role": "admin"},
+        json={"email": "selfadmin@test.com", "role": "admin"},
     )
-    admin_login = await client.post(
-        "/auth/login", json={"email": "selfadmin@test.com", "password": "password123"}
-    )
-    admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
-    admin_id = invite.json()["id"]
+    admin_tokens = await _accept_invite(client, invite.json())
+    admin_headers = {"Authorization": f"Bearer {admin_tokens['access_token']}"}
+    admin_id = invite.json()["user"]["id"]
 
     resp = await client.patch(
         f"/auth/users/{admin_id}/role",
@@ -252,14 +265,12 @@ async def test_rename_org_admin_can_rename(
     invite = await client.post(
         "/auth/invite",
         headers=owner_headers,
-        json={"email": "orgadmin@test.com", "password": "password123", "role": "admin"},
+        json={"email": "orgadmin@test.com", "role": "admin"},
     )
     assert invite.status_code == 201
 
-    admin_login = await client.post(
-        "/auth/login", json={"email": "orgadmin@test.com", "password": "password123"}
-    )
-    admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+    admin_tokens = await _accept_invite(client, invite.json())
+    admin_headers = {"Authorization": f"Bearer {admin_tokens['access_token']}"}
 
     resp = await client.patch(
         "/auth/org",
@@ -283,14 +294,12 @@ async def test_rename_org_member_forbidden(
     invite = await client.post(
         "/auth/invite",
         headers=owner_headers,
-        json={"email": "orgmember@test.com", "password": "password123", "role": ROLE_MEMBER},
+        json={"email": "orgmember@test.com", "role": ROLE_MEMBER},
     )
     assert invite.status_code == 201
 
-    member_login = await client.post(
-        "/auth/login", json={"email": "orgmember@test.com", "password": "password123"}
-    )
-    member_headers = {"Authorization": f"Bearer {member_login.json()['access_token']}"}
+    member_tokens = await _accept_invite(client, invite.json())
+    member_headers = {"Authorization": f"Bearer {member_tokens['access_token']}"}
 
     resp = await client.patch(
         "/auth/org",
@@ -334,14 +343,12 @@ async def test_deactivate_member_blocks_login_and_active_session(
     invite = await client.post(
         "/auth/invite",
         headers=owner_headers,
-        json={"email": "deactme@test.com", "password": "password123", "role": ROLE_MEMBER},
+        json={"email": "deactme@test.com", "role": ROLE_MEMBER},
     )
-    target_id = invite.json()["id"]
+    target_id = invite.json()["user"]["id"]
 
-    login = await client.post(
-        "/auth/login", json={"email": "deactme@test.com", "password": "password123"}
-    )
-    member_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    tokens = await _accept_invite(client, invite.json())
+    member_headers = {"Authorization": f"Bearer {tokens['access_token']}"}
 
     # Sanity: the member's token works before deactivation.
     me = await client.get("/auth/me", headers=member_headers)
@@ -379,9 +386,10 @@ async def test_reactivate_member_restores_login(
     invite = await client.post(
         "/auth/invite",
         headers=owner_headers,
-        json={"email": "reactme@test.com", "password": "password123", "role": ROLE_MEMBER},
+        json={"email": "reactme@test.com", "role": ROLE_MEMBER},
     )
-    target_id = invite.json()["id"]
+    target_id = invite.json()["user"]["id"]
+    await _accept_invite(client, invite.json())
 
     await client.patch(
         f"/auth/users/{target_id}/status", headers=owner_headers, json={"is_active": False}
@@ -427,15 +435,13 @@ async def test_deactivate_cannot_target_owner(
     owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
     owner_id = (await client.get("/auth/me", headers=owner_headers)).json()["id"]
 
-    await client.post(
+    invite = await client.post(
         "/auth/invite",
         headers=owner_headers,
-        json={"email": "piadmin@test.com", "password": "password123", "role": "admin"},
+        json={"email": "piadmin@test.com", "role": "admin"},
     )
-    admin_login = await client.post(
-        "/auth/login", json={"email": "piadmin@test.com", "password": "password123"}
-    )
-    admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+    admin_tokens = await _accept_invite(client, invite.json())
+    admin_headers = {"Authorization": f"Bearer {admin_tokens['access_token']}"}
 
     resp = await client.patch(
         f"/auth/users/{owner_id}/status", headers=admin_headers, json={"is_active": False}
@@ -456,19 +462,17 @@ async def test_deactivate_forbidden_for_member(
     invite_a = await client.post(
         "/auth/invite",
         headers=owner_headers,
-        json={"email": "rhomember@test.com", "password": "password123", "role": ROLE_MEMBER},
+        json={"email": "rhomember@test.com", "role": ROLE_MEMBER},
     )
     invite_b = await client.post(
         "/auth/invite",
         headers=owner_headers,
-        json={"email": "rhotarget@test.com", "password": "password123", "role": ROLE_MEMBER},
+        json={"email": "rhotarget@test.com", "role": ROLE_MEMBER},
     )
-    target_id = invite_b.json()["id"]
+    target_id = invite_b.json()["user"]["id"]
 
-    login = await client.post(
-        "/auth/login", json={"email": "rhomember@test.com", "password": "password123"}
-    )
-    member_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    tokens = await _accept_invite(client, invite_a.json())
+    member_headers = {"Authorization": f"Bearer {tokens['access_token']}"}
 
     resp = await client.patch(
         f"/auth/users/{target_id}/status", headers=member_headers, json={"is_active": False}
@@ -611,3 +615,244 @@ async def test_login_lockout_expires_after_window(
         "/auth/login", json={"email": "lockout3@test.com", "password": "password123"}
     )
     assert resp.status_code == 200
+
+
+# ---- Self-serve invite links ----
+
+
+async def test_invite_response_has_no_password_field_and_carries_token(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    signup = await client.post(
+        "/auth/signup",
+        json={"email": "invlink1@test.com", "password": "password123", "org_name": "Psi"},
+    )
+    owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+
+    invite = await client.post(
+        "/auth/invite",
+        headers=owner_headers,
+        json={"email": "invlink1member@test.com", "role": ROLE_MEMBER},
+    )
+    assert invite.status_code == 201
+    body = invite.json()
+    assert "password" not in body
+    assert "password" not in body["user"]
+    assert body["invite_token"]
+    assert body["org_id"]
+    assert body["user"]["email"] == "invlink1member@test.com"
+
+
+async def test_invited_user_cannot_login_before_accepting(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    signup = await client.post(
+        "/auth/signup",
+        json={"email": "invlink2@test.com", "password": "password123", "org_name": "Omega"},
+    )
+    owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+
+    await client.post(
+        "/auth/invite",
+        headers=owner_headers,
+        json={"email": "invlink2member@test.com", "role": ROLE_MEMBER},
+    )
+
+    # No password has been set yet — password_hash is None, so login() rejects it via
+    # the existing `if not user.password_hash` branch, same as any wrong password.
+    resp = await client.post(
+        "/auth/login", json={"email": "invlink2member@test.com", "password": "anything123"}
+    )
+    assert resp.status_code == 401
+
+
+async def test_accept_invite_succeeds_and_logs_in(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    signup = await client.post(
+        "/auth/signup",
+        json={"email": "invlink3@test.com", "password": "password123", "org_name": "AcceptOrg"},
+    )
+    owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+
+    invite = await client.post(
+        "/auth/invite",
+        headers=owner_headers,
+        json={"email": "invlink3member@test.com", "role": ROLE_MEMBER},
+    )
+    body = invite.json()
+
+    accept = await client.post(
+        "/auth/accept-invite",
+        json={
+            "org_id": body["org_id"],
+            "token": body["invite_token"],
+            "password": "brandnew123",
+        },
+    )
+    assert accept.status_code == 200
+    assert accept.json()["access_token"]
+
+    me = await client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {accept.json()['access_token']}"}
+    )
+    assert me.status_code == 200
+    assert me.json()["email"] == "invlink3member@test.com"
+
+    # The invitee's own password now works via ordinary login too.
+    login = await client.post(
+        "/auth/login", json={"email": "invlink3member@test.com", "password": "brandnew123"}
+    )
+    assert login.status_code == 200
+
+
+async def test_accept_invite_token_cannot_be_reused(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    signup = await client.post(
+        "/auth/signup",
+        json={"email": "invlink4@test.com", "password": "password123", "org_name": "ReuseOrg"},
+    )
+    owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+
+    invite = await client.post(
+        "/auth/invite",
+        headers=owner_headers,
+        json={"email": "invlink4member@test.com", "role": ROLE_MEMBER},
+    )
+    body = invite.json()
+    accept_body = {
+        "org_id": body["org_id"],
+        "token": body["invite_token"],
+        "password": "firstpass123",
+    }
+
+    first = await client.post("/auth/accept-invite", json=accept_body)
+    assert first.status_code == 200
+
+    second = await client.post(
+        "/auth/accept-invite", json={**accept_body, "password": "secondpass123"}
+    )
+    assert second.status_code == 400
+
+
+async def test_accept_invite_rejects_garbage_token(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    signup = await client.post(
+        "/auth/signup",
+        json={"email": "invlink5@test.com", "password": "password123", "org_name": "GarbageOrg"},
+    )
+    org = await client.get(
+        "/auth/org", headers={"Authorization": f"Bearer {signup.json()['access_token']}"}
+    )
+    org_id = org.json()["id"]
+
+    resp = await client.post(
+        "/auth/accept-invite",
+        json={"org_id": org_id, "token": "not-a-real-token", "password": "whatever123"},
+    )
+    assert resp.status_code == 400
+
+
+async def test_accept_invite_rejects_expired_token(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    signup = await client.post(
+        "/auth/signup",
+        json={"email": "invlink6@test.com", "password": "password123", "org_name": "ExpiredOrg"},
+    )
+    owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+
+    invite = await client.post(
+        "/auth/invite",
+        headers=owner_headers,
+        json={"email": "invlink6member@test.com", "role": ROLE_MEMBER},
+    )
+    body = invite.json()
+
+    # Superuser DB session (bypasses RLS) — reach in directly to force the token expired,
+    # mirroring the existing lockout tests' pattern of manipulating DB state directly.
+    async with session_factory() as session, session.begin():
+        token = (
+            await session.execute(
+                select(InviteToken).where(InviteToken.org_id == uuid.UUID(body["org_id"]))
+            )
+        ).scalar_one()
+        token.expires_at = datetime.now(UTC) - timedelta(days=1)
+
+    resp = await client.post(
+        "/auth/accept-invite",
+        json={
+            "org_id": body["org_id"],
+            "token": body["invite_token"],
+            "password": "whatever123",
+        },
+    )
+    assert resp.status_code == 400
+
+
+async def test_accept_invite_cross_org_rejected(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    signup_a = await client.post(
+        "/auth/signup",
+        json={"email": "invlink7a@test.com", "password": "password123", "org_name": "OrgA"},
+    )
+    owner_a_headers = {"Authorization": f"Bearer {signup_a.json()['access_token']}"}
+
+    signup_b = await client.post(
+        "/auth/signup",
+        json={"email": "invlink7b@test.com", "password": "password123", "org_name": "OrgB"},
+    )
+    org_b = await client.get(
+        "/auth/org", headers={"Authorization": f"Bearer {signup_b.json()['access_token']}"}
+    )
+    org_b_id = org_b.json()["id"]
+
+    invite = await client.post(
+        "/auth/invite",
+        headers=owner_a_headers,
+        json={"email": "invlink7member@test.com", "role": ROLE_MEMBER},
+    )
+    body = invite.json()
+
+    # Correct token, but paired with a DIFFERENT org's id — must not leak across orgs.
+    resp = await client.post(
+        "/auth/accept-invite",
+        json={"org_id": org_b_id, "token": body["invite_token"], "password": "whatever123"},
+    )
+    assert resp.status_code == 400
+
+
+async def test_invite_forbidden_for_member(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    signup = await client.post(
+        "/auth/signup",
+        json={"email": "invlink8@test.com", "password": "password123", "org_name": "ForbidOrg"},
+    )
+    owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+
+    invite = await client.post(
+        "/auth/invite",
+        headers=owner_headers,
+        json={"email": "invlink8member@test.com", "role": ROLE_MEMBER},
+    )
+    tokens = await _accept_invite(client, invite.json())
+    member_headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    resp = await client.post(
+        "/auth/invite",
+        headers=member_headers,
+        json={"email": "invlink8someone@test.com", "role": ROLE_MEMBER},
+    )
+    assert resp.status_code == 403

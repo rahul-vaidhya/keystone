@@ -17,6 +17,12 @@ export type Organization = {
   name: string;
 };
 
+export type InviteOut = {
+  user: User;
+  org_id: string;
+  invite_token: string;
+};
+
 export class ApiError extends Error {
   status: number;
   body: unknown;

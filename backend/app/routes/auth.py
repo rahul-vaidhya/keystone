@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app import controllers
-from app.models.auth import OrganizationOut, TokenResponse, UserOut
+from app.models.auth import InviteOut, OrganizationOut, TokenResponse, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -14,7 +14,10 @@ router.post("/login", response_model=TokenResponse)(controllers.auth.login)
 router.post("/refresh", response_model=TokenResponse)(controllers.auth.refresh_token)
 router.post("/logout", status_code=204)(controllers.auth.logout)
 router.get("/me", response_model=UserOut)(controllers.auth.me)
-router.post("/invite", response_model=UserOut, status_code=201)(controllers.auth.invite)
+router.post("/invite", response_model=InviteOut, status_code=201)(controllers.auth.invite)
+router.post("/accept-invite", response_model=TokenResponse, status_code=200)(
+    controllers.auth.accept_invite
+)
 router.get("/users", response_model=list[UserOut])(controllers.auth.list_users)
 router.patch("/users/{user_id}/role", response_model=UserOut)(controllers.auth.change_role)
 router.patch("/users/{user_id}/status", response_model=UserOut)(controllers.auth.set_member_active)

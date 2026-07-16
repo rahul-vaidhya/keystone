@@ -1,6 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import type { ChatResponse, MessageTrace, ResolvedCitation } from "../types/chat";
+import type {
+  ChatHistoryMessage,
+  ChatResponse,
+  MessageTrace,
+  ResolvedCitation,
+} from "../types/chat";
 import type { Document } from "../types/documents";
 import { chatApi } from "../services/chatService";
 import { useAuth } from "../hooks/useAuth";
@@ -10,6 +15,7 @@ vi.mock("../services/chatService", () => ({
   chatApi: {
     streamAsk: vi.fn(),
     getTrace: vi.fn(),
+    listMessages: vi.fn(),
   },
 }));
 
@@ -28,6 +34,7 @@ function mockUser(role: "owner" | "admin" | "member" = "member") {
     loading: false,
     login: vi.fn(),
     signup: vi.fn(),
+    acceptInvite: vi.fn(),
     logout: vi.fn(),
   });
 }
@@ -74,6 +81,18 @@ function makeDoc(overrides: Partial<Document> = {}): Document {
   };
 }
 
+function makeHistoryMessage(overrides: Partial<ChatHistoryMessage> = {}): ChatHistoryMessage {
+  return {
+    id: "hist-1",
+    conversation_id: "conv-1",
+    role: "user",
+    content: "prior question",
+    citations: null,
+    created_at: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
 function makeCitation(overrides: Partial<ResolvedCitation> = {}): ResolvedCitation {
   return {
     marker: 1,
@@ -104,14 +123,57 @@ describe("ChatPanel", () => {
   beforeEach(() => {
     vi.mocked(chatApi.streamAsk).mockReset();
     vi.mocked(chatApi.getTrace).mockReset();
+    vi.mocked(chatApi.listMessages).mockReset();
+    vi.mocked(chatApi.listMessages).mockResolvedValue([]);
     mockUser("member");
   });
 
-  it("renders an empty chat input and no messages initially", () => {
+  it("renders an empty chat input and no messages initially", async () => {
     vi.mocked(chatApi.streamAsk).mockReturnValue(() => {});
     render(<ChatPanel notebookId="nb-1" documents={[]} />);
     expect(screen.getByPlaceholderText("Ask a question…")).toBeInTheDocument();
-    expect(screen.getByText(/Ask a question about the documents/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText(/Ask a question about the documents/)).toBeInTheDocument(),
+    );
+  });
+
+  it("fetches and renders prior history as messages on mount, with clickable citations", async () => {
+    vi.mocked(chatApi.listMessages).mockResolvedValue([
+      makeHistoryMessage({ id: "h1", role: "user", content: "earlier question", citations: null }),
+      makeHistoryMessage({
+        id: "h2",
+        role: "assistant",
+        content: "earlier answer [1]",
+        citations: [makeCitation()],
+      }),
+    ]);
+    vi.mocked(chatApi.streamAsk).mockReturnValue(() => {});
+
+    render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+
+    expect(chatApi.listMessages).toHaveBeenCalledWith("nb-1");
+    await waitFor(() => expect(screen.getByText("earlier question")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "[1]" })).toBeInTheDocument();
+  });
+
+  it("refetches and clears prior messages when notebookId changes", async () => {
+    vi.mocked(chatApi.listMessages).mockImplementation((notebookId: string) =>
+      Promise.resolve(
+        notebookId === "nb-1"
+          ? [makeHistoryMessage({ id: "h1", content: "message in nb-1" })]
+          : [makeHistoryMessage({ id: "h2", content: "message in nb-2" })],
+      ),
+    );
+    vi.mocked(chatApi.streamAsk).mockReturnValue(() => {});
+
+    const { rerender } = render(<ChatPanel notebookId="nb-1" documents={[]} />);
+    await waitFor(() => expect(screen.getByText("message in nb-1")).toBeInTheDocument());
+
+    rerender(<ChatPanel notebookId="nb-2" documents={[]} />);
+
+    await waitFor(() => expect(screen.getByText("message in nb-2")).toBeInTheDocument());
+    expect(screen.queryByText("message in nb-1")).not.toBeInTheDocument();
+    expect(chatApi.listMessages).toHaveBeenCalledWith("nb-2");
   });
 
   it("calls chatApi.streamAsk with the notebook_id and query on submit", async () => {

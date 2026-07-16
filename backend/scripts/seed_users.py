@@ -10,7 +10,7 @@ import asyncio
 
 from app.config import db as db_mod
 from app.middleware.context import TenantContext
-from app.models.auth import InviteRequest, SignupRequest
+from app.models.auth import AcceptInviteRequest, InviteRequest, SignupRequest
 from app.services.auth import AuthRepository, EmailTaken, auth_service
 from app.utils.constants import ROLE_ADMIN, ROLE_MEMBER
 
@@ -40,7 +40,15 @@ async def main() -> None:
 
     for email, role in ((ADMIN_EMAIL, ROLE_ADMIN), (MEMBER_EMAIL, ROLE_MEMBER)):
         try:
-            await auth_service.invite(ctx, InviteRequest(email=email, password=PASSWORD, role=role))
+            invite_out = await auth_service.invite(ctx, InviteRequest(email=email, role=role))
+            # Self-serve invite links (no more admin-typed password): accept it
+            # immediately on the invitee's behalf so this seed script's accounts still
+            # log in with the shared dev PASSWORD, same as before.
+            await auth_service.accept_invite(
+                AcceptInviteRequest(
+                    org_id=invite_out.org_id, token=invite_out.invite_token, password=PASSWORD
+                )
+            )
             print(f"Created {role}: {email}")
         except EmailTaken:
             print(f"{role.capitalize()} already exists: {email}")

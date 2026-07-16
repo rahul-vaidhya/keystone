@@ -11,7 +11,9 @@ from app.config.settings import settings
 from app.middleware.context import TenantContext
 from app.middleware.deps import current_user, get_ctx, require_admin
 from app.models.auth import (
+    AcceptInviteRequest,
     ChangePasswordRequest,
+    InviteOut,
     InviteRequest,
     LoginRequest,
     OrganizationOut,
@@ -77,8 +79,15 @@ async def me(user: Annotated[User, Depends(current_user)]) -> UserOut:
 async def invite(
     req: InviteRequest,
     ctx: Annotated[TenantContext, Depends(require_admin)],
-) -> UserOut:
+) -> InviteOut:
     return await auth_service.invite(ctx, req)
+
+
+async def accept_invite(req: AcceptInviteRequest, response: Response) -> TokenResponse:
+    # No auth dependency — this is a public, pre-authentication endpoint like signup/login.
+    tokens, refresh = await auth_service.accept_invite(req)
+    _set_refresh_cookie(response, refresh)
+    return tokens
 
 
 async def list_users(ctx: Annotated[TenantContext, Depends(get_ctx)]) -> list[UserOut]:

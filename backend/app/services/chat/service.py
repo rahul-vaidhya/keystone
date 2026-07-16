@@ -21,12 +21,14 @@ from app.middleware.context import TenantContext
 from app.models.chat import (
     ChatRequest,
     ChatResponse,
+    MessageOut,
     MessageTraceOut,
     ResolvedCitation,
 )
 from app.models.retrieval import ContextBlock, RetrievalSearchRequest
 from app.services.chat.repository import ConversationRepository, MessageRepository, TraceRepository
 from app.services.ingestion import ingestion_service
+from app.services.knowledge import knowledge_service
 from app.services.retrieval import retrieval_service
 from app.services.seams import LLM, Embedder, SeamTransientError
 from app.services.seams import Message as SeamMessage
@@ -346,6 +348,18 @@ class ChatService:
             "citations": [c.model_dump(mode="json") for c in citations],
             "model": llm.model,
         }
+
+    async def list_messages(self, ctx: TenantContext, notebook_id: uuid.UUID) -> list[MessageOut]:
+        """History hydration for the chat panel (fixes the "conversation vanishes on
+        navigation" bug — nothing previously read ``conversations``/``messages`` back for
+        a user). Validates the notebook exists and belongs to this org first, via
+        ``knowledge_service.get_notebook`` (raises ``NotebookNotFound`` -> 404 for both
+        "doesn't exist" and "belongs to another org" — the correct multi-tenant check),
+        same precedent ``retrieval_service.search`` already follows."""
+        await knowledge_service.get_notebook(ctx, notebook_id)
+        async with db_mod.tenant_session(ctx.org_id) as session:
+            messages = await MessageRepository(session, ctx).list_for_notebook(notebook_id)
+        return [MessageOut.model_validate(m) for m in messages]
 
     async def get_trace(self, ctx: TenantContext, message_id: uuid.UUID) -> MessageTraceOut:
         """F42: read-only, admin-gated at the controller (``require_admin``). Returns the

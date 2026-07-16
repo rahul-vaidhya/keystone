@@ -125,7 +125,7 @@ async def test_golden_path_http_flow_as_app_user(client: AsyncClient) -> None:
 
     invite = await client.post(
         "/auth/invite",
-        json={"email": "rls-member-a@test.com", "password": "password123", "role": "member"},
+        json={"email": "rls-member-a@test.com", "role": "member"},
         headers=_auth(token_a),
     )
     assert invite.status_code == 201, invite.text

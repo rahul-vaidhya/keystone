@@ -29,6 +29,7 @@ vi.mock("../services/documentsService", () => ({
 vi.mock("../services/chatService", () => ({
   chatApi: {
     streamAsk: vi.fn(() => () => {}),
+    listMessages: vi.fn(() => Promise.resolve([])),
   },
 }));
 
@@ -97,6 +98,7 @@ describe("NotebookPage", () => {
       loading: false,
       login: vi.fn(),
       signup: vi.fn(),
+      acceptInvite: vi.fn(),
       logout: vi.fn(),
     });
   });

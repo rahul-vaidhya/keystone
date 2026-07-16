@@ -31,6 +31,18 @@ export type SSEDoneEvent = ChatResponse & { type: "done" };
 export type SSEErrorEvent = { type: "error"; message: string };
 export type SSEEvent = SSETokenEvent | SSEDoneEvent | SSEErrorEvent;
 
+// Chat history hydration (GET /chat/notebooks/{notebook_id}/messages) — mirrors
+// app.models.chat.MessageOut. Fetched on mount so a conversation survives navigating
+// away and back (nothing previously read conversations/messages back for a user).
+export type ChatHistoryMessage = {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: ResolvedCitation[] | null;
+  created_at: string;
+};
+
 // F42 admin debug bundle — the persisted trace for one answer.
 export type TraceHit = {
   index: number;

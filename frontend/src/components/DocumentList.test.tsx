@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider, type Query } from "@tanstack/react-query";
-import type { Document } from "../types/documents";
+import type { Document, Folder } from "../types/documents";
 import { documentsApi } from "../services/documentsService";
 import { DocumentList, pollIntervalFor } from "./DocumentList";
 
@@ -15,6 +15,8 @@ vi.mock("../services/documentsService", async () => {
       listDocuments: vi.fn(),
       uploadDocument: vi.fn(),
       deleteDocument: vi.fn(),
+      listFolders: vi.fn(),
+      moveDocument: vi.fn(),
     },
   };
 });
@@ -43,6 +45,19 @@ function fakeQuery(data: Document[] | undefined): Query<Document[]> {
   return { state: { data } } as unknown as Query<Document[]>;
 }
 
+function makeFolder(overrides: Partial<Folder> = {}): Folder {
+  return {
+    id: "folder-1",
+    org_id: "org-1",
+    parent_id: null,
+    name: "Finance",
+    path: "Finance",
+    tag_ids: [],
+    created_at: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
 describe("pollIntervalFor", () => {
   it("returns false when there is no data yet", () => {
     expect(pollIntervalFor(fakeQuery(undefined))).toBe(false);
@@ -64,6 +79,8 @@ describe("DocumentList", () => {
     vi.mocked(documentsApi.listDocuments).mockReset();
     vi.mocked(documentsApi.uploadDocument).mockReset();
     vi.mocked(documentsApi.deleteDocument).mockReset();
+    vi.mocked(documentsApi.listFolders).mockReset().mockResolvedValue([]);
+    vi.mocked(documentsApi.moveDocument).mockReset();
   });
 
   function renderWithClient(ui: React.ReactElement) {
@@ -174,6 +191,53 @@ describe("DocumentList", () => {
 
     expect(store.get("application/json")).toBe(
       JSON.stringify({ type: "document", id: "doc-1" }),
+    );
+  });
+
+  it("renders a move-to-folder control that is visible without hover (no opacity-0 class)", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([makeDoc()]);
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder()]);
+
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+
+    const select = await screen.findByLabelText("Move report.pdf to folder");
+    expect(select).toBeInTheDocument();
+    expect(select.className).not.toMatch(/opacity-0/);
+    expect(select.className).not.toMatch(/group-hover/);
+  });
+
+  it("moving a document to a folder calls moveDocument with the document id and folder id", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([makeDoc()]);
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder({ id: "folder-1", name: "Finance" })]);
+    vi.mocked(documentsApi.moveDocument).mockResolvedValue(makeDoc({ folder_id: "folder-1" }));
+
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+
+    const select = await screen.findByLabelText("Move report.pdf to folder");
+    fireEvent.change(select, { target: { value: "folder-1" } });
+
+    await waitFor(() =>
+      expect(documentsApi.moveDocument).toHaveBeenCalledWith("doc-1", "folder-1"),
+    );
+  });
+
+  it("moving a document to repository root calls moveDocument with folderId null", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([
+      makeDoc({ folder_id: "folder-1" }),
+    ]);
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder({ id: "folder-1" })]);
+    vi.mocked(documentsApi.moveDocument).mockResolvedValue(makeDoc({ folder_id: null }));
+
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+
+    const select = await screen.findByLabelText("Move report.pdf to folder");
+    fireEvent.change(select, { target: { value: "" } });
+
+    await waitFor(() =>
+      expect(documentsApi.moveDocument).toHaveBeenCalledWith("doc-1", null),
     );
   });
 });

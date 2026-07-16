@@ -34,6 +34,7 @@ function mockUser(role: "owner" | "admin" | "member" = "owner") {
     loading: false,
     login: vi.fn(),
     signup: vi.fn(),
+    acceptInvite: vi.fn(),
     logout: vi.fn(),
   });
 }
@@ -71,15 +72,51 @@ describe("UsersPage", () => {
     vi.mocked(authApi.changePassword).mockReset();
   });
 
-  it("shows the invite form and submits it for an owner", async () => {
+  it("shows the invite form (no password field) and submits it for an owner", async () => {
     mockUser("owner");
     vi.mocked(authApi.invite).mockResolvedValue({
-      id: "u-2",
+      user: {
+        id: "u-2",
+        org_id: "org-1",
+        email: "newbie@test.com",
+        role: "member",
+        is_active: true,
+        created_at: "",
+      },
       org_id: "org-1",
-      email: "newbie@test.com",
-      role: "member",
-      is_active: true,
-      created_at: "",
+      invite_token: "raw-token-abc",
+    });
+
+    renderWithClient(<UsersPage />);
+    await waitFor(() => expect(screen.getByText("Acme")).toBeInTheDocument());
+
+    expect(screen.queryByLabelText("Initial password")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "newbie@test.com" },
+    });
+    fireEvent.click(screen.getByText("Invite"));
+
+    await waitFor(() => expect(authApi.invite).toHaveBeenCalledWith("newbie@test.com", "member"));
+  });
+
+  it("shows a copyable invite link containing the raw token after a successful invite", async () => {
+    mockUser("owner");
+    vi.mocked(authApi.invite).mockResolvedValue({
+      user: {
+        id: "u-2",
+        org_id: "org-1",
+        email: "newbie@test.com",
+        role: "member",
+        is_active: true,
+        created_at: "",
+      },
+      org_id: "org-1",
+      invite_token: "raw-token-abc",
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
     });
 
     renderWithClient(<UsersPage />);
@@ -88,13 +125,19 @@ describe("UsersPage", () => {
     fireEvent.change(screen.getByLabelText("Email"), {
       target: { value: "newbie@test.com" },
     });
-    fireEvent.change(screen.getByLabelText("Initial password"), {
-      target: { value: "password123" },
-    });
     fireEvent.click(screen.getByText("Invite"));
 
+    await waitFor(() => {
+      const linkInput = screen.getByDisplayValue(/raw-token-abc/) as HTMLInputElement;
+      expect(linkInput.value).toContain("org=org-1");
+      expect(linkInput.value).toContain("token=raw-token-abc");
+    });
+
+    fireEvent.click(screen.getByText("Copy"));
     await waitFor(() =>
-      expect(authApi.invite).toHaveBeenCalledWith("newbie@test.com", "password123", "member"),
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        expect.stringContaining("raw-token-abc"),
+      ),
     );
   });
 

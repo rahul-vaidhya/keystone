@@ -63,6 +63,36 @@ class User(Base):
     )
 
 
+class InviteToken(Base):
+    """A one-time, hashed capability token for a self-serve invite link (see
+    migrations/0016). ``token_hash`` is a sha256 hex digest — the raw token is never
+    persisted, only ever returned once (``InviteOut.invite_token``) at invite time."""
+
+    __tablename__ = "invite_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 # ---- API schemas ----
 
 
@@ -80,8 +110,16 @@ class LoginRequest(BaseModel):
 
 class InviteRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
     role: str = "member"
+
+
+class AcceptInviteRequest(BaseModel):
+    # ``org_id`` is a routing identifier carried by the invite link, not a secret — the
+    # raw ``token`` is the actual capability. This lets accept-invite use the ordinary
+    # ``tenant_session(org_id)`` instead of a second pre-tenant bootstrap system.
+    org_id: uuid.UUID
+    token: str
+    password: str = Field(min_length=8, max_length=128)
 
 
 class RoleChangeRequest(BaseModel):
@@ -122,6 +160,15 @@ class UserOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class InviteOut(BaseModel):
+    """``invite_token`` is the RAW token — the ONLY time it is ever returned in
+    plaintext. Never persisted (only its sha256 hash is), never logged."""
+
+    user: UserOut
+    org_id: uuid.UUID
+    invite_token: str
 
 
 class OrgChoice(BaseModel):

@@ -21,6 +21,7 @@ from app.services.auth import (
     EmailTaken,
     Forbidden,
     InvalidCredentials,
+    InvalidInviteToken,
     TargetUserNotFound,
 )
 from app.services.chat import GenerationFailed, MessageTraceNotFound
@@ -97,6 +98,13 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": str(exc) or "Invalid credentials"},
+        )
+
+    @app.exception_handler(InvalidInviteToken)
+    async def _invalid_invite_token(_request: Request, exc: InvalidInviteToken) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": str(exc) or "Invalid invite link"},
         )
 
     @app.exception_handler(EmailTaken)

@@ -41,6 +41,7 @@ function mockUser(role: "owner" | "admin" | "member" = "owner") {
     loading: false,
     login: vi.fn(),
     signup: vi.fn(),
+    acceptInvite: vi.fn(),
     logout: vi.fn(),
   });
 }
