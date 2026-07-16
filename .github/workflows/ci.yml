@@ -37,7 +37,7 @@ jobs:
           ruff format --check .
 
       - name: Test (pytest, real pgvector via Testcontainers)
-        run: pytest -q -m "not real_parser"
+        run: pytest -q -m "not real_parser and not hierarchical_eval"
 
   frontend:
     # F51 — the SPA's first real data-fetching feature, and so its first test suite

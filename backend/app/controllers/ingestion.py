@@ -10,8 +10,9 @@ from typing import Annotated
 from fastapi import Depends
 
 from app.middleware.context import TenantContext
-from app.middleware.deps import get_ctx
+from app.middleware.deps import get_ctx, require_admin
 from app.models.documents import DocumentOut
+from app.models.ingestion import EnrichmentBackfillResult
 from app.services.ingestion import ingestion_service
 from app.services.seams import LLM, Embedder, Parser, get_embedder, get_llm, get_parser
 from app.services.storage import ObjectStore, get_object_store  # noqa: F401
@@ -56,4 +57,15 @@ async def enrich_document(
 ) -> DocumentOut:
     return await ingestion_service.run_enrichment_stage(
         ctx, document_id, llm=llm, embedder=embedder, object_store=object_store
+    )
+
+
+async def enrich_backfill(
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    llm: Annotated[LLM, Depends(get_llm)],
+    embedder: Annotated[Embedder, Depends(get_embedder)],
+    object_store: Annotated[ObjectStore, Depends(get_object_store)],
+) -> EnrichmentBackfillResult:
+    return await ingestion_service.run_enrichment_backfill(
+        ctx, llm=llm, embedder=embedder, object_store=object_store
     )

@@ -178,11 +178,18 @@ class RetrievalService:
             )
 
         # Hierarchical succeeded.
-        logger.debug(
+        logger.info(
             "retrieval.hierarchical_used",
             org_id=str(ctx.org_id),
             section_count=len(section_hits),
             chunk_count=len(hits),
+        )
+        # V2 enrichment topics are otherwise dormant (never in the response shape by
+        # design) — surface them at DEBUG for operator visibility of the coarse pass.
+        logger.debug(
+            "retrieval.section_topics",
+            org_id=str(ctx.org_id),
+            sections=[{"heading": h.heading, "topics": h.topics} for h in section_hits],
         )
         return hits
 

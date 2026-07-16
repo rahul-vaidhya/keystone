@@ -197,6 +197,7 @@ class EmbeddingRepository(BaseRepository[Embedding]):
                 Section.document_id,
                 Section.heading,
                 Section.path,
+                Section.topics,
                 Embedding.embedding.cosine_distance(query_vector).label("distance"),
             )
             .join(Section, Section.id == Embedding.owner_id)

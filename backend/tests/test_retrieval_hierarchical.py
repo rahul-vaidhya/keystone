@@ -3,7 +3,11 @@ enrichment is missing, org isolation for search_sections."""
 
 from __future__ import annotations
 
+import logging
 import uuid
+
+import structlog
+from sqlalchemy import update
 
 from app.config.settings import settings
 from app.middleware.context import TenantContext
@@ -436,3 +440,198 @@ async def test_hierarchical_response_shape_intact(
     assert hit.char_start == 10
     assert hit.char_end == 22
     assert isinstance(hit.distance, float)
+
+
+async def test_hierarchical_used_logs_at_info_with_topics_at_debug(
+    session_factory, tenant_engine, monkeypatch
+) -> None:
+    """Verify that retrieval.hierarchical_used logs at INFO, and retrieval.section_topics
+    logs at DEBUG with topics from the SectionHit payloads."""
+    from app.services.retrieval import retrieval_service
+
+    monkeypatch.setattr(settings, "HIERARCHICAL_RETRIEVAL_ENABLED", True)
+    monkeypatch.setattr(settings, "HIERARCHICAL_TOP_SECTIONS", 8)
+
+    org_id = uuid.uuid4()
+    doc_id = uuid.uuid4()
+    section_id = uuid.uuid4()
+    chunk_id = uuid.uuid4()
+
+    async with session_factory() as session, session.begin():
+        session.add(Organization(id=org_id, name="TestOrg"))
+        await session.flush()
+        session.add(Document(id=doc_id, org_id=org_id, title="Test"))
+
+    # Seed section with embedding.
+    await _seed_section_with_embedding(
+        session_factory,
+        org_id=org_id,
+        document_id=doc_id,
+        section_id=section_id,
+        ordinal=0,
+        heading="Chemistry Basics",
+        path="1",
+        seed=1,
+    )
+
+    # Seed chunk in that section with embedding.
+    async with session_factory() as session, session.begin():
+        session.add(
+            Chunk(
+                id=chunk_id,
+                org_id=org_id,
+                document_id=doc_id,
+                section_id=section_id,
+                ordinal=0,
+                content="test chunk content",
+                token_count=5,
+                char_start=0,
+                char_end=18,
+            )
+        )
+        session.add(
+            Embedding(
+                org_id=org_id,
+                document_id=doc_id,
+                owner_type="chunk",
+                owner_id=chunk_id,
+                model=FAKE_MODEL,
+                dim=EMBED_DIM,
+                embedding=_vector(1),
+            )
+        )
+
+    # Update section with topics.
+    async with session_factory() as session, session.begin():
+        stmt = (
+            update(Section)
+            .where(Section.id == section_id)
+            .values(topics=["ionic bonds", "octet rule"])
+        )
+        await session.execute(stmt)
+
+    ctx = TenantContext(org_id=org_id)
+    query_vector = _vector(1)
+
+    # Call _retrieve_hits and capture logs. capture_logs() only swaps structlog's
+    # processor chain — it does NOT lift the app's configured wrapper_class level
+    # filter (LOG_LEVEL=INFO by default), so a DEBUG call is dropped before any
+    # processor (including the capture) ever sees it. Lower the threshold for the
+    # duration of this assertion and restore it exactly afterward.
+    old_wrapper_class = structlog.get_config()["wrapper_class"]
+    structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG))
+    try:
+        with structlog.testing.capture_logs() as cap_logs:
+            hits = await retrieval_service._retrieve_hits(
+                ctx,
+                query_vector=query_vector,
+                scope=[doc_id],
+                model=FAKE_MODEL,
+                k=8,
+            )
+    finally:
+        structlog.configure(wrapper_class=old_wrapper_class)
+
+    # Verify hits returned.
+    assert len(hits) >= 1
+
+    # Find the hierarchical_used event and verify it's at INFO level.
+    hierarchical_used_event = None
+    for log_entry in cap_logs:
+        if log_entry.get("event") == "retrieval.hierarchical_used":
+            hierarchical_used_event = log_entry
+            break
+
+    assert hierarchical_used_event is not None, "retrieval.hierarchical_used event not found"
+    assert hierarchical_used_event.get("log_level") == "info"
+
+    # Find the section_topics event and verify it's at DEBUG level with correct payload.
+    section_topics_event = None
+    for log_entry in cap_logs:
+        if log_entry.get("event") == "retrieval.section_topics":
+            section_topics_event = log_entry
+            break
+
+    assert section_topics_event is not None, "retrieval.section_topics event not found"
+    assert section_topics_event.get("log_level") == "debug"
+    sections = section_topics_event.get("sections", [])
+    assert len(sections) >= 1
+    # Check that one of the sections has the topics we set.
+    topics_found = False
+    for section in sections:
+        if section.get("topics") == ["ionic bonds", "octet rule"]:
+            topics_found = True
+            break
+    assert topics_found, f"Expected topics not found in sections: {sections}"
+
+
+async def test_search_sections_returns_topics_field(session_factory, tenant_engine) -> None:
+    """Verify that search_sections returns the topics field from sections."""
+    org_id = uuid.uuid4()
+    doc_id = uuid.uuid4()
+    section_with_topics_id = uuid.uuid4()
+    section_without_topics_id = uuid.uuid4()
+
+    async with session_factory() as session, session.begin():
+        session.add(Organization(id=org_id, name="TestOrg"))
+        await session.flush()
+        session.add(Document(id=doc_id, org_id=org_id, title="Test"))
+
+    # Seed section with topics.
+    await _seed_section_with_embedding(
+        session_factory,
+        org_id=org_id,
+        document_id=doc_id,
+        section_id=section_with_topics_id,
+        ordinal=0,
+        heading="Section with topics",
+        path="1",
+        seed=0,
+    )
+
+    # Update the section to have topics.
+    async with session_factory() as session, session.begin():
+        stmt = update(Section).where(Section.id == section_with_topics_id).values(topics=["vsepr"])
+        await session.execute(stmt)
+
+    # Seed section without topics.
+    await _seed_section_with_embedding(
+        session_factory,
+        org_id=org_id,
+        document_id=doc_id,
+        section_id=section_without_topics_id,
+        ordinal=1,
+        heading="Section without topics",
+        path="2",
+        seed=1,
+    )
+
+    ctx = TenantContext(org_id=org_id)
+    query_vector = _vector(0)
+
+    # Search sections.
+    hits = await ingestion_service.search_sections(
+        ctx,
+        query_vector=query_vector,
+        document_ids=[doc_id],
+        model=FAKE_MODEL,
+        s=8,
+    )
+
+    # Should return 2 hits (one from seed=0, one from seed=1).
+    assert len(hits) == 2
+
+    # Find the hit with topics.
+    hit_with_topics = None
+    hit_without_topics = None
+    for hit in hits:
+        if hit.section_id == section_with_topics_id:
+            hit_with_topics = hit
+        elif hit.section_id == section_without_topics_id:
+            hit_without_topics = hit
+
+    assert hit_with_topics is not None, "Section with topics not found in hits"
+    assert hit_without_topics is not None, "Section without topics not found in hits"
+
+    assert hit_with_topics.topics == ["vsepr"]
+    assert hit_without_topics.topics is None

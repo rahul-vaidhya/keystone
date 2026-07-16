@@ -145,6 +145,8 @@ class SectionHit(BaseModel):
     document_id: uuid.UUID
     heading: str | None
     path: str
+    # V2 enrichment metadata — surfaced for observability logging only (never in the response).
+    topics: list[str] | None = None
     distance: float
 
     model_config = {"from_attributes": True}
@@ -178,3 +180,11 @@ class ChunkRecord(BaseModel):
     char_end: int
 
     model_config = {"from_attributes": True}
+
+
+class EnrichmentBackfillResult(BaseModel):
+    """Summary of an org-wide enrichment backfill run (POST /ingestion/enrich-backfill)."""
+
+    enriched: int
+    skipped: int
+    failed: int

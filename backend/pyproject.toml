@@ -60,4 +60,5 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
   "real_parser: opt-in F23 integration test against the real OpenRouter parser; needs OPENROUTER_API_KEY + REAL_PDF_PATH, excluded from CI.",
+  "hierarchical_eval: opt-in real-seam output-quality eval for V2 hierarchical retrieval; needs OPENROUTER_API_KEY + OPENAI_API_KEY + OPENAI_BASE_URL + pdf/kech104.pdf, excluded from CI.",
 ]

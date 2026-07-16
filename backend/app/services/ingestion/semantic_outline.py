@@ -29,6 +29,31 @@ _PAGE_HEADING_RE = re.compile(r"^page\s+\d+$", re.IGNORECASE)
 _GENERIC_HEADINGS = {"metadata", "contents"}
 _FILENAME_RE = re.compile(r"\.\w{2,5}$")
 
+
+def _is_generic_heading(heading: str) -> bool:
+    """True for headings that carry no semantic structure: empty strings, page markers
+    ("Page N"), generic wrappers ("Metadata"/"Contents"), and filenames ("document.pdf").
+    Used both to decide whether a parser outline is degenerate AND to filter junk headings
+    the LLM proposes (the same literal strings appear in the extracted text, so the LLM
+    can legitimately quote them — but they are structure noise, not sections)."""
+    stripped = heading.strip()
+    if not stripped:
+        return True
+    if _PAGE_HEADING_RE.match(stripped):
+        return True
+    if stripped.lower() in _GENERIC_HEADINGS:
+        return True
+    if _FILENAME_RE.search(stripped):
+        return True
+    return False
+
+
+# Overlap between consecutive LLM windows so a heading straddling a window boundary is
+# fully contained in at least one window (it would otherwise be truncated in BOTH windows
+# and silently lost — the "never fabricate" contract means we can't recover it). Capped at
+# a quarter of the window so tiny test windows still make forward progress.
+_WINDOW_OVERLAP_CHARS = 500
+
 _SYSTEM_PROMPT = (
     "You extract the section-heading outline of a document from its raw extracted text. "
     "Respond with ONLY a JSON array, no prose, no code fences."
@@ -58,15 +83,7 @@ def outline_is_degenerate(outline: list[dict]) -> bool:
 
     for node in outline:
         heading = (node.get("heading") or "").strip()
-        # A heading is "generic" if it's empty, matches page-number pattern,
-        # is a lowercase generic word, or looks like a filename.
-        if not heading:
-            continue
-        if _PAGE_HEADING_RE.match(heading):
-            continue
-        if heading.lower() in _GENERIC_HEADINGS:
-            continue
-        if _FILENAME_RE.search(heading):
+        if _is_generic_heading(heading):
             continue
         # Found at least one real heading.
         return False
@@ -141,13 +158,16 @@ async def derive_semantic_outline(
     if window_chars is None:
         window_chars = settings.SEMANTIC_OUTLINE_WINDOW_CHARS
 
-    # Split text into consecutive windows.
+    # Split text into overlapping windows (see _WINDOW_OVERLAP_CHARS).
+    overlap = min(_WINDOW_OVERLAP_CHARS, window_chars // 4)
     windows: list[str] = []
     pos = 0
     while pos < len(text):
         end = min(pos + window_chars, len(text))
         windows.append(text[pos:end])
-        pos = end
+        if end >= len(text):
+            break
+        pos = end - overlap
 
     # Collect all (heading, level) pairs in document order, with their window indices.
     all_headings: list[tuple[str, int, int]] = []  # (heading, level, window_idx)
@@ -162,6 +182,25 @@ async def derive_semantic_outline(
             completion = "".join([tok async for tok in llm.stream(messages)])
             headings = _parse_headings(completion)
             for heading, level in headings:
+                if _is_generic_heading(heading):
+                    # Junk the LLM quoted from the text (page markers, wrappers,
+                    # filenames). Dropped BEFORE offset location so it never consumes
+                    # the cursor or warps a neighbor's char_end.
+                    logger.info(
+                        "ingestion.semantic_outline_generic_heading_dropped",
+                        heading=heading[:80],
+                    )
+                    continue
+                if all_headings:
+                    prev_heading, _, prev_window_idx = all_headings[-1]
+                    if heading == prev_heading and prev_window_idx == window_idx - 1:
+                        # Same heading, re-proposed by the directly-adjacent window:
+                        # almost certainly the overlap zone re-detecting the boundary
+                        # heading, NOT a genuine repeat (genuine repeats — e.g. the same
+                        # "Diet" H2 under two parents — are pages apart, never in two
+                        # adjacent windows' shared overlap). Deduping here keeps the
+                        # forward find() cursor from attaching a later occurrence.
+                        continue
                 all_headings.append((heading, level, window_idx))
         except Exception as exc:
             logger.warning(

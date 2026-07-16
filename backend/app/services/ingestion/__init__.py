@@ -17,9 +17,11 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
+from app.config.logging import get_logger
 from app.middleware.context import TenantContext
-from app.models.documents import DocumentOut
-from app.models.ingestion import ChunkHit, ChunkRecord, SectionHit
+from app.models.documents import DocumentOut, DocumentStatus
+from app.models.ingestion import ChunkHit, ChunkRecord, EnrichmentBackfillResult, SectionHit
+from app.services.documents import documents_service
 from app.services.ingestion import embedding as _embedding
 from app.services.ingestion import enrichment as _enrichment
 from app.services.ingestion import parsing as _parsing
@@ -31,6 +33,8 @@ from app.services.storage import ObjectStore
 
 if TYPE_CHECKING:
     from app.services.seams import LLM
+
+logger = get_logger(__name__)
 
 
 class IngestionService:
@@ -129,6 +133,43 @@ class IngestionService:
 
     async def get_chunks(self, ctx: TenantContext, chunk_ids: list[uuid.UUID]) -> list[ChunkRecord]:
         return await _search.get_chunks(ctx, chunk_ids)
+
+    async def run_enrichment_backfill(
+        self,
+        ctx: TenantContext,
+        *,
+        llm: LLM,
+        embedder: Embedder,
+        object_store: ObjectStore,
+    ) -> EnrichmentBackfillResult:
+        """Org-wide enrichment backfill (admin-gated) for documents that reached READY
+        before ENRICHMENT_ENABLED existed — the only prior entry point was per-document.
+        Sequential (not concurrent) to keep LLM call volume predictable and avoid
+        hammering the seam; reuses the existing idempotent ``run_enrichment_stage`` per
+        document, so re-running the backfill is safe. Lists documents via
+        ``documents_service.list_documents`` (module-boundary rule: never a repository
+        import here) and filters to READY client-side — a status filter isn't a shared
+        concern worth adding to the general-purpose accessor."""
+        docs = await documents_service.list_documents(ctx)
+        ready_docs = [d for d in docs if d.status == DocumentStatus.READY]
+        enriched = 0
+        failed = 0
+        for doc in ready_docs:
+            try:
+                await self.run_enrichment_stage(
+                    ctx, doc.id, llm=llm, embedder=embedder, object_store=object_store
+                )
+                enriched += 1
+            except Exception as exc:
+                logger.warning(
+                    "ingestion.enrichment_backfill_document_failed",
+                    document_id=str(doc.id),
+                    org_id=str(ctx.org_id),
+                    error=str(exc),
+                )
+                failed += 1
+        skipped = len(docs) - len(ready_docs)
+        return EnrichmentBackfillResult(enriched=enriched, skipped=skipped, failed=failed)
 
 
 ingestion_service = IngestionService()

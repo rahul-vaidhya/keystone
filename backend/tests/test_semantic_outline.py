@@ -6,6 +6,8 @@ a database or HTTP client. Uses a fake LLM that streams predefined payloads.
 
 from __future__ import annotations
 
+import json
+
 from app.services.ingestion.semantic_outline import (
     derive_semantic_outline,
     outline_is_degenerate,
@@ -156,31 +158,35 @@ async def test_derive_semantic_outline_code_fenced() -> None:
 
 
 async def test_derive_semantic_outline_multi_window() -> None:
-    """Text split into multiple windows; LLM called per window."""
-    # Build text that's exactly 200 chars: 100-char window 0 + 100-char window 1
-    # Window 0: heading + padding
+    """Text split into multiple overlapping windows; LLM called per window."""
+    # Build text with window_chars=100 and overlap=min(500, 100//4)=25, step=75.
+    # Windows: [0,100), [75,175), [150,250) — exactly three windows when text is 250 chars.
+    # Window 0: heading + padding to 100 chars
     window0_heading = "Section One"
     window0_text = window0_heading + " " + "a" * (100 - len(window0_heading) - 1)
-    # Window 1: heading + padding
+    # Window 1: heading + padding to 100 chars
     window1_heading = "Section Two"
     window1_text = window1_heading + " " + "b" * (100 - len(window1_heading) - 1)
-    text = window0_text + window1_text
-    assert len(text) == 200  # Exactly 200 chars for 2 windows at 100 chars each
+    # Window 2: trailing content to 50 chars (100 + 100 + 50 = 250)
+    window2_text = "c" * 50
+    text = window0_text + window1_text + window2_text
+    assert len(text) == 250
     page_count = 1
 
-    # Two payloads: one heading per window.
+    # Three payloads: one per window.
     llm = _OutlineLLM(
         [
             '[{"heading": "Section One", "level": 1}]',
             '[{"heading": "Section Two", "level": 1}]',
+            "[]",
         ]
     )
 
     nodes = await derive_semantic_outline(text, page_count, llm, window_chars=100)
 
-    # Both windows' headings were located.
+    # Both headings were located.
     assert len(nodes) == 2
-    assert llm.calls == 2
+    assert llm.calls == 3
     assert nodes[0]["heading"] == "Section One"
     assert nodes[1]["heading"] == "Section Two"
 
@@ -205,3 +211,123 @@ async def test_derive_semantic_outline_nested_levels_char_end() -> None:
     assert nodes[1]["char_end"] == nodes[2]["char_start"]
     # Another H1 (level 1) ends at len(text).
     assert nodes[2]["char_end"] == len(text)
+
+
+async def test_generic_headings_filtered_from_derived_outline() -> None:
+    """Generic headings (page markers, wrappers, filenames) are filtered before offset location."""
+    text = "Contents\nPage 12\n4.1 Chemical Bonding\nreal body text follows here."
+    page_count = 1
+    # LLM proposes all three headings.
+    payload = (
+        '[{"heading": "Contents", "level": 1}, '
+        '{"heading": "Page 12", "level": 1}, '
+        '{"heading": "4.1 Chemical Bonding", "level": 1}]'
+    )
+    llm = _OutlineLLM([payload])
+
+    nodes = await derive_semantic_outline(text, page_count, llm)
+
+    # Only the real heading survives.
+    assert len(nodes) == 1
+    assert nodes[0]["heading"] == "4.1 Chemical Bonding"
+    assert nodes[0]["char_start"] == text.index("4.1 Chemical Bonding")
+    # Last node ends at len(text).
+    assert nodes[0]["char_end"] == len(text)
+
+
+class _SegmentAwareLLM:
+    """Returns a heading ONLY if it appears in full inside the window segment it was
+    given — models a real LLM, which cannot propose text it never saw whole."""
+
+    def __init__(self, heading: str) -> None:
+        self._heading = heading
+        self.calls = 0
+
+    @property
+    def model(self) -> str:
+        return "segment-aware-fake"
+
+    async def stream(self, messages):
+        for msg in messages:
+            _ = msg.role
+            _ = msg.content
+        self.calls += 1
+        segment = messages[-1].content
+        if self._heading in segment:
+            yield json.dumps([{"heading": self._heading, "level": 1}])
+        else:
+            yield "[]"
+
+
+async def test_boundary_straddling_heading_recovered_via_overlap() -> None:
+    """A heading straddling a window boundary is recovered via overlap."""
+    # Text of length 175 with a heading at indices 90..114 (24 chars).
+    heading_text = "Boundary Section Heading"
+    text = "a" * 90 + heading_text + "b" * (175 - 90 - len(heading_text))
+    assert len(text) == 175
+    # With window_chars=100 and overlap=25, step=75.
+    # Windows: [0,100), [75,175) — the heading straddles index 100.
+    # Window 0 sees [0,100), which includes indices 0-99, missing the tail of the heading.
+    # Window 1 sees [75,175), which fully contains indices 90-114.
+    page_count = 1
+    llm = _SegmentAwareLLM(heading_text)
+
+    nodes = await derive_semantic_outline(text, page_count, llm, window_chars=100)
+
+    # The heading is fully inside window 1, so it's recovered.
+    assert len(nodes) == 1
+    assert nodes[0]["heading"] == heading_text
+    assert nodes[0]["char_start"] == 90
+
+
+async def test_adjacent_window_duplicate_proposal_deduped() -> None:
+    """Adjacent windows re-proposing the same heading in their overlap zone are deduped."""
+    # Heading at indices 78..98 (20 chars), fully inside both [0,100) and [75,175).
+    heading_text = "Overlap Zone Heading"
+    text = "x" * 78 + heading_text + "y" * (175 - 78 - len(heading_text))
+    assert len(text) == 175
+    page_count = 1
+    llm = _SegmentAwareLLM(heading_text)
+
+    nodes = await derive_semantic_outline(text, page_count, llm, window_chars=100)
+
+    # The heading is in the overlap zone and proposed by both adjacent windows.
+    # Dedup logic keeps only one.
+    assert len(nodes) == 1
+    assert nodes[0]["heading"] == heading_text
+    assert nodes[0]["char_start"] == 78
+
+
+async def test_far_apart_repeated_heading_not_deduped() -> None:
+    """The same heading string repeated far apart (not adjacent windows) produces two nodes."""
+    # Use _OutlineLLM to propose "Diet" in window 0 and window 2 (non-adjacent).
+    # Text of length 250 with window_chars=100 (overlap 25, step 75).
+    # Windows: [0,100), [75,175), [150,250) — three windows.
+    heading_text = "Diet"
+    # Place first "Diet" at index 0 (window 0 only, [0,100)).
+    window0_part = heading_text + "x" * (100 - len(heading_text))
+    # Place "Habitat" at index 110 (window 1 only, inside [75,175), not in overlap zones).
+    window1_part = "x" * 10 + "Habitat" + "x" * (100 - 10 - len("Habitat"))
+    # Place second "Diet" at index 200 (window 2 only, [150,250)).
+    window2_part = heading_text + "x" * (50 - len(heading_text))
+    text = window0_part + window1_part + window2_part
+    assert len(text) == 250
+    assert text[0:4] == "Diet"
+    assert text[200:204] == "Diet"
+    page_count = 1
+
+    llm = _OutlineLLM(
+        [
+            '[{"heading": "Diet", "level": 1}]',
+            '[{"heading": "Habitat", "level": 1}]',
+            '[{"heading": "Diet", "level": 1}]',
+        ]
+    )
+
+    nodes = await derive_semantic_outline(text, page_count, llm, window_chars=100)
+
+    # Both occurrences of "Diet" recovered as separate nodes (windows 0 and 2 are non-adjacent).
+    diet_nodes = [n for n in nodes if n["heading"] == "Diet"]
+    assert len(diet_nodes) == 2
+    assert diet_nodes[0]["char_start"] == 0
+    assert diet_nodes[1]["char_start"] == 200
