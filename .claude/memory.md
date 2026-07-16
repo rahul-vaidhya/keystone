@@ -6,7 +6,7 @@
 
 ---
 
-## UX audit — 4 critical findings fixed + live-verified (2026-07-16 later session — UNCOMMITTED)
+## UX audit — 4 critical findings fixed + live-verified (2026-07-16 later session — COMMITTED `8964ec6`)
 
 **A direct ask, not a buildplan item**: the user pasted a published claude.ai artifact
 ("Veratas — Product UX Audit," a 15-finding UX review produced in an earlier session
@@ -17,8 +17,8 @@ the relevant code directly first (fast Read/Grep, not a recon subagent), dispatc
 exact conventions to mirror, exact DoD, told to run its own verification), review the
 returned diff myself before trusting it, then live-verify in a real browser
 (claude-in-chrome) against local dev servers before moving to the next finding. All
-four are DONE and confirmed working live, but **the working tree is UNCOMMITTED** —
-ask the user whether to commit before ending this session.
+four are DONE, confirmed working live, and **committed as `8964ec6`** (one commit,
+per direct instruction, covering all four fixes).
 
 **1. Chat history vanishing on navigation — FIXED.** Backend: new
 `GET /chat/notebooks/{notebook_id}/messages` (`MessageRepository.list_for_notebook`
@@ -124,11 +124,9 @@ twice), frontend 69 passed, ruff/tsc/build all clean. Migration chain now heads 
 
 ## Next session starts with
 
-Ask the user whether to commit this session's 4-fix working tree (currently
-uncommitted — `git status` shows ~24 modified + 4 new files across backend+frontend).
-If yes, one commit (or four, if the user prefers granularity matching the four
-findings) referencing migration 0016. Then resume the UX audit's remaining 11 findings
-(4 High, 4 Medium, 3 Low — see the published artifact for the full list) if the user
+This session's 4-fix commit (`8964ec6`) is done and the tree is clean. Resume the UX
+audit's remaining 11 findings (4 High, 4 Medium, 3 Low — see the published artifact for
+the full list) if the user
 wants to continue down the list; none of those were touched this session.
 
 ---
