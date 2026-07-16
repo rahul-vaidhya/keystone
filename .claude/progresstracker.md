@@ -813,7 +813,70 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       `test_enrichment.py` (8, prefix `enrich-`), `test_retrieval_hierarchical.py` (5, prefix
       `hier-`). Committed `ce3eebd`. Next migration: `0016`.
 
+## Maintenance — V2 hardening + real-seam hierarchical-retrieval eval harness
+- [x] V2 hardening + eval harness (2026-07-16, this session — COMMITTED). **A direct ask,
+      continuing straight from the 2026-07-15 V2 activation**: harden the rough edges that
+      session's live validation surfaced, then build a real-seam eval harness to actually
+      measure whether hierarchical retrieval improves grounding. Session ran across a
+      session-limit interruption; resumed mid-task from an invoker-supplied state snapshot.
+      **Part 1 (4 items, zero schema change, flag-off behavior byte-identical throughout)**:
+      (1) `retrieval.hierarchical_used` promoted DEBUG→INFO (was invisible at default
+      `LOG_LEVEL=INFO`, unlike its two fallback siblings which already logged at INFO); (2)
+      `sections.topics` (populated since 2026-07-15, never read anywhere) surfaced via a new
+      `SectionHit.topics` field + a new `retrieval.section_topics` DEBUG log — deliberately
+      NOT wired into `ContextBlock`/chat response shape, which stays frozen by design; (3)
+      semantic outline hardening (`app/services/ingestion/semantic_outline.py`): a shared
+      `_is_generic_heading()` helper now filters LLM-proposed junk ("Contents"/"Page N")
+      BEFORE char_end computation runs, and windows now overlap by
+      `_WINDOW_OVERLAP_CHARS=500` (with adjacent-window-only dedup) so a heading straddling a
+      window boundary is no longer silently lost — 4 new offline unit tests; (4) new
+      admin-gated `POST /ingestion/enrich-backfill` (mirrors F42's `require_admin` pattern) →
+      `IngestionService.run_enrichment_backfill` lists READY documents via
+      `documents_service.list_documents` (service call, never a repository import) and
+      re-runs the existing idempotent `run_enrichment_stage` per document — closes the gap
+      that pre-flag documents had no way to get enriched. **A real gotcha found by the
+      invoker mid-session**: `structlog.testing.capture_logs()` doesn't lift the app's
+      `LOG_LEVEL=INFO` wrapper_class filter, so a DEBUG-level assertion inside it silently
+      sees nothing — fixed with a temporary `wrapper_class` swap in the test, documented as a
+      standing gotcha for any future DEBUG-level log assertion. Verification: offline suite
+      grew to **229 passed, 0 skipped, 2 deselected** (11 net-new tests), stable across
+      repeated synchronous runs, ruff clean, independent Haiku review PASS on all 8 hard
+      rules (`app/services/ingestion/__init__.py` stayed at 175 lines, under the
+      package-layout promotion trigger).
+      **Part 2 (the primary ask)**: `backend/tests/test_hierarchical_eval.py` — opt-in
+      (`hierarchical_eval` marker, registered + CI-excluded exactly like `real_parser`;
+      verified plain `pytest -q`/CI can never trigger it and its own skip condition fires
+      correctly). Real OpenRouter parser/embedder/LLM ingest `pdf/kech104.pdf` with all 3 V2
+      flags on, ONCE, then reuse that corpus for 8 golden questions × 3 retrieval-mode
+      comparisons (flat / hierarchical top_sections=8 / top_sections=4, mechanically graded
+      via section-heading substring match + `capture_logs()` event-name assertions — never a
+      subjective judgment call) + one real `/chat/ask` per question for evidence+provenance
+      grading, plus 2 bait questions × 2 modes. **One design subtlety**: `_retrieve_hits`
+      computes coarse-pass `s = max(k, HIERARCHICAL_TOP_SECTIONS)`, so the eval uses `k=4` for
+      retrieval-only comparisons (else `top_sections=4` would be silently clamped back to 8
+      by the default `k=8` and the sensitivity check would be a no-op). **Live result: winner
+      tally flat=0, hierarchical=0, tie=8** — hierarchical matched flat's top-hit section
+      selection on every single question, never better, never worse. Evidence PASS 8/8.
+      Provenance PASS 6/8 at face value, but both "FAILs" were a harness measurement artifact
+      (hint-matching missed an abbreviated heading and a parent-context heading, not a real
+      mis-citation — manual inspection confirms 8/8 true provenance). `top_sections=4` vs `=8`
+      agreement: 8/8, no sensitivity detected at this corpus size. Bait: 2/2 exact refusal + 0
+      citations in BOTH modes. Semantic outline recovered 27 real chapter/subsection headings
+      with zero junk surviving into a winning top-section — first empirical confirmation the
+      Part 1 junk filter works on the real corpus. **Honest verdict**: on this
+      single-document, ~36-page corpus, hierarchical retrieval is correct but doesn't
+      measurably improve grounding over flat — flat was already precise enough that a coarse
+      pre-filter has nothing to correct, extending the 2026-07-14 finding
+      ("AI chunk-enrichment NOT needed now") rather than contradicting it. Recommend keeping
+      `HIERARCHICAL_RETRIEVAL_ENABLED` off by default until a genuinely large multi-document
+      notebook creates real pressure on flat's precision. Eval itself: **1 passed in ~219s**,
+      not part of any CI/offline tally. See memory.md "V2 hardening + real-seam
+      hierarchical-retrieval eval harness" for the full report table and detail. No new
+      migration — next is still `0016`.
+
 **Semantic outline + enrichment + hierarchical retrieval (V2 ACTIVATED, 2026-07-15, committed `ce3eebd`).** Three flag-gated features built with zero migrations (schema pre-designed): (1) **SEMANTIC_OUTLINE_ENABLED** replaces page-level parser structure with LLM semantic headings (cached artifacts/semantic_outline.json, every failure falls back to parser outline, stage never fails); (2) **ENRICHMENT_ENABLED** runs per-section LLM JSON extraction (summary/topics → sections.summary/topics + owner_type='section' embeddings), never mutates document status (doc already READY); (3) **HIERARCHICAL_RETRIEVAL_ENABLED** coarse kNN over section embeddings then fine chunk kNN, falls back to flat on zero section/chunk hits. **THE bug**: enrichment.py passed dicts to `llm.stream()`; RealLLM attribute-access failed; fixed with Message(...) dataclasses + hardened test fakes. **Live validation** on `pdf/kech104.pdf` (historical page-level worst case): semantic outline recovered 31–32 of ~34 real headings; enrichment 33/33 sections; hierarchical retrieval confirmed serving in-scope query. Chat: grounded answer + citations on-scope, exact refusal on bait. **New suite baseline: 218 passed, 1 skipped.** Independent review 13/13 hard-rule checks PASS. Committed `ce3eebd`.
+
+**V2 hardening + real-seam eval harness (2026-07-16, this session).** Part 1: promoted `retrieval.hierarchical_used` to INFO; surfaced dormant `sections.topics` via a DEBUG log only (chat response shape untouched); hardened `semantic_outline.py` (junk-heading filtering + overlapping windows with adjacent-window dedup, fixing both gaps the 2026-07-15 validation named); added admin-gated `POST /ingestion/enrich-backfill` for pre-existing READY documents. New suite baseline: **229 passed, 0 skipped, 2 deselected**, ruff clean, independent review PASS on all 8 hard rules. Part 2 (the primary ask): `test_hierarchical_eval.py`, an opt-in real-seam eval harness — ingested `pdf/kech104.pdf` once with all 3 V2 flags on, ran 8 golden questions × 3 retrieval modes + real `/chat/ask` grading + 2 bait questions. **Result: hierarchical tied flat on every question (0 wins either way)** — correct but no measured grounding improvement on this single-document corpus, extending (not contradicting) the 2026-07-14 "AI enrichment not needed now" finding. Recommend keeping the flag off by default until a large multi-document notebook creates real pressure on flat's precision. A genuine new gotcha found: `structlog.testing.capture_logs()` doesn't lift the app's INFO log-level floor, so DEBUG-event assertions need a temporary wrapper_class swap. See memory.md for the full report table and verdict.
 
 Next action: none from the buildplan. Future work = V2/V3/Enterprise items
 (architecture.md "Postponed") or direct asks. Ops notes: add
