@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { useMutation, useQuery, useQueryClient, type Query } from "@tanstack/react-query";
 import { documentsApi } from "../services/documentsService";
+import { useDialog } from "../hooks/useDialog";
 import { ApiError } from "../types/auth";
 import type { Document, Folder } from "../types/documents";
 import { StatusBadge } from "./StatusBadge";
@@ -19,6 +20,7 @@ export function pollIntervalFor(query: Query<Document[]>): number | false {
 
 export function DocumentList({ currentFolderId }: { currentFolderId: string | null }) {
   const queryClient = useQueryClient();
+  const dialog = useDialog();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const documentsQuery = useQuery({
@@ -36,14 +38,14 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
     mutationFn: (file: File) => documentsApi.uploadDocument(file, currentFolderId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["documents"] }),
     onError: (err) =>
-      window.alert(err instanceof ApiError ? err.message : "Failed to upload document"),
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to upload document"),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (documentId: string) => documentsApi.deleteDocument(documentId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["documents"] }),
     onError: (err) =>
-      window.alert(err instanceof ApiError ? err.message : "Failed to delete document"),
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to delete document"),
   });
 
   const moveMutation = useMutation({
@@ -51,7 +53,7 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
       documentsApi.moveDocument(documentId, folderId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["documents"] }),
     onError: (err) =>
-      window.alert(err instanceof ApiError ? err.message : "Failed to move document"),
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to move document"),
   });
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -60,8 +62,12 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
     e.target.value = "";
   }
 
-  function handleDelete(doc: Document) {
-    if (!window.confirm(`Permanently delete "${doc.title}"? This cannot be undone.`)) return;
+  async function handleDelete(doc: Document) {
+    const ok = await dialog.confirm(
+      `Permanently delete "${doc.title}"? This cannot be undone.`,
+      { confirmLabel: "Delete", danger: true },
+    );
+    if (!ok) return;
     deleteMutation.mutate(doc.id);
   }
 
@@ -154,7 +160,7 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
                         <button
                           type="button"
                           aria-label={`Delete ${doc.title}`}
-                          onClick={() => handleDelete(doc)}
+                          onClick={() => void handleDelete(doc)}
                           disabled={deleteMutation.isPending}
                           className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger px-1 disabled:opacity-50"
                         >

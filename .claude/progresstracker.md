@@ -896,6 +896,37 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       The remaining 11 non-critical findings (High/Medium/Low) from the same audit are
       untouched.
 
+## Maintenance — UX audit: 4 High findings fixed (2026-07-19, this session — UNCOMMITTED, frontend-only)
+- [x] Fixed and live-verified all 4 HIGH findings from the same published "Veratas —
+      Product UX Audit" artifact, continuing directly from the 2026-07-16 critical-
+      findings session: (1) empty-notebook Ask now disables the input and explains why
+      instead of giving the same generic refusal an out-of-scope question would
+      (`ChatPanel.tsx`); (2) zero responsive breakpoints — added a standard Tailwind
+      off-canvas drawer sidebar (`Sidebar.tsx`/`AppShell.tsx`, `lg:` cutover) + stacked
+      single-column layouts for `NotebookPage.tsx`/`DocumentsPage.tsx`/`ChatPanel.tsx`'s
+      citation panel below `lg:`, desktop rendering confirmed byte-identical; (3) native
+      `alert()`/`confirm()`/`prompt()` everywhere except Auth — new accessible
+      WAI-ARIA-pattern `Modal`/`DialogContext`/`useDialog` system replacing every native
+      call site across 6 components/pages, plus a bespoke `FolderDeleteDialog` (two
+      labeled buttons, typed-name safety check on the destructive option) replacing
+      `FolderTree`'s old cascade/reflow `window.prompt`; (4) dead "Search" nav item —
+      new `SearchPage.tsx` wiring the existing notebook-scoped `/retrieval/search`
+      endpoint (no new backend endpoint — honest scope, since the backend has no
+      global cross-notebook search), reusing the existing `CitationPanel` component for
+      click-through. 19 files modified + 12 new files, 100% frontend (zero backend
+      touched). **101 passed (14 test files, was 30 baseline before this session),
+      `tsc -b` clean, `vite build` clean** — independently re-verified after each of
+      the 4 fixes, not just subagent-reported. Live-verified in a real browser for all
+      4: empty-notebook disabled state, desktop-unchanged responsive layout, a real
+      cascade-delete-with-typed-confirmation round trip, and a real (uncached)
+      `/retrieval/search` API round-trip. **NOT YET COMMITTED** — see memory.md "UX
+      audit — 4 High findings fixed" for full detail, two gotchas (the browser
+      automation's `resize_window` tool doesn't reliably change the rendered viewport
+      in this sandbox — mobile-width visual proof is still outstanding; the dev `arq`
+      worker wasn't running this session, so a populated non-empty search-results
+      round-trip couldn't be demonstrated live). 7 findings remain untouched (4 Medium,
+      3 Low).
+
 Next action: none from the buildplan. Future work = V2/V3/Enterprise items
 (architecture.md "Postponed") or direct asks. Ops notes: add
 `OPENAI_API_KEY`/`OPENAI_BASE_URL` (+ `*_MODE=real`, `STORAGE_MODE=local`) to

@@ -2,6 +2,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { documentsApi } from "../services/documentsService";
 import { notebooksApi } from "../services/notebooksService";
+import { useDialog } from "../hooks/useDialog";
 import { ApiError } from "../types/auth";
 import type { Document } from "../types/documents";
 import { StatusBadge } from "../components/StatusBadge";
@@ -11,6 +12,7 @@ export function NotebookPage() {
   const { notebookId } = useParams<{ notebookId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const dialog = useDialog();
 
   const notebookQuery = useQuery({
     queryKey: ["notebooks", notebookId],
@@ -36,14 +38,14 @@ export function NotebookPage() {
     mutationFn: (documentId: string) => notebooksApi.attachDocument(notebookId!, documentId),
     onSuccess: invalidateDocs,
     onError: (err) =>
-      window.alert(err instanceof ApiError ? err.message : "Failed to add document"),
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to add document"),
   });
 
   const detachMutation = useMutation({
     mutationFn: (documentId: string) => notebooksApi.detachDocument(notebookId!, documentId),
     onSuccess: invalidateDocs,
     onError: (err) =>
-      window.alert(err instanceof ApiError ? err.message : "Failed to remove document"),
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to remove document"),
   });
 
   const nbDocIds = new Set((nbDocsQuery.data ?? []).map((d: Document) => d.id));
@@ -52,9 +54,9 @@ export function NotebookPage() {
   if (!notebookId) return null;
 
   return (
-    <div className="flex flex-1 min-h-0">
+    <div className="flex flex-col lg:flex-row flex-1 min-h-0">
       {/* Left: document membership panel */}
-      <aside className="w-72 shrink-0 border-r border-border flex flex-col overflow-hidden">
+      <aside className="w-full max-h-56 border-b lg:max-h-none lg:w-72 lg:border-b-0 lg:border-r shrink-0 border-border flex flex-col overflow-hidden">
         <div className="shrink-0 px-4 py-3 border-b border-border">
           <button
             type="button"

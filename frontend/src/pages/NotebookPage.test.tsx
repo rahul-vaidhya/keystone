@@ -7,6 +7,7 @@ import type { Notebook } from "../types/knowledge";
 import { notebooksApi } from "../services/notebooksService";
 import { documentsApi } from "../services/documentsService";
 import { useAuth } from "../hooks/useAuth";
+import { DialogProvider } from "../context/DialogContext";
 import { NotebookPage } from "./NotebookPage";
 
 vi.mock("../hooks/useAuth", () => ({ useAuth: vi.fn() }));
@@ -70,11 +71,13 @@ function renderPage(notebookId = "nb-1") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/notebooks/${notebookId}`]}>
-        <Routes>
-          <Route path="/notebooks/:notebookId" element={<NotebookPage />} />
-        </Routes>
-      </MemoryRouter>
+      <DialogProvider>
+        <MemoryRouter initialEntries={[`/notebooks/${notebookId}`]}>
+          <Routes>
+            <Route path="/notebooks/:notebookId" element={<NotebookPage />} />
+          </Routes>
+        </MemoryRouter>
+      </DialogProvider>
     </QueryClientProvider>,
   );
 }

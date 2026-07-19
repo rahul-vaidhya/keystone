@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessRolesApi } from "../services/accessRolesService";
 import { authApi } from "../services/authService";
 import { documentsApi } from "../services/documentsService";
+import { useDialog } from "../hooks/useDialog";
 import { ApiError } from "../types/auth";
 
 // An Access Role is deliberately separate from the system role (owner/admin/member,
@@ -10,6 +11,7 @@ import { ApiError } from "../types/auth";
 // or change system roles.
 export function AccessRolesPage() {
   const queryClient = useQueryClient();
+  const dialog = useDialog();
   const [newRoleName, setNewRoleName] = useState("");
   const [newTagName, setNewTagName] = useState("");
 
@@ -23,13 +25,14 @@ export function AccessRolesPage() {
     mutationFn: (name: string) => accessRolesApi.createRole(name),
     onSuccess: invalidateRoles,
     onError: (err) =>
-      window.alert(err instanceof ApiError ? err.message : "Failed to create Access Role"),
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to create Access Role"),
   });
 
   const createTagMutation = useMutation({
     mutationFn: (name: string) => documentsApi.createTag(name),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tags"] }),
-    onError: (err) => window.alert(err instanceof ApiError ? err.message : "Failed to create tag"),
+    onError: (err) =>
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to create tag"),
   });
 
   const deleteRoleMutation = useMutation({
@@ -41,7 +44,8 @@ export function AccessRolesPage() {
     mutationFn: ({ roleId, tagId }: { roleId: string; tagId: string }) =>
       accessRolesApi.grantTag(roleId, tagId),
     onSuccess: invalidateRoles,
-    onError: (err) => window.alert(err instanceof ApiError ? err.message : "Failed to grant tag"),
+    onError: (err) =>
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to grant tag"),
   });
 
   const revokeTagMutation = useMutation({
@@ -55,7 +59,7 @@ export function AccessRolesPage() {
       accessRolesApi.assignUser(roleId, userId),
     onSuccess: invalidateRoles,
     onError: (err) =>
-      window.alert(err instanceof ApiError ? err.message : "Failed to assign member"),
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to assign member"),
   });
 
   const removeUserMutation = useMutation({

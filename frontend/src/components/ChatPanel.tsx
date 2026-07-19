@@ -123,6 +123,7 @@ export function ChatPanel({
 }) {
   const { user } = useAuth();
   const isAdmin = user?.role === "owner" || user?.role === "admin";
+  const hasDocuments = documents.length > 0;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [query, setQuery] = useState("");
@@ -183,7 +184,7 @@ export function ChatPanel({
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const q = query.trim();
-    if (!q || isStreaming) return;
+    if (!q || isStreaming || !hasDocuments) return;
 
     setQuery("");
     setIsStreaming(true);
@@ -247,7 +248,9 @@ export function ChatPanel({
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {messages.length === 0 && !isLoadingHistory && (
             <p className="text-muted text-sm text-center mt-8">
-              Ask a question about the documents in this notebook.
+              {hasDocuments
+                ? "Ask a question about the documents in this notebook."
+                : "This notebook has no documents yet. Attach one from the panel on the left, then come back and ask a question."}
             </p>
           )}
 
@@ -308,13 +311,17 @@ export function ChatPanel({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            disabled={isStreaming}
-            placeholder="Ask a question…"
+            disabled={isStreaming || !hasDocuments}
+            placeholder={
+              hasDocuments
+                ? "Ask a question…"
+                : "Attach a document to this notebook before asking a question"
+            }
             className="flex-1 bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent disabled:opacity-50"
           />
           <button
             type="submit"
-            disabled={isStreaming || !query.trim()}
+            disabled={isStreaming || !query.trim() || !hasDocuments}
             className="text-sm bg-accent text-white rounded-md px-4 py-2 hover:opacity-90 disabled:opacity-50"
           >
             {isStreaming ? "…" : "Ask"}
@@ -322,9 +329,11 @@ export function ChatPanel({
         </form>
       </div>
 
-      {/* Citation side panel */}
+      {/* Citation side panel: full-viewport overlay below `lg:` (there's no room for
+          a third column on a phone), restored to the original `w-80` side column at
+          `lg:`+. */}
       {showCitationPanel && activeCitation && (
-        <div className="w-80 shrink-0 border-l border-border flex flex-col overflow-hidden">
+        <div className="fixed inset-0 z-40 bg-bg lg:static lg:inset-auto lg:z-auto lg:w-80 shrink-0 border-l border-border flex flex-col overflow-hidden">
           <CitationPanel
             citation={activeCitation}
             documents={documents}

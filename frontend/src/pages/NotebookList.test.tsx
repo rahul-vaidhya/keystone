@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { Notebook } from "../types/knowledge";
 import { notebooksApi } from "../services/notebooksService";
+import { DialogProvider } from "../context/DialogContext";
 import { NotebookList } from "./NotebookList";
 
 vi.mock("../services/notebooksService", async () => {
@@ -39,7 +40,9 @@ function renderWithAll(ui: React.ReactElement) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>{ui}</MemoryRouter>
+      <DialogProvider>
+        <MemoryRouter>{ui}</MemoryRouter>
+      </DialogProvider>
     </QueryClientProvider>,
   );
 }
@@ -90,17 +93,33 @@ describe("NotebookList", () => {
     await waitFor(() => expect(notebooksApi.list).toHaveBeenCalledTimes(2));
   });
 
-  it("deletes a notebook via notebooksApi.delete after confirm and invalidates the list", async () => {
+  it("deletes a notebook via notebooksApi.delete after confirming in the dialog and invalidates the list", async () => {
     vi.mocked(notebooksApi.list).mockResolvedValue([makeNotebook()]);
     vi.mocked(notebooksApi.delete).mockResolvedValue(undefined);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderWithAll(<NotebookList />);
     await waitFor(() => expect(screen.getByText("Chemistry Notes")).toBeInTheDocument());
 
     fireEvent.click(screen.getByLabelText("Delete Chemistry Notes"));
+    await waitFor(() =>
+      expect(screen.getByText('Delete notebook "Chemistry Notes"?')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(notebooksApi.delete).toHaveBeenCalledWith("nb-1"));
     await waitFor(() => expect(notebooksApi.list).toHaveBeenCalledTimes(2));
+  });
+
+  it("does not delete a notebook when the confirm dialog is cancelled", async () => {
+    vi.mocked(notebooksApi.list).mockResolvedValue([makeNotebook()]);
+
+    renderWithAll(<NotebookList />);
+    await waitFor(() => expect(screen.getByText("Chemistry Notes")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Delete Chemistry Notes"));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(notebooksApi.delete).not.toHaveBeenCalled();
   });
 });

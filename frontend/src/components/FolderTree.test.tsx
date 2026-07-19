@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Folder, Tag } from "../types/documents";
 import { documentsApi } from "../services/documentsService";
 import { useAuth } from "../hooks/useAuth";
+import { DialogProvider } from "../context/DialogContext";
 import { FolderTree } from "./FolderTree";
 
 vi.mock("../services/documentsService", async () => {
@@ -83,7 +84,11 @@ function makeDataTransfer() {
 
 function renderWithClient(ui: React.ReactElement) {
   const queryClient = new QueryClient();
-  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <DialogProvider>{ui}</DialogProvider>
+    </QueryClientProvider>,
+  );
 }
 
 describe("FolderTree", () => {
@@ -163,34 +168,76 @@ describe("FolderTree", () => {
     await waitFor(() => expect(documentsApi.listFolders).toHaveBeenCalledTimes(2));
   });
 
-  it("deletes a childless folder with a plain confirm (block mode)", async () => {
+  it("deletes a childless folder after confirming in the app's dialog (block mode)", async () => {
     vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder()]);
     vi.mocked(documentsApi.deleteFolder).mockResolvedValue(undefined);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderWithClient(<FolderTree currentFolderId={null} onNavigate={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "HR" })).toBeInTheDocument());
 
     fireEvent.click(screen.getByLabelText("Delete HR"));
+    await waitFor(() => expect(screen.getByText('Delete "HR"?')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(documentsApi.deleteFolder).toHaveBeenCalledWith("f-1", "block"));
   });
 
-  it("offers cascade/reflow modes when the folder has children, and passes the chosen mode", async () => {
+  it("does not delete a childless folder when the confirm dialog is cancelled", async () => {
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder()]);
+
+    renderWithClient(<FolderTree currentFolderId={null} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "HR" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Delete HR"));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(documentsApi.deleteFolder).not.toHaveBeenCalled();
+  });
+
+  it("offers a cascade/reflow choice (via FolderDeleteDialog) when the folder has children, and reflow needs no typed confirmation", async () => {
     vi.mocked(documentsApi.listFolders).mockResolvedValue([
       makeFolder({ id: "root", name: "HR", path: "HR" }),
       makeFolder({ id: "child", name: "Policies", path: "HR/Policies", parent_id: "root" }),
     ]);
     vi.mocked(documentsApi.deleteFolder).mockResolvedValue(undefined);
-    vi.spyOn(window, "prompt").mockReturnValue("reflow");
 
     renderWithClient(<FolderTree currentFolderId={null} onNavigate={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "HR" })).toBeInTheDocument());
 
     fireEvent.click(screen.getByLabelText("Delete HR"));
+    await waitFor(() => expect(screen.getByText('Delete "HR"?')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /Move contents up a level/ }));
 
     await waitFor(() =>
       expect(documentsApi.deleteFolder).toHaveBeenCalledWith("root", "reflow"),
+    );
+  });
+
+  it("requires the folder name to be typed exactly before allowing cascade delete", async () => {
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([
+      makeFolder({ id: "root", name: "HR", path: "HR" }),
+      makeFolder({ id: "child", name: "Policies", path: "HR/Policies", parent_id: "root" }),
+    ]);
+    vi.mocked(documentsApi.deleteFolder).mockResolvedValue(undefined);
+
+    renderWithClient(<FolderTree currentFolderId={null} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "HR" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Delete HR"));
+    await waitFor(() => expect(screen.getByText('Delete "HR"?')).toBeInTheDocument());
+
+    const cascadeButton = screen.getByRole("button", { name: "Delete everything inside" });
+    expect(cascadeButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Type "HR" to confirm'), {
+      target: { value: "HR" },
+    });
+    expect(cascadeButton).toBeEnabled();
+    fireEvent.click(cascadeButton);
+
+    await waitFor(() =>
+      expect(documentsApi.deleteFolder).toHaveBeenCalledWith("root", "cascade"),
     );
   });
 

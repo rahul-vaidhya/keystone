@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { accessRolesApi } from "../services/accessRolesService";
 import { authApi } from "../services/authService";
 import { documentsApi } from "../services/documentsService";
+import { DialogProvider } from "../context/DialogContext";
 import { AccessRolesPage } from "./AccessRolesPage";
 
 vi.mock("../services/accessRolesService", () => ({
@@ -28,7 +29,11 @@ vi.mock("../services/documentsService", () => ({
 
 function renderWithClient(ui: React.ReactElement) {
   const queryClient = new QueryClient();
-  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <DialogProvider>{ui}</DialogProvider>
+    </QueryClientProvider>,
+  );
 }
 
 describe("AccessRolesPage", () => {

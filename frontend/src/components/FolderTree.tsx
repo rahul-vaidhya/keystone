@@ -2,8 +2,10 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { documentsApi } from "../services/documentsService";
 import { useAuth } from "../hooks/useAuth";
+import { useDialog } from "../hooks/useDialog";
 import { ApiError } from "../types/auth";
 import type { Folder, FolderDeleteMode } from "../types/documents";
+import { FolderDeleteDialog } from "./FolderDeleteDialog";
 
 type TreeNode = Folder & { children: TreeNode[] };
 
@@ -57,6 +59,7 @@ export function FolderTree({
 }) {
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  const dialog = useDialog();
   const canManageTags = user?.role === "owner" || user?.role === "admin";
   const foldersQuery = useQuery({ queryKey: ["folders"], queryFn: documentsApi.listFolders });
   const tagsQuery = useQuery({ queryKey: ["tags"], queryFn: documentsApi.listTags });
@@ -65,6 +68,7 @@ export function FolderTree({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<TreeNode | null>(null);
 
   // Every folder mutation invalidates the whole ["folders"] list rather than patching a
   // single row optimistically: move/rename rebuild every descendant's `path`
@@ -95,7 +99,8 @@ export function FolderTree({
     mutationFn: ({ id, parentId }: { id: string; parentId: string | null }) =>
       documentsApi.moveFolder(id, parentId),
     onSuccess: invalidateFolders,
-    onError: (err) => window.alert(err instanceof ApiError ? err.message : "Failed to move folder"),
+    onError: (err) =>
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to move folder"),
   });
 
   const moveDocumentMutation = useMutation({
@@ -103,14 +108,15 @@ export function FolderTree({
       documentsApi.moveDocument(id, folderId),
     onSuccess: invalidateDocuments,
     onError: (err) =>
-      window.alert(err instanceof ApiError ? err.message : "Failed to move document"),
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to move document"),
   });
 
   const tagFolderMutation = useMutation({
     mutationFn: ({ id, tagId }: { id: string; tagId: string }) =>
       documentsApi.tagFolder(id, tagId),
     onSuccess: invalidateFolders,
-    onError: (err) => window.alert(err instanceof ApiError ? err.message : "Failed to tag folder"),
+    onError: (err) =>
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to tag folder"),
   });
 
   const untagFolderMutation = useMutation({
@@ -130,7 +136,7 @@ export function FolderTree({
       { name, parentId },
       {
         onError: (err) =>
-          window.alert(err instanceof ApiError ? err.message : "Failed to create folder"),
+          void dialog.alert(err instanceof ApiError ? err.message : "Failed to create folder"),
       },
     );
     setNewFolderName("");
@@ -144,34 +150,43 @@ export function FolderTree({
       { id, name },
       {
         onError: (err) =>
-          window.alert(err instanceof ApiError ? err.message : "Failed to rename folder"),
+          void dialog.alert(err instanceof ApiError ? err.message : "Failed to rename folder"),
       },
     );
     setRenamingId(null);
   }
 
-  function handleDelete(folder: TreeNode) {
-    const hasChildren = folder.children.length > 0;
-    let mode: FolderDeleteMode = "block";
-    if (hasChildren) {
-      const choice = window.prompt(
-        `"${folder.name}" has folders/documents inside it. Type:\n` +
-          `"cascade" to delete everything inside it\n` +
-          `"reflow" to move its contents up a level and delete just this folder\n` +
-          `(anything else cancels)`,
-      );
-      if (choice !== "cascade" && choice !== "reflow") return;
-      mode = choice;
-    } else if (!window.confirm(`Delete "${folder.name}"?`)) {
-      return;
-    }
+  function runDelete(id: string, mode: FolderDeleteMode) {
     deleteMutation.mutate(
-      { id: folder.id, mode },
+      { id, mode },
       {
         onError: (err) =>
-          window.alert(err instanceof ApiError ? err.message : "Failed to delete folder"),
+          void dialog.alert(err instanceof ApiError ? err.message : "Failed to delete folder"),
       },
     );
+  }
+
+  async function handleDelete(folder: TreeNode) {
+    const hasChildren = folder.children.length > 0;
+    if (hasChildren) {
+      // Bespoke dialog (not plain confirm) — a folder with contents needs a
+      // cascade-vs-reflow choice, not a yes/no.
+      setPendingDelete(folder);
+      return;
+    }
+    const ok = await dialog.confirm(`Delete "${folder.name}"?`, {
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    runDelete(folder.id, "block");
+  }
+
+  function handleChooseDeleteMode(mode: "cascade" | "reflow") {
+    if (!pendingDelete) return;
+    const folderId = pendingDelete.id;
+    setPendingDelete(null);
+    runDelete(folderId, mode);
   }
 
   function handleDragStart(e: React.DragEvent, folderId: string) {
@@ -201,7 +216,7 @@ export function FolderTree({
     if (payload.type === "folder") {
       if (payload.id === targetFolderId) return; // no-op, dropped onto itself
       if (targetFolderId !== null && descendantIds(folders, payload.id).has(targetFolderId)) {
-        window.alert("Cannot move a folder into itself or one of its own subfolders.");
+        void dialog.alert("Cannot move a folder into itself or one of its own subfolders.");
         return;
       }
       moveFolderMutation.mutate({ id: payload.id, parentId: targetFolderId });
@@ -306,7 +321,7 @@ export function FolderTree({
           <button
             type="button"
             aria-label={`Delete ${node.name}`}
-            onClick={() => handleDelete(node)}
+            onClick={() => void handleDelete(node)}
             className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger px-1"
           >
             ×
@@ -359,6 +374,13 @@ export function FolderTree({
           className="bg-bg border border-border rounded-sm px-2 py-1 mx-2 text-sm"
         />
       )}
+
+      <FolderDeleteDialog
+        open={pendingDelete !== null}
+        folderName={pendingDelete?.name ?? ""}
+        onClose={() => setPendingDelete(null)}
+        onChoose={handleChooseDeleteMode}
+      />
     </div>
   );
 }

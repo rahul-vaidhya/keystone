@@ -6,6 +6,155 @@
 
 ---
 
+## UX audit — 4 High findings fixed + live-verified (2026-07-19 session — UNCOMMITTED, frontend-only)
+
+**Direct continuation of the 2026-07-16 critical-findings session**: the user pasted the
+same published "Veratas — Product UX Audit" artifact and asked to fix the 4 HIGH
+findings next, again with this chat as orchestrator dispatching one `general-purpose`
+subagent per fix, reviewing every returned diff directly (`git diff`) before trusting
+it, and live-verifying in a real browser (claude-in-chrome) against the local dev
+servers (backend already up on :8010, frontend on :5173) before moving to the next
+finding. Also did external research (WebSearch) per direct instruction before each fix:
+WAI-ARIA APG dialog-modal pattern, Tailwind off-canvas sidebar pattern, NN/g empty-state
+and disabled-control guidance. **All 4 are DONE, reviewed, and live-verified. Nothing
+committed yet** — tree is dirty, 19 files modified + 12 new files, 100% frontend
+(confirmed via `git diff --stat` — zero backend files touched by any of the 4 fixes).
+
+**1. Empty-notebook Ask gives no context — FIXED.** `ChatPanel.tsx` gained a
+`hasDocuments = documents.length > 0` check (documents = the notebook's attached docs,
+regardless of ingestion status — deliberately NOT gated on READY, scope is exactly
+"zero attached documents" per the finding's own wording). When empty: input+button
+disabled, placeholder becomes "Attach a document to this notebook before asking a
+question", and the centered empty-state message becomes "This notebook has no
+documents yet. Attach one from the panel on the left, then come back and ask a
+question." — replacing the old generic "Ask a question about the documents in this
+notebook." for this case only. 2 new tests in `ChatPanel.test.tsx`. **Live-verified**:
+created a real empty notebook, confirmed the disabled input + new copy.
+
+**2. Zero responsive breakpoints — FIXED.** Standard Tailwind off-canvas pattern,
+`lg:` (1024px) as the cutover — below `lg:` the desktop sidebar is fully static/
+unchanged. `AppShell.tsx` gained a `lg:hidden` mobile top bar (hamburger ☰/✕ toggle,
+`aria-expanded`/`aria-controls`) driving `isSidebarOpen` state. `Sidebar.tsx` became a
+`fixed` off-canvas drawer (`-translate-x-full`/`translate-x-0`, `lg:translate-x-0
+lg:static` restores the exact original desktop shape) with a `lg:hidden` backdrop,
+Escape-to-close, and every nav link closing the drawer on click; every original
+desktop className preserved verbatim (verified by diff — purely additive responsive
+variants). `NotebookPage.tsx` and `DocumentsPage.tsx`'s two-column layouts
+(`flex flex-row` fixed-width aside + main) become `flex-col` stacks below `lg:` (aside
+goes full-width with a bounded `max-h`+scroll instead of a fixed side column, restored
+via `lg:` variants). `ChatPanel.tsx`'s internal citation side panel becomes a
+`fixed inset-0` full-viewport overlay below `lg:` instead of squeezing the chat column
+to nothing (`lg:static lg:w-80` restores the original side-by-side shape). New
+`Sidebar.test.tsx` (7 tests: translate classes, backdrop, Escape/backdrop-click/
+nav-click all closing it). **Live-verified partially**: confirmed desktop (`lg:`+)
+rendering is byte-identical to before (no hamburger, static sidebar, normal 3-column
+notebook layout) via real browser walkthrough. **Known limitation, not a code
+defect**: `mcp__claude-in-chrome__resize_window` did NOT actually shrink the rendered
+viewport in this sandbox (`read_page` kept reporting `1600x900` after every resize
+call, and screenshots showed no reflow) — true mobile-width visual verification
+couldn't be completed live this session. Confidence instead comes from: (a) the
+Tailwind idiom used (`fixed`+`lg:static`, `-translate-x-full`+`lg:translate-x-0`) is
+the standard, well-documented off-canvas-drawer technique; (b) the new
+`Sidebar.test.tsx` suite directly exercises the `isOpen` state/class-toggle logic in
+jsdom; (c) full diff review confirmed every change is a responsive-variant addition,
+never a removal. **Recommend an actual phone or real DevTools device-toolbar spot
+check before/soon after this branch ships**, since that's the one thing this session
+could not independently confirm.
+
+**3. `alert()`/`confirm()`/`prompt()` everywhere except Auth — FIXED, the big one.**
+New reusable, accessible dialog system (zero new npm dependencies, matching this
+codebase's zero-UI-library convention): `components/Modal.tsx` (headless WAI-ARIA APG
+shell — `role="dialog"`/`aria-modal`, hand-rolled focus trap via a `FOCUSABLE_SELECTOR`
+query + Tab/Shift+Tab wraparound, Escape-to-close, backdrop-click-to-close, initial
+focus + focus-restoration on close) + `context/DialogContext.tsx`/`hooks/useDialog.ts`
+(mirrors the existing `AuthContext`+`useAuth` provider/hook split) exposing
+`dialog.alert(msg)`/`dialog.confirm(msg, {confirmLabel, danger})` — both return
+Promises so a call site does `const ok = await dialog.confirm(...); if (!ok) return;`,
+the same ergonomics as the native functions they replace. `DialogProvider` mounted in
+`App.tsx` alongside `AuthProvider`, above `BrowserRouter`. Every real `window.alert`/
+`window.confirm` call site across `DocumentList.tsx`, `FolderTree.tsx`,
+`AccessRolesPage.tsx`, `NotebookList.tsx`, `NotebookPage.tsx`, `UsersPage.tsx` migrated
+(confirmed via `grep -rn "window\.(alert|confirm|prompt)("` returning zero matches
+post-fix). The one bespoke case — `FolderTree`'s cascade/reflow `window.prompt` for
+deleting a non-empty folder — became a new `components/FolderDeleteDialog.tsx`: a
+non-destructive "Move contents up a level" button (no confirmation needed, nothing is
+deleted) plus a visually-distinct destructive "Delete everything inside" section gated
+by a text input that must exactly match the folder's own name before the delete button
+enables — keeps the audit-endorsed "type to confirm a rare dangerous action" pattern
+but as validated UI state, not a bare `window.prompt` text box, per the finding's exact
+fix instruction. New test files: `Modal.test.tsx`, `DialogContext.test.tsx`,
+`FolderDeleteDialog.test.tsx`, plus every migrated component's existing test file
+updated to render inside `<DialogProvider>` and assert against real rendered dialog UI
+instead of spying on `window.alert`/`confirm`. **Live-verified end-to-end**: created a
+real parent+child folder pair, clicked delete on the parent — got the new styled modal
+(not a native prompt), confirmed the destructive button stays disabled until the exact
+folder name is typed, then enabled and correctly cascade-deleted both folders.
+
+**4. Dead "Search" nav item — FIXED, scoped honestly.** The backend's
+`POST /retrieval/search` is notebook-scoped semantic search (`RetrievalSearchRequest`
+requires a `notebook_id`), NOT a global cross-notebook/full-text search — there is no
+backend endpoint for that, and none was added (frontend-only fix, as directed). New
+`types/retrieval.ts` + `services/retrievalService.ts` (mirrors `notebooksService.ts`'s
+exact style) + `pages/SearchPage.tsx`: a notebook `<select>` (from `notebooksApi.list`)
+gates a query input; submitting calls the real endpoint via `useMutation`; results
+render as clickable cards (document title resolved via `documentsApi.listDocuments`,
+snippet = `hit.content`); clicking a result opens the EXISTING `CitationPanel`
+component (reused, not duplicated) with a `ResolvedCitation` built explicitly
+field-by-field from the returned `ContextBlock` (never spread — `ContextBlock` has an
+extra `distance` field `ResolvedCitation` doesn't declare). Zero notebooks → an empty
+state linking to `/app/notebooks`; errors surface via the new `dialog.alert(...)` from
+finding 3's system, not a fresh native alert. `Sidebar.tsx`'s Search `NavItem` changed
+from `disabled` to a real link (`/app/search`); new route in `App.tsx` (outside
+`AdminRoute` — every role can search); `vite.config.ts` gained a `/retrieval` dev-proxy
+entry (wasn't there before — `/notebooks`/`/chat`/etc. were, `/retrieval` never had
+been). New `SearchPage.test.tsx` (6 tests). **Live-verified against the REAL backend**
+(not mocked): selected the real "Empty Test Notebook" created earlier this session,
+submitted a real query, got a real round-trip "No matching passages found." response
+(correct — that notebook has zero attached documents) with zero console errors —
+confirms the wiring is genuinely live, not just unit-tested. **Could not verify a
+populated non-empty result set live**: the dev `arq` worker process wasn't running this
+session (F24's auto-dispatch chain needs it to advance a document past `UPLOADED`), so
+an uploaded test doc never reached READY/attachable. Not a defect in this fix — same
+"restart stale worker" class of environment gotcha this project has hit before, just
+never actually started this time. **Next session, if populated-search-results need
+live proof**: start the `arq` worker (`arq app.worker.WorkerSettings` or however this
+repo's dev script invokes it) before re-testing.
+
+**Verification (this session, self-run, not just subagent-reported)**: after EVERY
+one of the 4 subagent dispatches, independently re-ran `npx vitest run` / `npx tsc -b`
+/ `npx vite build` myself (not just trusting the subagent's own report) before
+live-verifying in the browser. Final state: **101 passed (14 test files), 0 failed**
+(was 95 after finding 3, 78 after finding 2, 12 after finding 1 — each subagent's new
+tests stacked cleanly on the last), `tsc -b` clean, `vite build` clean throughout.
+
+**Two real environment gotchas hit this session, both worth remembering:**
+1. **`mcp__claude-in-chrome__resize_window` does not reliably change the rendered
+   viewport in this sandbox** — called it multiple times at 390×844, `read_page`'s
+   own `Viewport:` line kept reporting `1600x900` afterward and screenshots showed no
+   reflow. Don't trust this tool alone to verify responsive/mobile CSS live; fall back
+   to code review of the Tailwind breakpoint classes + jsdom-level interaction tests,
+   and flag genuine mobile-viewport verification as still-needed rather than faking it.
+2. **The dev `arq` worker was not running this session** (unlike the backend/frontend
+   dev servers, which were already up on :8010/:5173) — a freshly uploaded document
+   sat at `UPLOADED` forever since F24's auto-dispatch chain never got picked up.
+   Distinguish this from the "restart STALE uvicorn/arq after a backend code edit"
+   gotcha recorded elsewhere in this file — this was arq never having been started at
+   all this session, not a staleness issue.
+
+## Next session starts with
+
+This session's 4 High-severity UX fixes (frontend-only, 19 files modified + 12 new)
+are done, reviewed, and mostly live-verified, but **NOT YET COMMITTED** — check with
+the user whether to commit now (likely one commit, matching the 2026-07-16 critical-
+findings session's precedent) before doing anything else. If continuing the audit
+afterward: 7 findings remain untouched (4 Medium, 3 Low — see the published artifact).
+If mobile-layout confidence matters before shipping, get a real device/DevTools
+device-toolbar check of Finding 2 (the resize tool couldn't confirm it live this
+session). If verifying Finding 4 with actual populated search results matters, start
+the dev `arq` worker first.
+
+---
+
 ## UX audit — 4 critical findings fixed + live-verified (2026-07-16 later session — COMMITTED `8964ec6`)
 
 **A direct ask, not a buildplan item**: the user pasted a published claude.ai artifact

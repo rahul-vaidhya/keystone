@@ -130,8 +130,40 @@ describe("ChatPanel", () => {
 
   it("renders an empty chat input and no messages initially", async () => {
     vi.mocked(chatApi.streamAsk).mockReturnValue(() => {});
-    render(<ChatPanel notebookId="nb-1" documents={[]} />);
+    render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
     expect(screen.getByPlaceholderText("Ask a question…")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText(/Ask a question about the documents/)).toBeInTheDocument(),
+    );
+  });
+
+  it("disables the input and Ask button, and shows the no-documents empty state, when the notebook has zero attached documents", async () => {
+    vi.mocked(chatApi.streamAsk).mockReturnValue(() => {});
+    render(<ChatPanel notebookId="nb-1" documents={[]} />);
+
+    const input = await screen.findByPlaceholderText(
+      "Attach a document to this notebook before asking a question",
+    );
+    expect(input).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
+    await waitFor(() =>
+      expect(
+        screen.getByText(/This notebook has no documents yet/),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Ask a question about the documents/)).not.toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "test" } });
+    fireEvent.submit(input.closest("form")!);
+    expect(chatApi.streamAsk).not.toHaveBeenCalled();
+  });
+
+  it("enables the input and shows the generic ask prompt once at least one document is attached, regardless of its ingestion status", async () => {
+    vi.mocked(chatApi.streamAsk).mockReturnValue(() => {});
+    render(<ChatPanel notebookId="nb-1" documents={[makeDoc({ status: "PARSING" })]} />);
+
+    const input = await screen.findByPlaceholderText("Ask a question…");
+    expect(input).not.toBeDisabled();
     await waitFor(() =>
       expect(screen.getByText(/Ask a question about the documents/)).toBeInTheDocument(),
     );
@@ -178,7 +210,7 @@ describe("ChatPanel", () => {
 
   it("calls chatApi.streamAsk with the notebook_id and query on submit", async () => {
     vi.mocked(chatApi.streamAsk).mockReturnValue(() => {});
-    render(<ChatPanel notebookId="nb-1" documents={[]} />);
+    render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
 
     const input = screen.getByPlaceholderText("Ask a question…");
     fireEvent.change(input, { target: { value: "What is onboarding?" } });
@@ -199,7 +231,7 @@ describe("ChatPanel", () => {
       return () => {};
     });
 
-    render(<ChatPanel notebookId="nb-1" documents={[]} />);
+    render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
     const input = screen.getByPlaceholderText("Ask a question…");
     fireEvent.change(input, { target: { value: "hi" } });
     fireEvent.submit(input.closest("form")!);
@@ -250,7 +282,7 @@ describe("ChatPanel", () => {
       return () => {};
     });
 
-    render(<ChatPanel notebookId="nb-1" documents={[]} />);
+    render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
     const input = screen.getByPlaceholderText("Ask a question…");
     fireEvent.change(input, { target: { value: "test" } });
     fireEvent.submit(input.closest("form")!);
@@ -267,7 +299,7 @@ describe("ChatPanel", () => {
       return () => {};
     });
 
-    render(<ChatPanel notebookId="nb-1" documents={[]} />);
+    render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
     const input = screen.getByPlaceholderText("Ask a question…");
     fireEvent.change(input, { target: { value: "test" } });
     fireEvent.submit(input.closest("form")!);
@@ -284,7 +316,7 @@ describe("ChatPanel", () => {
     });
     vi.mocked(chatApi.getTrace).mockResolvedValue(makeTrace());
 
-    render(<ChatPanel notebookId="nb-1" documents={[]} />);
+    render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
     const input = screen.getByPlaceholderText("Ask a question…");
     fireEvent.change(input, { target: { value: "test" } });
     fireEvent.submit(input.closest("form")!);

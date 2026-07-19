@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { authApi } from "../services/authService";
 import { ApiError } from "../types/auth";
 import { useAuth } from "../hooks/useAuth";
+import { useDialog } from "../hooks/useDialog";
 import { setStoredAccessToken } from "../services/http";
 
 const ROLE_LABEL: Record<string, string> = {
@@ -13,6 +14,7 @@ const ROLE_LABEL: Record<string, string> = {
 
 export function UsersPage() {
   const { user } = useAuth();
+  const dialog = useDialog();
   const queryClient = useQueryClient();
   const usersQuery = useQuery({ queryKey: ["users"], queryFn: authApi.listUsers });
   const orgQuery = useQuery({ queryKey: ["org"], queryFn: authApi.getOrg });
@@ -48,7 +50,7 @@ export function UsersPage() {
       await queryClient.invalidateQueries({ queryKey: ["org"] });
       setEditingOrgName(false);
     } catch (err) {
-      window.alert(err instanceof ApiError ? err.message : "Failed to rename organization");
+      await dialog.alert(err instanceof ApiError ? err.message : "Failed to rename organization");
     } finally {
       setRenamingOrg(false);
     }
@@ -69,7 +71,7 @@ export function UsersPage() {
       setInviteEmail("");
       setInviteRole("member");
     } catch (err) {
-      window.alert(err instanceof ApiError ? err.message : "Failed to invite user");
+      await dialog.alert(err instanceof ApiError ? err.message : "Failed to invite user");
     } finally {
       setInviting(false);
     }
@@ -86,14 +88,15 @@ export function UsersPage() {
       await authApi.changeRole(userId, role);
       await queryClient.invalidateQueries({ queryKey: ["users"] });
     } catch (err) {
-      window.alert(err instanceof ApiError ? err.message : "Failed to change role");
+      await dialog.alert(err instanceof ApiError ? err.message : "Failed to change role");
     }
   }
 
   async function handleSetActive(userId: string, nextActive: boolean) {
     if (!nextActive) {
-      const confirmed = window.confirm(
+      const confirmed = await dialog.confirm(
         "Remove this member? They will immediately lose access. This can be undone later.",
+        { confirmLabel: "Remove", danger: true },
       );
       if (!confirmed) return;
     }
@@ -101,7 +104,7 @@ export function UsersPage() {
       await authApi.setUserActive(userId, nextActive);
       await queryClient.invalidateQueries({ queryKey: ["users"] });
     } catch (err) {
-      window.alert(err instanceof ApiError ? err.message : "Failed to update member status");
+      await dialog.alert(err instanceof ApiError ? err.message : "Failed to update member status");
     }
   }
 
@@ -118,9 +121,9 @@ export function UsersPage() {
       setCurrentPassword("");
       setNewPassword("");
       setShowPasswordForm(false);
-      window.alert("Password changed. You've been signed out of any other active sessions.");
+      await dialog.alert("Password changed. You've been signed out of any other active sessions.");
     } catch (err) {
-      window.alert(err instanceof ApiError ? err.message : "Failed to change password");
+      await dialog.alert(err instanceof ApiError ? err.message : "Failed to change password");
     } finally {
       setChangingPassword(false);
     }

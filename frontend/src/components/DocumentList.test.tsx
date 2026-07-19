@@ -3,6 +3,7 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider, type Query } from "@tanstack/react-query";
 import type { Document, Folder } from "../types/documents";
 import { documentsApi } from "../services/documentsService";
+import { DialogProvider } from "../context/DialogContext";
 import { DocumentList, pollIntervalFor } from "./DocumentList";
 
 vi.mock("../services/documentsService", async () => {
@@ -85,7 +86,11 @@ describe("DocumentList", () => {
 
   function renderWithClient(ui: React.ReactElement) {
     const queryClient = new QueryClient();
-    return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <DialogProvider>{ui}</DialogProvider>
+      </QueryClientProvider>,
+    );
   }
 
   it("renders a status badge per document using the literal status/failed_stage fields", async () => {
@@ -125,7 +130,7 @@ describe("DocumentList", () => {
     );
   });
 
-  it("surfaces an upload error via window.alert with the ApiError message, not a stack trace", async () => {
+  it("surfaces an upload error via the app's dialog with the ApiError message, not a stack trace", async () => {
     const { ApiError } = await vi.importActual<typeof import("../types/auth")>(
       "../types/auth",
     );
@@ -133,7 +138,6 @@ describe("DocumentList", () => {
     vi.mocked(documentsApi.uploadDocument).mockRejectedValue(
       new ApiError(409, "A document with that checksum already exists", null),
     );
-    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
 
     renderWithClient(<DocumentList currentFolderId={null} />);
     await waitFor(() => expect(documentsApi.listDocuments).toHaveBeenCalled());
@@ -143,19 +147,27 @@ describe("DocumentList", () => {
     fireEvent.change(input, { target: { files: [file] } });
 
     await waitFor(() =>
-      expect(alertSpy).toHaveBeenCalledWith("A document with that checksum already exists"),
+      expect(
+        screen.getByText("A document with that checksum already exists"),
+      ).toBeInTheDocument(),
     );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
-  it("deletes a document after confirm and invalidates the list", async () => {
+  it("deletes a document after confirming in the dialog and invalidates the list", async () => {
     vi.mocked(documentsApi.listDocuments).mockResolvedValue([makeDoc()]);
     vi.mocked(documentsApi.deleteDocument).mockResolvedValue(undefined);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderWithClient(<DocumentList currentFolderId={null} />);
     await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
 
     fireEvent.click(screen.getByLabelText("Delete report.pdf"));
+    await waitFor(() =>
+      expect(
+        screen.getByText('Permanently delete "report.pdf"? This cannot be undone.'),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(documentsApi.deleteDocument).toHaveBeenCalledWith("doc-1"));
     await waitFor(() => expect(documentsApi.listDocuments).toHaveBeenCalledTimes(2));
@@ -163,12 +175,13 @@ describe("DocumentList", () => {
 
   it("does not delete when the confirm dialog is cancelled", async () => {
     vi.mocked(documentsApi.listDocuments).mockResolvedValue([makeDoc()]);
-    vi.spyOn(window, "confirm").mockReturnValue(false);
 
     renderWithClient(<DocumentList currentFolderId={null} />);
     await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
 
     fireEvent.click(screen.getByLabelText("Delete report.pdf"));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(documentsApi.deleteDocument).not.toHaveBeenCalled();
   });

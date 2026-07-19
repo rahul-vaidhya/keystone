@@ -2,11 +2,13 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { notebooksApi } from "../services/notebooksService";
+import { useDialog } from "../hooks/useDialog";
 import { ApiError } from "../types/auth";
 
 export function NotebookList() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const dialog = useDialog();
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
 
@@ -21,14 +23,14 @@ export function NotebookList() {
     mutationFn: (name: string) => notebooksApi.create(name, null),
     onSuccess: invalidate,
     onError: (err) =>
-      window.alert(err instanceof ApiError ? err.message : "Failed to create notebook"),
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to create notebook"),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => notebooksApi.delete(id),
     onSuccess: invalidate,
     onError: (err) =>
-      window.alert(err instanceof ApiError ? err.message : "Failed to delete notebook"),
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to delete notebook"),
   });
 
   function handleCreate() {
@@ -39,9 +41,13 @@ export function NotebookList() {
     setCreating(false);
   }
 
-  function handleDelete(e: React.MouseEvent, id: string, name: string) {
+  async function handleDelete(e: React.MouseEvent, id: string, name: string) {
     e.stopPropagation();
-    if (!window.confirm(`Delete notebook "${name}"?`)) return;
+    const ok = await dialog.confirm(`Delete notebook "${name}"?`, {
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
     deleteMutation.mutate(id);
   }
 
@@ -118,7 +124,7 @@ export function NotebookList() {
                 <button
                   type="button"
                   aria-label={`Delete ${nb.name}`}
-                  onClick={(e) => handleDelete(e, nb.id, nb.name)}
+                  onClick={(e) => void handleDelete(e, nb.id, nb.name)}
                   className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger transition p-1 rounded"
                 >
                   ×

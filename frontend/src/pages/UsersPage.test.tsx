@@ -1,8 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { authApi } from "../services/authService";
 import { useAuth } from "../hooks/useAuth";
+import { DialogProvider } from "../context/DialogContext";
 import { UsersPage } from "./UsersPage";
 
 vi.mock("../services/authService", () => ({
@@ -41,7 +42,11 @@ function mockUser(role: "owner" | "admin" | "member" = "owner") {
 
 function renderWithClient(ui: React.ReactElement) {
   const queryClient = new QueryClient();
-  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <DialogProvider>{ui}</DialogProvider>
+    </QueryClientProvider>,
+  );
 }
 
 describe("UsersPage", () => {
@@ -176,30 +181,36 @@ describe("UsersPage", () => {
       is_active: false,
       created_at: "",
     });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderWithClient(<UsersPage />);
     await waitFor(() => expect(screen.getByText("member@test.com")).toBeInTheDocument());
 
     fireEvent.click(screen.getByText("Remove"));
 
-    expect(confirmSpy).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByText(/Remove this member\?/)).toBeInTheDocument(),
+    );
+    // Scope to the dialog itself — the table's own "Remove" button is still
+    // present underneath the modal overlay, so an unscoped query would match both.
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Remove" }),
+    );
+
     await waitFor(() => expect(authApi.setUserActive).toHaveBeenCalledWith("u-2", false));
-    confirmSpy.mockRestore();
   });
 
   it("does not remove a member when the confirm dialog is cancelled", async () => {
     mockUser("owner");
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
 
     renderWithClient(<UsersPage />);
     await waitFor(() => expect(screen.getByText("member@test.com")).toBeInTheDocument());
 
     fireEvent.click(screen.getByText("Remove"));
 
-    expect(confirmSpy).toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
     expect(authApi.setUserActive).not.toHaveBeenCalled();
-    confirmSpy.mockRestore();
   });
 
   it("hides remove/reactivate controls for a plain member", async () => {
