@@ -155,8 +155,9 @@ class AuthRepository:
         email: str,
         password_hash: str | None,
         role: str,
+        name: str | None = None,
     ) -> User:
-        user = User(org_id=org_id, email=email, password_hash=password_hash, role=role)
+        user = User(org_id=org_id, email=email, password_hash=password_hash, role=role, name=name)
         self._db.add(user)
         await self._db.flush()
         return user
@@ -180,6 +181,15 @@ class UserRepository(BaseRepository[User]):
     async def get_by_id(self, user_id: uuid.UUID) -> User | None:
         stmt = self._scoped().where(User.id == user_id)
         return await self._db.scalar(stmt)
+
+    async def list_by_ids(self, user_ids: list[uuid.UUID]) -> list[User]:
+        """Org-scoped batch lookup for OTHER modules (module-boundary rule). First
+        caller: ``documents.service``, resolving uploader emails for a document list in
+        one round trip instead of N+1 per-document lookups."""
+        if not user_ids:
+            return []
+        stmt = self._scoped().where(User.id.in_(user_ids))
+        return list(await self._db.scalars(stmt))
 
     async def update_role(self, user: User, role: str) -> User:
         user.role = role
@@ -254,11 +264,16 @@ class AuthService:
             await db_mod.set_org_guc(session, new_org_id)
             org_repo = OrganizationRepository(session)
             org = await org_repo.create(req.org_name, org_id=new_org_id)
+            # Blank/whitespace-only name is treated the same as "not provided" — an
+            # optional field submitted as "" should not persist as a distinct empty
+            # string from null (both mean "no name given").
+            name = req.name.strip() if req.name and req.name.strip() else None
             user = await auth_repo.create_user(
                 org_id=org.id,
                 email=req.email,
                 password_hash=hash_password(req.password),
                 role=ROLE_OWNER,
+                name=name,
             )
 
         access = issue_access_token(
@@ -466,6 +481,19 @@ class AuthService:
         if user is None:
             raise TargetUserNotFound("User not found")
         return UserOut.model_validate(user)
+
+    async def get_users_by_ids(
+        self, ctx: TenantContext, user_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, str]:
+        """Org-scoped batch id->email resolution for OTHER modules (module-boundary
+        rule). First caller: ``documents.service.list_documents``, resolving a batch of
+        ``uploaded_by`` ids into ``DocumentOut.uploader_email`` values in one round trip.
+        A ``user_id`` from another org (should never happen — the FK's own org is the
+        source of the id) simply won't appear in the returned mapping, since the lookup
+        is scoped to ``ctx.org_id`` like every other repository query."""
+        async with db_mod.tenant_session(ctx.org_id) as session:
+            users = await UserRepository(session, ctx).list_by_ids(user_ids)
+        return {u.id: u.email for u in users}
 
     async def change_role(
         self, ctx: TenantContext, target_user_id: uuid.UUID, new_role: str

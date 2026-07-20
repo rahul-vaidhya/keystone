@@ -37,6 +37,7 @@ function makeDoc(overrides: Partial<Document> = {}): Document {
     status: "READY",
     failed_stage: null,
     error_detail: null,
+    uploader_email: "alice@example.com",
     created_at: "2026-01-01T00:00:00Z",
     ...overrides,
   };
@@ -220,6 +221,18 @@ describe("DocumentList", () => {
     expect(select.className).not.toMatch(/group-hover/);
   });
 
+  it("the delete button reveals on keyboard focus, not just hover (WCAG 2.1.1)", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([makeDoc()]);
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder()]);
+
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+
+    const deleteButton = await screen.findByLabelText("Delete report.pdf");
+    expect(deleteButton.className).toMatch(/group-focus-within:opacity-100/);
+    expect(deleteButton.className).toMatch(/focus-visible:opacity-100/);
+  });
+
   it("moving a document to a folder calls moveDocument with the document id and folder id", async () => {
     vi.mocked(documentsApi.listDocuments).mockResolvedValue([makeDoc()]);
     vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder({ id: "folder-1", name: "Finance" })]);
@@ -252,5 +265,87 @@ describe("DocumentList", () => {
     await waitFor(() =>
       expect(documentsApi.moveDocument).toHaveBeenCalledWith("doc-1", null),
     );
+  });
+
+  it("renders Uploaded/Size/Pages columns with correctly formatted values", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([
+      makeDoc({
+        byte_size: 2_500_000,
+        page_count: 42,
+        uploader_email: "carol@example.com",
+        created_at: "2026-03-15T12:00:00Z",
+      }),
+    ]);
+
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+
+    // Size is formatted (MB, not raw bytes) and locale/timezone independent.
+    expect(screen.getByText("2.4 MB")).toBeInTheDocument();
+    expect(screen.getByText("42")).toBeInTheDocument();
+    expect(screen.getByText("carol@example.com")).toBeInTheDocument();
+    // Date formatting is locale/timezone dependent in jsdom, so only assert the
+    // year renders somewhere in the row rather than pin an exact string.
+    expect(screen.getByText(/2026/)).toBeInTheDocument();
+  });
+
+  it("shows a dash for missing size/pages/uploader instead of crashing", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([
+      makeDoc({ byte_size: null, page_count: null, uploader_email: null }),
+    ]);
+
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+
+    const dashes = screen.getAllByText("—");
+    expect(dashes.length).toBeGreaterThanOrEqual(3); // size, pages, uploader
+  });
+
+  it("clicking a row opens a detail modal with that document's info", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([
+      makeDoc({ mime_type: "application/pdf", checksum: "deadbeef" }),
+    ]);
+
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("report.pdf").closest("tr")!);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByText("application/pdf")).toBeInTheDocument();
+    expect(screen.getByText("deadbeef")).toBeInTheDocument();
+  });
+
+  it("clicking the delete button does not also open the detail modal", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([makeDoc()]);
+
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Delete report.pdf"));
+
+    // The confirm dialog opens (from useDialog), but the detail modal must not.
+    await waitFor(() =>
+      expect(
+        screen.getByText('Permanently delete "report.pdf"? This cannot be undone.'),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("application/pdf")).not.toBeInTheDocument();
+  });
+
+  it("clicking the move-to-folder select does not open the detail modal", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([makeDoc()]);
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder()]);
+
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+
+    const select = await screen.findByLabelText("Move report.pdf to folder");
+    fireEvent.click(select);
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

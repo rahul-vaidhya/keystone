@@ -1,10 +1,11 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient, type Query } from "@tanstack/react-query";
 import { documentsApi } from "../services/documentsService";
 import { useDialog } from "../hooks/useDialog";
 import { ApiError } from "../types/auth";
 import type { Document, Folder } from "../types/documents";
 import { StatusBadge } from "./StatusBadge";
+import { DocumentDetailModal, formatBytes, formatDateShort } from "./DocumentDetailModal";
 import { DRAG_MIME, type DragPayload } from "./FolderTree";
 
 const TERMINAL_STATUSES: ReadonlySet<Document["status"]> = new Set(["READY", "FAILED"]);
@@ -22,6 +23,7 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
   const queryClient = useQueryClient();
   const dialog = useDialog();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedDoc, setSelectedDoc] = useState<Document | null>(null);
 
   const documentsQuery = useQuery({
     queryKey: ["documents", { folderId: currentFolderId }],
@@ -122,6 +124,9 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
               <thead>
                 <tr className="text-left text-muted border-b border-border">
                   <th className="px-4 py-2 font-medium">Title</th>
+                  <th className="px-4 py-2 font-medium">Uploaded</th>
+                  <th className="px-4 py-2 font-medium">Size</th>
+                  <th className="px-4 py-2 font-medium">Pages</th>
                   <th className="px-4 py-2 font-medium">Status</th>
                   <th className="px-4 py-2 font-medium w-48" />
                 </tr>
@@ -132,16 +137,27 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
                     key={doc.id}
                     draggable
                     onDragStart={(e) => handleDragStart(e, doc.id)}
-                    className="group border-b border-border last:border-0 cursor-grab"
+                    onClick={() => setSelectedDoc(doc)}
+                    className="group border-b border-border last:border-0 cursor-grab hover:bg-bg/50"
                   >
                     <td className="px-4 py-2 truncate max-w-xs">{doc.title}</td>
+                    <td className="px-4 py-2 whitespace-nowrap">
+                      <div>{formatDateShort(doc.created_at)}</div>
+                      <div className="text-xs text-muted">{doc.uploader_email ?? "—"}</div>
+                    </td>
+                    <td className="px-4 py-2 whitespace-nowrap text-muted">
+                      {formatBytes(doc.byte_size)}
+                    </td>
+                    <td className="px-4 py-2 whitespace-nowrap text-muted">
+                      {doc.page_count ?? "—"}
+                    </td>
                     <td className="px-4 py-2">
                       <StatusBadge status={doc.status} failedStage={doc.failed_stage} />
                       {doc.status === "FAILED" && doc.error_detail && (
                         <span className="text-muted text-xs ml-2">{doc.error_detail}</span>
                       )}
                     </td>
-                    <td className="px-4 py-2 text-right">
+                    <td className="px-4 py-2 text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-2">
                         <select
                           aria-label={`Move ${doc.title} to folder`}
@@ -162,7 +178,7 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
                           aria-label={`Delete ${doc.title}`}
                           onClick={() => void handleDelete(doc)}
                           disabled={deleteMutation.isPending}
-                          className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger px-1 disabled:opacity-50"
+                          className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-danger px-1 disabled:opacity-50"
                         >
                           ×
                         </button>
@@ -174,6 +190,8 @@ export function DocumentList({ currentFolderId }: { currentFolderId: string | nu
             </table>
           </div>
         )}
+
+        <DocumentDetailModal document={selectedDoc} onClose={() => setSelectedDoc(null)} />
       </main>
     </div>
   );

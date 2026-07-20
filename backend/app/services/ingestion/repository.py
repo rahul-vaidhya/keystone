@@ -76,15 +76,33 @@ class ChunkRepository(BaseRepository[Chunk]):
         )
         return list(await self._db.scalars(stmt))
 
-    async def get_by_ids(self, chunk_ids: list[uuid.UUID]) -> list[Chunk]:
+    async def get_by_ids(
+        self, chunk_ids: list[uuid.UUID]
+    ) -> list[tuple[Chunk, int | None, int | None]]:
         """F41 citation resolution's input: re-fetches chunk rows by id, scoped to the
         caller's org — an independent backstop (not merely relying on the caller having
         already resolved these ids through an org-scoped notebook elsewhere), same
-        reasoning as ``EmbeddingRepository.search_chunks``'s own ``org_id`` filter."""
+        reasoning as ``EmbeddingRepository.search_chunks``'s own ``org_id`` filter.
+
+        LEFT-joins ``sections`` (via the nullable ``Chunk.section_id`` FK) to also surface
+        the owning section's page range for citation display — a chunk's citable span
+        always exists on the chunk row itself, so this join must never turn a chunk row
+        into zero rows: it's an OUTER join, and the section side is independently
+        org-scoped in the join predicate (never trusting the FK alone). Returns
+        ``(chunk, page_start, page_end)`` tuples; both page fields are ``None`` when the
+        chunk has no ``section_id`` or the section row can't be found."""
         if not chunk_ids:
             return []
-        stmt = select(Chunk).where(Chunk.org_id == self._ctx.org_id, Chunk.id.in_(chunk_ids))
-        return list(await self._db.scalars(stmt))
+        stmt = (
+            select(Chunk, Section.page_start, Section.page_end)
+            .outerjoin(
+                Section,
+                (Chunk.section_id == Section.id) & (Section.org_id == self._ctx.org_id),
+            )
+            .where(Chunk.org_id == self._ctx.org_id, Chunk.id.in_(chunk_ids))
+        )
+        result = await self._db.execute(stmt)
+        return [(chunk, page_start, page_end) for chunk, page_start, page_end in result]
 
 
 class EmbeddingRepository(BaseRepository[Embedding]):

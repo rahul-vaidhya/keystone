@@ -856,3 +856,99 @@ async def test_invite_forbidden_for_member(
         json={"email": "invlink8someone@test.com", "role": ROLE_MEMBER},
     )
     assert resp.status_code == 403
+
+
+# ---- Display name (users.name, migration 0018) ----
+
+
+async def test_signup_with_name_persists_and_is_returned_by_me(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    resp = await client.post(
+        "/auth/signup",
+        json={
+            "email": "namedsignup@test.com",
+            "password": "password123",
+            "org_name": "NameOrg",
+            "name": "Uma Reviewer",
+        },
+    )
+    assert resp.status_code == 201
+    token = resp.json()["access_token"]
+
+    me = await client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200
+    assert me.json()["name"] == "Uma Reviewer"
+
+
+async def test_signup_without_name_leaves_it_null(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    resp = await client.post(
+        "/auth/signup",
+        json={
+            "email": "unnamedsignup@test.com",
+            "password": "password123",
+            "org_name": "NoNameOrg",
+        },
+    )
+    assert resp.status_code == 201
+    token = resp.json()["access_token"]
+
+    me = await client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200
+    assert me.json()["name"] is None
+
+
+async def test_signup_blank_name_normalizes_to_null(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    resp = await client.post(
+        "/auth/signup",
+        json={
+            "email": "blanknamesignup@test.com",
+            "password": "password123",
+            "org_name": "BlankNameOrg",
+            "name": "   ",
+        },
+    )
+    assert resp.status_code == 201
+    token = resp.json()["access_token"]
+
+    me = await client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.json()["name"] is None
+
+
+async def test_invited_member_has_null_name(
+    client: AsyncClient,
+    session_factory,
+) -> None:
+    """Name collection isn't wired into the invite flow (out of scope this round) —
+    an invited member's ``name`` stays null through invite and after accepting, same
+    as any pre-migration user."""
+    signup = await client.post(
+        "/auth/signup",
+        json={
+            "email": "nameinviteowner@test.com",
+            "password": "password123",
+            "org_name": "InviteNameOrg",
+        },
+    )
+    owner_headers = {"Authorization": f"Bearer {signup.json()['access_token']}"}
+
+    invite = await client.post(
+        "/auth/invite",
+        headers=owner_headers,
+        json={"email": "nameinvitemember@test.com", "role": ROLE_MEMBER},
+    )
+    assert invite.json()["user"]["name"] is None
+
+    tokens = await _accept_invite(client, invite.json())
+    member_headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    me = await client.get("/auth/me", headers=member_headers)
+    assert me.status_code == 200
+    assert me.json()["name"] is None

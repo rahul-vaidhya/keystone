@@ -25,6 +25,13 @@ function isKnownStatus(value: string): value is DocumentStatus {
   return value in LABEL;
 }
 
+// Non-terminal = still actively being processed (UPLOADED/PARSING/STRUCTURING/EMBEDDING).
+// READY and FAILED are terminal and stay static — only an in-progress stage should read
+// as "working," not a finished one.
+function isNonTerminal(status: DocumentStatus): boolean {
+  return status !== "READY" && status !== "FAILED";
+}
+
 export function StatusBadge({
   status,
   failedStage,
@@ -37,10 +44,17 @@ export function StatusBadge({
       ? LABEL[failedStage]
       : failedStage
     : null;
+  const inProgress = isNonTerminal(status);
   return (
     <span
       className={`inline-flex items-center gap-1 text-xs border rounded-sm px-2 py-0.5 ${COLOR[status]}`}
     >
+      {inProgress ? (
+        <span
+          aria-hidden="true"
+          className="inline-block h-1.5 w-1.5 rounded-full bg-current animate-pulse"
+        />
+      ) : null}
       {LABEL[status]}
       {status === "FAILED" && failedStageLabel ? ` (${failedStageLabel})` : null}
     </span>

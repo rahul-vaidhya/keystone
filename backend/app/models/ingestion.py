@@ -171,13 +171,19 @@ class ChunkRecord(BaseModel):
     """A chunk row fetched directly by id (no kNN, no distance) — the shape
     ``ingestion.service.get_chunks`` returns for citation resolution (F41): the
     source-of-truth row a caller re-confirms a citation's span against, rather than
-    trusting a copy made earlier in the request (e.g. ``retrieval``'s ``ContextBlock``)."""
+    trusting a copy made earlier in the request (e.g. ``retrieval``'s ``ContextBlock``).
+    ``page_start``/``page_end`` are the owning section's page range (outer-joined —
+    ``section_id`` is nullable and a section could theoretically be missing), never
+    fabricated: both stay ``None`` when there is no section or the section has no page
+    info recovered for it."""
 
     chunk_id: uuid.UUID
     document_id: uuid.UUID
     content: str
     char_start: int
     char_end: int
+    page_start: int | None = None
+    page_end: int | None = None
 
     model_config = {"from_attributes": True}
 

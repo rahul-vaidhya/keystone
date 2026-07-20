@@ -18,7 +18,7 @@ from app.config import settings
 from app.models.chat import Conversation, MessageTrace
 from app.models.chat import Message as MessageRow
 from app.models.documents import Document
-from app.models.ingestion import Chunk, Embedding
+from app.models.ingestion import Chunk, Embedding, Section
 from app.services.seams import EMBED_DIM, Message, SeamTransientError, get_llm
 from app.utils.constants import ROLE_MEMBER
 from main import app
@@ -135,6 +135,67 @@ async def _seed_chunk_with_embedding(
                 org_id=org_id,
                 document_id=document_id,
                 section_id=None,
+                ordinal=ordinal,
+                content=content,
+                token_count=max(len(content) // 4, 1),
+                char_start=0,
+                char_end=len(content),
+            )
+        )
+        session.add(
+            Embedding(
+                org_id=org_id,
+                document_id=document_id,
+                owner_type="chunk",
+                owner_id=chunk_id,
+                model=FAKE_MODEL,
+                dim=EMBED_DIM,
+                embedding=_vector(seed),
+            )
+        )
+    return chunk_id
+
+
+async def _seed_chunk_with_section_and_embedding(
+    session_factory,
+    *,
+    org_id: uuid.UUID,
+    document_id: uuid.UUID,
+    ordinal: int,
+    content: str,
+    page_start: int,
+    page_end: int,
+    seed: int = 0,
+) -> uuid.UUID:
+    """Same as ``_seed_chunk_with_embedding`` but the chunk carries a real
+    ``section_id`` FK to a seeded ``Section`` row with the given page range — exercises
+    the page-number citation join, distinct from the no-section case."""
+    section_id = uuid.uuid4()
+    chunk_id = uuid.uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(
+            Section(
+                id=section_id,
+                org_id=org_id,
+                document_id=document_id,
+                parent_section_id=None,
+                ordinal=0,
+                depth=1,
+                path="1",
+                heading="Test Section",
+                page_start=page_start,
+                page_end=page_end,
+                char_start=0,
+                char_end=len(content),
+            )
+        )
+        await session.flush()  # Section must be inserted before the Chunk FK references it
+        session.add(
+            Chunk(
+                id=chunk_id,
+                org_id=org_id,
+                document_id=document_id,
+                section_id=section_id,
                 ordinal=ordinal,
                 content=content,
                 token_count=max(len(content) // 4, 1),
@@ -289,6 +350,62 @@ async def test_ask_citation_provenance_round_trip_matches_stored_chunk(
     assert citation["content"] == stored_chunk.content
     span = stored_chunk.content[citation["char_start"] : citation["char_end"]]
     assert span == citation["content"]
+
+
+async def test_ask_citation_includes_page_range_from_section(
+    client: AsyncClient, session_factory
+) -> None:
+    """A citation for a chunk WITH a section reference carries page_start/page_end
+    matching the section's own values — the human-readable-citation fix — and those
+    values are independently org-scoped (the join predicate filters Section.org_id too,
+    not just the FK)."""
+    tokens = await _signup(client, "chat-page@test.com", "Page")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    doc_id = await _seed_document(session_factory, org_id, "Doc")
+    await _seed_chunk_with_section_and_embedding(
+        session_factory,
+        org_id=org_id,
+        document_id=doc_id,
+        ordinal=0,
+        content="paginated content span",
+        page_start=3,
+        page_end=4,
+    )
+    created = await client.post("/notebooks", headers=headers, json={"name": "NB"})
+    notebook_id = created.json()["id"]
+    await client.post(f"/notebooks/{notebook_id}/documents/{doc_id}", headers=headers)
+
+    resp = await client.post(
+        "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "paginated"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    citation = body["citations"][0]
+    assert citation["page_start"] == 3
+    assert citation["page_end"] == 4
+
+
+async def test_ask_citation_page_range_none_without_section(
+    client: AsyncClient, session_factory
+) -> None:
+    """A citation for a chunk with ``section_id=None`` never fabricates a page number —
+    both fields resolve to ``None``, and the request still succeeds (no crash)."""
+    tokens = await _signup(client, "chat-nopage@test.com", "NoPage")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "no section content here"
+    )
+
+    resp = await client.post(
+        "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "section"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    citation = body["citations"][0]
+    assert citation["page_start"] is None
+    assert citation["page_end"] is None
 
 
 async def test_ask_out_of_range_marker_is_dropped_not_fabricated(

@@ -93,6 +93,17 @@ describe("NotebookList", () => {
     await waitFor(() => expect(notebooksApi.list).toHaveBeenCalledTimes(2));
   });
 
+  it("the delete button reveals on keyboard focus, not just hover (WCAG 2.1.1)", async () => {
+    vi.mocked(notebooksApi.list).mockResolvedValue([makeNotebook()]);
+
+    renderWithAll(<NotebookList />);
+    await waitFor(() => expect(screen.getByText("Chemistry Notes")).toBeInTheDocument());
+
+    const deleteButton = screen.getByLabelText("Delete Chemistry Notes");
+    expect(deleteButton.className).toMatch(/group-focus-within:opacity-100/);
+    expect(deleteButton.className).toMatch(/focus-visible:opacity-100/);
+  });
+
   it("deletes a notebook via notebooksApi.delete after confirming in the dialog and invalidates the list", async () => {
     vi.mocked(notebooksApi.list).mockResolvedValue([makeNotebook()]);
     vi.mocked(notebooksApi.delete).mockResolvedValue(undefined);

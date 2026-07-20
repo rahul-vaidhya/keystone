@@ -297,7 +297,7 @@ export function FolderTree({
                 handleToggleTag(node, e.target.value, false);
                 e.target.value = "";
               }}
-              className="opacity-0 group-hover:opacity-100 bg-bg border border-border rounded-sm text-xs text-muted max-w-[70px]"
+              className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 bg-bg border border-border rounded-sm text-xs text-muted max-w-[70px]"
             >
               <option value="">+ tag</option>
               {grantableTags.map((t) => (
@@ -314,7 +314,7 @@ export function FolderTree({
               setRenamingId(node.id);
               setRenameValue(node.name);
             }}
-            className="opacity-0 group-hover:opacity-100 text-muted hover:text-text px-1"
+            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-text px-1"
           >
             ✎
           </button>
@@ -322,7 +322,7 @@ export function FolderTree({
             type="button"
             aria-label={`Delete ${node.name}`}
             onClick={() => void handleDelete(node)}
-            className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger px-1"
+            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-danger px-1"
           >
             ×
           </button>

@@ -8,6 +8,7 @@ export function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [orgName, setOrgName] = useState("");
+  const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -18,7 +19,7 @@ export function SignupPage() {
     setError(null);
     setSubmitting(true);
     try {
-      await signup(email, password, orgName);
+      await signup(email, password, orgName, name);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Signup failed");
     } finally {
@@ -44,6 +45,16 @@ export function SignupPage() {
               required
               value={orgName}
               onChange={(e) => setOrgName(e.target.value)}
+              className="w-full bg-bg border border-border rounded-md px-3 py-2 focus:outline-none focus:border-accent"
+            />
+          </label>
+
+          <label className="block space-y-1">
+            <span className="text-sm text-muted">Full name (optional)</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
               className="w-full bg-bg border border-border rounded-md px-3 py-2 focus:outline-none focus:border-accent"
             />
           </label>

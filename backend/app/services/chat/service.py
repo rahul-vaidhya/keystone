@@ -184,6 +184,8 @@ async def resolve_citations(
                 char_start=record.char_start,
                 char_end=record.char_end,
                 content=record.content,
+                page_start=record.page_start,
+                page_end=record.page_end,
             )
         )
 

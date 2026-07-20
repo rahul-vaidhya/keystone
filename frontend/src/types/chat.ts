@@ -6,6 +6,11 @@ export type ResolvedCitation = {
   char_start: number;
   char_end: number;
   content: string;
+  // The owning section's page range, shown alongside (not instead of) the char
+  // offsets. Both null when the source chunk has no section or the section has no
+  // page info recovered for it — never fabricated.
+  page_start: number | null;
+  page_end: number | null;
 };
 
 export type ChatResponse = {

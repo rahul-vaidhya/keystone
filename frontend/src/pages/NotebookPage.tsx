@@ -102,7 +102,7 @@ export function NotebookPage() {
                       aria-label={`Remove ${doc.title} from notebook`}
                       onClick={() => detachMutation.mutate(doc.id)}
                       disabled={detachMutation.isPending}
-                      className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger transition text-sm px-1"
+                      className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-danger transition text-sm px-1"
                     >
                       ×
                     </button>
@@ -135,7 +135,7 @@ export function NotebookPage() {
                       aria-label={`Add ${doc.title} to notebook`}
                       onClick={() => attachMutation.mutate(doc.id)}
                       disabled={attachMutation.isPending || doc.status !== "READY"}
-                      className="opacity-0 group-hover:opacity-100 text-accent text-xs hover:underline transition px-1 disabled:opacity-30"
+                      className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-accent text-xs hover:underline transition px-1 disabled:opacity-30"
                     >
                       + Add
                     </button>

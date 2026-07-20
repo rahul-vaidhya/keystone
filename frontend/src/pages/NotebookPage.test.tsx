@@ -62,6 +62,7 @@ function makeDoc(overrides: Partial<Document> = {}): Document {
     status: "READY",
     failed_stage: null,
     error_detail: null,
+    uploader_email: null,
     created_at: "2026-01-01T00:00:00Z",
     ...overrides,
   };
@@ -94,6 +95,7 @@ describe("NotebookPage", () => {
         id: "u-1",
         org_id: "org-1",
         email: "u@test.com",
+        name: null,
         role: "member",
         is_active: true,
         created_at: "2026-01-01T00:00:00Z",
@@ -180,6 +182,29 @@ describe("NotebookPage", () => {
     await waitFor(() =>
       expect(notebooksApi.attachDocument).toHaveBeenCalledWith("nb-1", "doc-2"),
     );
+  });
+
+  it("the detach and add buttons reveal on keyboard focus, not just hover (WCAG 2.1.1)", async () => {
+    vi.mocked(notebooksApi.get).mockResolvedValue(makeNotebook());
+    vi.mocked(notebooksApi.listDocuments).mockResolvedValue([
+      makeDoc({ id: "doc-1", title: "report.pdf" }),
+    ]);
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([
+      makeDoc({ id: "doc-1", title: "report.pdf" }),
+      makeDoc({ id: "doc-2", title: "other.pdf", status: "READY" }),
+    ]);
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("other.pdf")).toBeInTheDocument());
+
+    const detachButton = screen.getByLabelText("Remove report.pdf from notebook");
+    const addButton = screen.getByLabelText("Add other.pdf to notebook");
+    for (const button of [detachButton, addButton]) {
+      expect(button.className).toMatch(/group-focus-within:opacity-100/);
+      expect(button.className).toMatch(/focus-visible:opacity-100/);
+    }
   });
 
   it("shows the empty-state message when notebook has no documents", async () => {

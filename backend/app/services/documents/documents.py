@@ -52,10 +52,21 @@ class DocumentRepository(BaseRepository[Document]):
         stmt = stmt.order_by(Document.created_at)
         return list(await self._db.scalars(stmt))
 
-    async def create_upload(self, *, folder_id: uuid.UUID | None, title: str) -> Document:
+    async def create_upload(
+        self,
+        *,
+        folder_id: uuid.UUID | None,
+        title: str,
+        uploaded_by: uuid.UUID | None = None,
+    ) -> Document:
         """Insert the row with an id assigned (flushed) but no storage_key/checksum yet —
-        the caller needs the id to build the object-store key before the upload completes."""
-        document = Document(org_id=self._ctx.org_id, folder_id=folder_id, title=title)
+        the caller needs the id to build the object-store key before the upload completes.
+        ``uploaded_by`` is set only here, at genuine-new-document creation time — a
+        checksum-dedupe hit returns the EXISTING row untouched (see ``upload_document``),
+        so re-uploading an identical file never overwrites the original uploader."""
+        document = Document(
+            org_id=self._ctx.org_id, folder_id=folder_id, title=title, uploaded_by=uploaded_by
+        )
         self._db.add(document)
         await self._db.flush()
         return document
@@ -182,7 +193,31 @@ async def list_documents(
 ) -> list[DocumentOut]:
     async with db_mod.tenant_session(ctx.org_id) as session:
         docs = await DocumentRepository(session, ctx).list(folder_id=folder_id, tag_id=tag_id)
-    return [DocumentOut.model_validate(d) for d in docs]
+    emails_by_uploader = await _resolve_uploader_emails(ctx, docs)
+    return [
+        DocumentOut.model_validate(d).model_copy(
+            update={"uploader_email": emails_by_uploader.get(d.uploaded_by)}
+        )
+        for d in docs
+    ]
+
+
+async def _resolve_uploader_emails(
+    ctx: TenantContext, docs: list[Document]
+) -> dict[uuid.UUID, str]:
+    """Resolve every distinct ``uploaded_by`` id in ``docs`` to its email in ONE batch
+    call — never N+1 per-document lookups. Never exposes the raw uploader uuid to the
+    frontend (see ``DocumentOut.uploader_email``); this is the module-boundary-respecting
+    accessor into the ``auth`` domain (module boundary rule: reach another domain only
+    through its ``services/<domain>.py``, never its repository/ORM directly — local
+    import here to avoid a documents<->auth circular import, same precedent as
+    ``access_roles.service``'s ``from app.services.auth import auth_service``)."""
+    from app.services.auth import auth_service
+
+    uploader_ids = {d.uploaded_by for d in docs if d.uploaded_by is not None}
+    if not uploader_ids:
+        return {}
+    return await auth_service.get_users_by_ids(ctx, list(uploader_ids))
 
 
 async def upload_document(
@@ -210,7 +245,9 @@ async def upload_document(
         if existing is not None:
             return DocumentOut.model_validate(existing), False
 
-        document = await repo.create_upload(folder_id=folder_id, title=filename)
+        document = await repo.create_upload(
+            folder_id=folder_id, title=filename, uploaded_by=ctx.user_id
+        )
         key = build_storage_key(ctx.org_id, document.id, filename)
         await object_store.put(key, data, content_type)
         await repo.mark_uploaded(

@@ -115,7 +115,11 @@ class ResolvedCitation(BaseModel):
     """One ``[n]`` marker from the model's answer, resolved to its source span — rebuilt
     from a fresh ``ingestion.service.get_chunks`` read of the chunk row (the
     source-of-truth table), not from the ``ContextBlock`` retrieval already had in hand.
-    ``marker`` is the literal number the model cited (e.g. ``2`` for ``[2]``)."""
+    ``marker`` is the literal number the model cited (e.g. ``2`` for ``[2]``).
+    ``page_start``/``page_end`` are the owning section's page range, shown alongside (not
+    instead of) the char offsets so a non-technical reader has a recognizable reference —
+    both are ``None`` when the source chunk has no section or the section has no page
+    info, never fabricated."""
 
     marker: int
     document_id: uuid.UUID
@@ -123,6 +127,8 @@ class ResolvedCitation(BaseModel):
     char_start: int
     char_end: int
     content: str
+    page_start: int | None = None
+    page_end: int | None = None
 
 
 class ChatResponse(BaseModel):

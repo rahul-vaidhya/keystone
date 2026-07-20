@@ -39,6 +39,10 @@ export type Document = {
   status: DocumentStatus;
   failed_stage: string | null;
   error_detail: string | null;
+  // Resolved server-side (never a raw uploader id on the wire — see backend
+  // DocumentOut.uploader_email). null for documents uploaded before this field
+  // existed, or when no uploader was recorded.
+  uploader_email: string | null;
   created_at: string;
 };
 

@@ -17,6 +17,18 @@ type ChatMessage = {
   messageId?: string;
 };
 
+// Finding A (Medium, UX audit): static, generic starter questions shown the instant a
+// notebook has at least one attached document but no conversation yet — removes the
+// "blank page" first-ask friction NotebookLM solves with LLM-generated suggestions.
+// Deliberately static (not per-notebook LLM-generated): avoids a hidden per-view LLM
+// cost, consistent with this project's "wait for real evidence before building" bias
+// (see memory.md — the reranker seam and AI chunk-enrichment decisions).
+const STARTER_QUESTIONS = [
+  "Summarize the key points in these documents",
+  "What are the main topics covered?",
+  "What definitions or important terms are explained here?",
+];
+
 // F42 admin debug bundle — collapsible, fetched lazily on first open. Cached in this
 // module-level map (not component state, which resets when the toggle closes and
 // unmounts this component) so re-opening the same message's trace never re-fetches.
@@ -130,6 +142,10 @@ export function ChatPanel({
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeCitation, setActiveCitation] = useState<ResolvedCitation | null>(null);
   const [openTraceIndex, setOpenTraceIndex] = useState<number | null>(null);
+  // Finding B (Low, UX audit): copy-to-clipboard confirmation + thumbs up/down feedback.
+  // Feedback is UI-only (tri-state per messageId, no backend persistence) per direct scope decision.
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<Record<string, "up" | "down" | undefined>>({});
   const abortRef = useRef<(() => void) | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -181,9 +197,11 @@ export function ChatPanel({
     bottomRef.current?.scrollIntoView?.({ behavior: "smooth" });
   }, [messages]);
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const q = query.trim();
+  // Shared by the form's Enter/Ask-button submit AND the starter-question chips (Finding
+  // A) — a chip click fills+submits in one step rather than leaving the user to press
+  // Send, since the whole point is removing a step for someone facing a blank page.
+  function submitQuery(rawQuery: string) {
+    const q = rawQuery.trim();
     if (!q || isStreaming || !hasDocuments) return;
 
     setQuery("");
@@ -238,6 +256,28 @@ export function ChatPanel({
     );
   }
 
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    submitQuery(query);
+  }
+
+  async function handleCopy(msg: ChatMessage) {
+    if (!msg.messageId) return;
+    await navigator.clipboard.writeText(msg.content);
+    setCopiedMessageId(msg.messageId);
+    setTimeout(() => {
+      setCopiedMessageId((cur) => (cur === msg.messageId ? null : cur));
+    }, 1500);
+  }
+
+  function handleFeedback(messageId: string, value: "up" | "down") {
+    setFeedback((prev) => ({
+      ...prev,
+      // Tri-state: clicking the already-selected reaction deselects it.
+      [messageId]: prev[messageId] === value ? undefined : value,
+    }));
+  }
+
   const showCitationPanel = activeCitation !== null;
 
   return (
@@ -247,16 +287,35 @@ export function ChatPanel({
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {messages.length === 0 && !isLoadingHistory && (
-            <p className="text-muted text-sm text-center mt-8">
-              {hasDocuments
-                ? "Ask a question about the documents in this notebook."
-                : "This notebook has no documents yet. Attach one from the panel on the left, then come back and ask a question."}
-            </p>
+            <div className="text-center mt-8 space-y-3">
+              <p className="text-muted text-sm">
+                {hasDocuments
+                  ? "Ask a question about the documents in this notebook."
+                  : "This notebook has no documents yet. Attach one from the panel on the left, then come back and ask a question."}
+              </p>
+              {hasDocuments && (
+                <div className="flex flex-wrap justify-center gap-2">
+                  {STARTER_QUESTIONS.map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      onClick={() => submitQuery(q)}
+                      disabled={isStreaming}
+                      className="text-xs border border-border rounded-full px-3 py-1.5 text-muted hover:border-accent hover:text-accent transition disabled:opacity-50"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
 
           {messages.map((msg, i) => {
             const isFinalAssistant = msg.role === "assistant" && msg.citations !== undefined;
             const canDebug = isFinalAssistant && isAdmin && msg.messageId !== undefined;
+            // Finding B: copy/feedback controls visible to every role, not just admins.
+            const canRate = isFinalAssistant && msg.messageId !== undefined;
             return (
               <div
                 key={i}
@@ -281,6 +340,45 @@ export function ChatPanel({
                     <span className="whitespace-pre-wrap">{msg.content}</span>
                   )}
                 </div>
+
+                {canRate && (
+                  <div className="max-w-[80%] w-full flex items-center gap-3 mt-1">
+                    <button
+                      type="button"
+                      aria-label="Copy answer"
+                      onClick={() => void handleCopy(msg)}
+                      className="text-xs text-muted hover:text-text"
+                    >
+                      {copiedMessageId === msg.messageId ? "Copied" : "Copy"}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Good response"
+                      aria-pressed={feedback[msg.messageId!] === "up"}
+                      onClick={() => handleFeedback(msg.messageId!, "up")}
+                      className={`text-xs ${
+                        feedback[msg.messageId!] === "up"
+                          ? "text-accent"
+                          : "text-muted hover:text-text"
+                      }`}
+                    >
+                      👍
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Bad response"
+                      aria-pressed={feedback[msg.messageId!] === "down"}
+                      onClick={() => handleFeedback(msg.messageId!, "down")}
+                      className={`text-xs ${
+                        feedback[msg.messageId!] === "down"
+                          ? "text-danger"
+                          : "text-muted hover:text-text"
+                      }`}
+                    >
+                      👎
+                    </button>
+                  </div>
+                )}
 
                 {canDebug && (
                   <div className="max-w-[80%] w-full">

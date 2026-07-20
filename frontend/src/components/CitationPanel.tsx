@@ -11,6 +11,11 @@ export function CitationPanel({
   onClose: () => void;
 }) {
   const doc = documents.find((d) => d.id === citation.document_id);
+  const hasPageInfo = citation.page_start !== null;
+  const pageLabel =
+    citation.page_end === null || citation.page_end === citation.page_start
+      ? `Page ${citation.page_start}`
+      : `Pages ${citation.page_start}–${citation.page_end}`;
 
   return (
     <div className="flex flex-col h-full">
@@ -32,6 +37,7 @@ export function CitationPanel({
             {doc.title}
           </p>
         )}
+        {hasPageInfo && <p className="text-xs text-muted">{pageLabel}</p>}
         <p className="font-mono text-xs text-muted">
           chars {citation.char_start}–{citation.char_end}
         </p>

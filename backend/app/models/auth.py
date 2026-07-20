@@ -46,6 +46,11 @@ class User(Base):
         index=True,
     )
     email: Mapped[str] = mapped_column(CITEXT, nullable=False)
+    # Optional real display name (migration 0018) — collected at signup, never guessed
+    # from the email. Null for every pre-migration user and every invited member (name
+    # collection isn't wired into the invite flow yet); the frontend falls back to an
+    # email-derived heuristic display name when this is null.
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
     # enum: 'owner' | 'admin' | 'member' (DB check constraint in migration 0003)
     role: Mapped[str] = mapped_column(Text, nullable=False, server_default="member")
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -100,6 +105,7 @@ class SignupRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     org_name: str = Field(min_length=1, max_length=200)
+    name: str | None = Field(default=None, max_length=200)
 
 
 class LoginRequest(BaseModel):
@@ -155,6 +161,7 @@ class UserOut(BaseModel):
     id: uuid.UUID
     org_id: uuid.UUID
     email: str
+    name: str | None = None
     role: str
     is_active: bool
     created_at: datetime

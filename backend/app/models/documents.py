@@ -122,6 +122,9 @@ class Document(Base):
     metadata_: Mapped[dict] = mapped_column(
         "metadata", JSONB, nullable=False, default=dict, server_default="{}"
     )
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -220,6 +223,12 @@ class DocumentOut(BaseModel):
     status: str
     failed_stage: str | None
     error_detail: str | None
+    # Resolved server-side from `uploaded_by` (never exposed as a raw uuid — see
+    # services/documents/documents.py's list_documents / _resolve_uploader_emails,
+    # and services/auth.py's AuthService.get_users_by_ids for the cross-module
+    # accessor this is built from). None for pre-this-feature documents (no recorded
+    # uploader) and for any DocumentOut built without a batch email lookup.
+    uploader_email: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

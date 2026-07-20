@@ -14,7 +14,7 @@ type AuthState = {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string, orgId?: string) => Promise<void>;
-  signup: (email: string, password: string, orgName: string) => Promise<void>;
+  signup: (email: string, password: string, orgName: string, name?: string) => Promise<void>;
   acceptInvite: (orgId: string, token: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 };
@@ -61,11 +61,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(await authApi.me());
   }, []);
 
-  const signup = useCallback(async (email: string, password: string, orgName: string) => {
-    const tokens = await authApi.signup(email, password, orgName);
-    setStoredAccessToken(tokens.access_token);
-    setUser(await authApi.me());
-  }, []);
+  const signup = useCallback(
+    async (email: string, password: string, orgName: string, name?: string) => {
+      const tokens = await authApi.signup(email, password, orgName, name);
+      setStoredAccessToken(tokens.access_token);
+      setUser(await authApi.me());
+    },
+    [],
+  );
 
   const acceptInvite = useCallback(async (orgId: string, token: string, password: string) => {
     const tokens = await authApi.acceptInvite(orgId, token, password);

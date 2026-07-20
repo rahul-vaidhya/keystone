@@ -125,7 +125,7 @@ export function NotebookList() {
                   type="button"
                   aria-label={`Delete ${nb.name}`}
                   onClick={(e) => void handleDelete(e, nb.id, nb.name)}
-                  className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger transition p-1 rounded"
+                  className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-danger transition p-1 rounded"
                 >
                   ×
                 </button>

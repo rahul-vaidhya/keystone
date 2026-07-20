@@ -57,6 +57,7 @@ function makeDoc(overrides: Partial<Document> = {}): Document {
     status: "READY",
     failed_stage: null,
     error_detail: null,
+    uploader_email: null,
     created_at: "2026-01-01T00:00:00Z",
     ...overrides,
   };

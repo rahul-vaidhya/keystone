@@ -50,6 +50,10 @@ export function SearchPage() {
       char_start: hit.char_start,
       char_end: hit.char_end,
       content: hit.content,
+      // /retrieval/search's ContextBlock doesn't carry page info (that's a chat-citation
+      // only field, resolved server-side from the chunk's section) — never fabricate it.
+      page_start: null,
+      page_end: null,
     });
   }
 

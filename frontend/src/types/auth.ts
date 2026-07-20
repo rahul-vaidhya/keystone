@@ -2,6 +2,7 @@ export type User = {
   id: string;
   org_id: string;
   email: string;
+  name: string | null;
   role: "owner" | "admin" | "member";
   is_active: boolean;
   created_at: string;

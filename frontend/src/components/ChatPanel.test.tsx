@@ -27,6 +27,7 @@ function mockUser(role: "owner" | "admin" | "member" = "member") {
       id: "u-1",
       org_id: "org-1",
       email: "u@test.com",
+      name: null,
       role,
       is_active: true,
       created_at: "2026-01-01T00:00:00Z",
@@ -76,6 +77,7 @@ function makeDoc(overrides: Partial<Document> = {}): Document {
     status: "READY",
     failed_stage: null,
     error_detail: null,
+    uploader_email: null,
     created_at: "2026-01-01T00:00:00Z",
     ...overrides,
   };
@@ -101,6 +103,8 @@ function makeCitation(overrides: Partial<ResolvedCitation> = {}): ResolvedCitati
     char_start: 0,
     char_end: 13,
     content: "relevant text",
+    page_start: null,
+    page_end: null,
     ...overrides,
   };
 }
@@ -329,5 +333,148 @@ describe("ChatPanel", () => {
       expect(screen.getByText("This is the answer [1]")).toBeInTheDocument(),
     );
     expect(screen.getByText("Hits (1)")).toBeInTheDocument();
+  });
+
+  // Finding A (Medium, UX audit): static starter-question chips on the empty state.
+  describe("starter question chips (Finding A)", () => {
+    it("renders starter chips when the notebook has documents and no messages yet", async () => {
+      vi.mocked(chatApi.streamAsk).mockReturnValue(() => {});
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Summarize the key points in these documents" }),
+        ).toBeInTheDocument(),
+      );
+      expect(
+        screen.getByRole("button", { name: "What are the main topics covered?" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", {
+          name: "What definitions or important terms are explained here?",
+        }),
+      ).toBeInTheDocument();
+    });
+
+    it("does not render starter chips when the notebook has zero documents", async () => {
+      vi.mocked(chatApi.streamAsk).mockReturnValue(() => {});
+      render(<ChatPanel notebookId="nb-1" documents={[]} />);
+
+      await waitFor(() =>
+        expect(screen.getByText(/This notebook has no documents yet/)).toBeInTheDocument(),
+      );
+      expect(
+        screen.queryByRole("button", { name: "Summarize the key points in these documents" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not render starter chips once a conversation has messages", async () => {
+      vi.mocked(chatApi.listMessages).mockResolvedValue([
+        makeHistoryMessage({ id: "h1", role: "user", content: "already asked" }),
+      ]);
+      vi.mocked(chatApi.streamAsk).mockReturnValue(() => {});
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+
+      await waitFor(() => expect(screen.getByText("already asked")).toBeInTheDocument());
+      expect(
+        screen.queryByRole("button", { name: "Summarize the key points in these documents" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("clicking a chip immediately submits that question via streamAsk", async () => {
+      vi.mocked(chatApi.streamAsk).mockReturnValue(() => {});
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+
+      const chip = await screen.findByRole("button", {
+        name: "What are the main topics covered?",
+      });
+      fireEvent.click(chip);
+
+      await waitFor(() =>
+        expect(chatApi.streamAsk).toHaveBeenCalledWith(
+          { notebook_id: "nb-1", query: "What are the main topics covered?" },
+          expect.objectContaining({ onToken: expect.any(Function), onDone: expect.any(Function) }),
+        ),
+      );
+      expect(screen.getByText("What are the main topics covered?")).toBeInTheDocument();
+    });
+  });
+
+  // Finding B (Low, UX audit): copy-to-clipboard + thumbs up/down feedback controls.
+  describe("copy and feedback controls (Finding B)", () => {
+    beforeEach(() => {
+      Object.assign(navigator, {
+        clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
+      });
+    });
+
+    it("copies the final assistant message content to the clipboard", async () => {
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(makeDoneResponse({ answer: "See source [1]", citations: [makeCitation()] }));
+        return () => {};
+      });
+
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      const input = screen.getByPlaceholderText("Ask a question…");
+      fireEvent.change(input, { target: { value: "test" } });
+      fireEvent.submit(input.closest("form")!);
+
+      const copyButton = await screen.findByRole("button", { name: "Copy answer" });
+      fireEvent.click(copyButton);
+
+      await waitFor(() =>
+        expect(navigator.clipboard.writeText).toHaveBeenCalledWith("See source [1]"),
+      );
+      await waitFor(() => expect(screen.getByText("Copied")).toBeInTheDocument());
+    });
+
+    it("toggles thumbs up/down as a mutually exclusive tri-state, purely client-side", async () => {
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(makeDoneResponse());
+        return () => {};
+      });
+
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      const input = screen.getByPlaceholderText("Ask a question…");
+      fireEvent.change(input, { target: { value: "test" } });
+      fireEvent.submit(input.closest("form")!);
+
+      const up = await screen.findByRole("button", { name: "Good response" });
+      const down = screen.getByRole("button", { name: "Bad response" });
+
+      expect(up).toHaveAttribute("aria-pressed", "false");
+      expect(down).toHaveAttribute("aria-pressed", "false");
+
+      fireEvent.click(up);
+      expect(up).toHaveAttribute("aria-pressed", "true");
+      expect(down).toHaveAttribute("aria-pressed", "false");
+
+      fireEvent.click(down);
+      expect(up).toHaveAttribute("aria-pressed", "false");
+      expect(down).toHaveAttribute("aria-pressed", "true");
+
+      fireEvent.click(down);
+      expect(up).toHaveAttribute("aria-pressed", "false");
+      expect(down).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("shows copy/feedback controls for a non-admin member too (not gated on role)", async () => {
+      mockUser("member");
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(makeDoneResponse());
+        return () => {};
+      });
+
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      const input = screen.getByPlaceholderText("Ask a question…");
+      fireEvent.change(input, { target: { value: "test" } });
+      fireEvent.submit(input.closest("form")!);
+
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Copy answer" })).toBeInTheDocument(),
+      );
+      expect(screen.getByRole("button", { name: "Good response" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Bad response" })).toBeInTheDocument();
+    });
   });
 });

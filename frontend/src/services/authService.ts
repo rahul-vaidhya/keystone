@@ -2,10 +2,10 @@ import { apiFetch } from "./http";
 import type { InviteOut, Organization, TokenResponse, User } from "../types/auth";
 
 export const authApi = {
-  signup: (email: string, password: string, org_name: string) =>
+  signup: (email: string, password: string, org_name: string, name?: string) =>
     apiFetch<TokenResponse>("/auth/signup", {
       method: "POST",
-      body: JSON.stringify({ email, password, org_name }),
+      body: JSON.stringify({ email, password, org_name, name: name || undefined }),
     }),
 
   login: (email: string, password: string, org_id?: string) =>

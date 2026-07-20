@@ -409,3 +409,120 @@ async def test_move_missing_document_404(client: AsyncClient) -> None:
         f"/documents/{uuid.uuid4()}/folder", headers=headers, json={"folder_id": None}
     )
     assert resp.status_code == 404
+
+
+async def test_upload_records_uploader_email(client: AsyncClient) -> None:
+    tokens = await _signup(client, "docs-uploader1@test.com", "UploaderOne")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    upload = await client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("owned.pdf", b"owned by someone", "application/pdf")},
+    )
+    assert upload.status_code == 201
+
+    listing = await client.get("/documents", headers=headers)
+    assert listing.status_code == 200
+    docs = listing.json()
+    assert len(docs) == 1
+    assert docs[0]["uploader_email"] == "docs-uploader1@test.com"
+    # The raw uploader id is never part of the public response shape.
+    assert "uploaded_by" not in docs[0]
+
+
+async def test_checksum_dedupe_does_not_overwrite_original_uploader(
+    client: AsyncClient,
+) -> None:
+    tokens_a = await _signup(client, "docs-uploader2a@test.com", "UploaderTwoA")
+    tokens_b = await _signup(client, "docs-uploader2b@test.com", "UploaderTwoB")
+    headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}
+    headers_b = {"Authorization": f"Bearer {tokens_b['access_token']}"}
+
+    # Invite user B into A's own org so a same-org re-upload can be attributed to a
+    # DIFFERENT uploader — checksum dedupe is scoped to (org_id, checksum), so this is
+    # the only way to exercise "a second upload of identical bytes, same org" at all.
+    invite = await client.post(
+        "/auth/invite",
+        headers=headers_a,
+        json={"email": "docs-uploader2b-member@test.com", "role": "member"},
+    )
+    assert invite.status_code == 201
+    accept = await client.post(
+        "/auth/accept-invite",
+        json={
+            "org_id": invite.json()["org_id"],
+            "token": invite.json()["invite_token"],
+            "password": "password123",
+        },
+    )
+    assert accept.status_code == 200
+    headers_a_member = {"Authorization": f"Bearer {accept.json()['access_token']}"}
+
+    file = {"file": ("shared-dedupe.pdf", b"identical dedupe bytes", "application/pdf")}
+    first = await client.post("/documents/upload", headers=headers_a, files=file)
+    assert first.status_code == 201
+
+    second = await client.post("/documents/upload", headers=headers_a_member, files=file)
+    assert second.status_code == 200
+    assert second.json()["id"] == first.json()["id"]
+
+    listing = await client.get("/documents", headers=headers_a)
+    docs = listing.json()
+    assert len(docs) == 1
+    # Still attributed to the ORIGINAL uploader (org A's owner), never the dedupe-hit
+    # requester (the invited member) — re-uploading identical bytes must not steal
+    # attribution from whoever uploaded it first.
+    assert docs[0]["uploader_email"] == "docs-uploader2a@test.com"
+
+    # headers_b is an unrelated org — never touches this scenario, only asserted here to
+    # confirm the invite/accept-invite dance above didn't accidentally cross tenants.
+    other_org_listing = await client.get("/documents", headers=headers_b)
+    assert other_org_listing.json() == []
+
+
+async def test_uploader_email_resolution_is_org_scoped(
+    client: AsyncClient,
+) -> None:
+    tokens_a = await _signup(client, "docs-uploader3a@test.com", "UploaderThreeA")
+    tokens_b = await _signup(client, "docs-uploader3b@test.com", "UploaderThreeB")
+    headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}
+    headers_b = {"Authorization": f"Bearer {tokens_b['access_token']}"}
+
+    await client.post(
+        "/documents/upload",
+        headers=headers_a,
+        files={"file": ("a-doc.pdf", b"org a bytes", "application/pdf")},
+    )
+    await client.post(
+        "/documents/upload",
+        headers=headers_b,
+        files={"file": ("b-doc.pdf", b"org b bytes", "application/pdf")},
+    )
+
+    listing_a = await client.get("/documents", headers=headers_a)
+    listing_b = await client.get("/documents", headers=headers_b)
+
+    assert [d["uploader_email"] for d in listing_a.json()] == ["docs-uploader3a@test.com"]
+    assert [d["uploader_email"] for d in listing_b.json()] == ["docs-uploader3b@test.com"]
+
+
+async def test_uploader_email_none_for_document_with_no_recorded_uploader(
+    client: AsyncClient, session_factory
+) -> None:
+    tokens = await _signup(client, "docs-uploader4@test.com", "UploaderFour")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    me = await client.get("/auth/me", headers=headers)
+    org_id = uuid.UUID(me.json()["org_id"])
+
+    # Directly inserted, no uploaded_by set — simulates a pre-this-feature document
+    # (same pattern test_tag_a_document_and_list_by_tag already uses to seed a raw row).
+    doc_id = uuid.uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(Document(id=doc_id, org_id=org_id, title="Legacy"))
+
+    listing = await client.get("/documents", headers=headers)
+    assert listing.status_code == 200
+    docs = listing.json()
+    assert len(docs) == 1
+    assert docs[0]["uploader_email"] is None

@@ -12,6 +12,7 @@ function mockUser(role: "owner" | "admin" | "member" = "owner") {
       id: "u-1",
       org_id: "org-1",
       email: "u@test.com",
+      name: null,
       role,
       is_active: true,
       created_at: "2026-01-01T00:00:00Z",

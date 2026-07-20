@@ -50,6 +50,7 @@ describe("AccessRolesPage", () => {
         id: "u-1",
         org_id: "org-1",
         email: "alice@test.com",
+        name: null,
         role: "member",
         is_active: true,
         created_at: "",

@@ -47,9 +47,12 @@ async def search_sections(
 async def get_chunks(ctx: TenantContext, chunk_ids: list[uuid.UUID]) -> list[ChunkRecord]:
     """F41 citation resolution's entry point — re-fetches chunk rows by id, org-scoped
     via ``ChunkRepository.get_by_ids``, so a caller (``chat.service``) can rebuild a
-    citation from the source-of-truth row rather than trusting an earlier in-request copy."""
+    citation from the source-of-truth row rather than trusting an earlier in-request copy.
+    Also carries the owning section's page range (``page_start``/``page_end``, both
+    ``None`` when the chunk has no section or the section has no page info) for
+    human-readable citation display alongside the char offsets."""
     async with db_mod.tenant_session(ctx.org_id) as session:
-        chunks = await ChunkRepository(session, ctx).get_by_ids(chunk_ids)
+        rows = await ChunkRepository(session, ctx).get_by_ids(chunk_ids)
     return [
         ChunkRecord(
             chunk_id=chunk.id,
@@ -57,6 +60,8 @@ async def get_chunks(ctx: TenantContext, chunk_ids: list[uuid.UUID]) -> list[Chu
             content=chunk.content,
             char_start=chunk.char_start,
             char_end=chunk.char_end,
+            page_start=page_start,
+            page_end=page_end,
         )
-        for chunk in chunks
+        for chunk, page_start, page_end in rows
     ]
