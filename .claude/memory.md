@@ -6,6 +6,152 @@
 
 ---
 
+## UX audit — final 7 findings (4 Medium + 3 Low) fixed, verified, and COMMITTED (2026-07-20, this session — `8193f41`, pushed to `origin/main`)
+
+**Direct continuation of the 2026-07-16/2026-07-19 UX-audit sessions**: the user pasted
+the same published "Veratas — Product UX Audit" artifact and asked this chat to act as
+orchestrator, dispatching one `general-purpose` subagent per fix (researching best
+practice via WebSearch before writing each spec), reviewing every returned diff with
+`git diff` before trusting it, and live-verifying in a real browser (claude-in-chrome)
+against local dev servers before wrapping up. **This closes the audit — all 15
+findings from the original artifact are now fixed** (4 Critical + 4 High committed
+2026-07-16/19; these final 4 Medium + 3 Low committed this session).
+
+Dispatched in 3 waves respecting file-overlap (fixes touching the same file were
+sequenced, not parallelized): **Wave 1** (M2 citation page numbers, L3 status pulse,
+M4+L2 combined since both touch `ChatPanel.tsx`) → **Wave 2** (M1 document metadata,
+alone, since it touches `DocumentList.tsx` + needs its own migration) → **Wave 3** (M3
+hover-focus accessibility, L1 real display name, parallel — no file overlap once M1
+had landed).
+
+**M1 — Document table lacks metadata + no row preview (Medium), FIXED.** New
+`documents.uploaded_by` column (**migration 0017**, nullable FK to `users.id`,
+`ON DELETE SET NULL`, no RLS statements needed — new COLUMN on an already-RLS-protected
+table inherits the table policy automatically, only a new TABLE needs its own policy).
+`upload_document()` sets `uploaded_by=ctx.user_id` at genuine-new-document creation
+only — a checksum-dedupe hit never overwrites the original uploader (tested). New
+`AuthService.get_users_by_ids(ctx, ids) -> dict[uuid, str]` + `UserRepository.
+list_by_ids` — the module-boundary-respecting cross-domain accessor `documents.service`
+reaches through (local import, same precedent as `access_roles.service`), batched in
+ONE call (never N+1). `DocumentOut.uploader_email` is the only thing exposed on the
+wire — the raw `uploaded_by` uuid never leaves the backend. Frontend: `DocumentList.tsx`
+gained Uploaded-date/uploader-email, Size, Pages columns (`formatBytes`/
+`formatDateShort`/`formatDateFull` helpers), row `onClick` opens a new
+`DocumentDetailModal.tsx` (built on the existing `Modal.tsx` shell from the prior
+session's dialog work) showing the full metadata + checksum; the actions `<td>` calls
+`e.stopPropagation()` so delete/move clicks never also open the modal. **Live-verified**:
+real upload showed uploader email + formatted date/size in the table; row click opened
+the modal with every field populated correctly.
+
+**M2 — Citations show raw char offsets instead of page numbers (Medium), FIXED.**
+Researched best practice first (page number ALONGSIDE char offsets is the standard RAG-
+citation pattern, not a replacement). `ChunkRepository.get_by_ids` now LEFT-joins
+`sections` on `Chunk.section_id` (nullable — never lets a missing section break a
+citation) to pull `page_start`/`page_end`; threaded through `ChunkRecord` →
+`ResolvedCitation` (`page_start`/`page_end: int | None`, both `None` when the chunk has
+no section — never fabricated). Frontend `CitationPanel.tsx` shows "Page N" (or
+"Pages N–M") above the existing char-offset line when present; a citation built from
+`/retrieval/search` (which has no section join) explicitly sets both to `null` rather
+than omitting the fields, since the TS type made them required-but-nullable. **Live-
+verified**: citation panel showed "Page 1" above "chars 82–173" on a real chat answer.
+
+**M3 — Secondary actions invisible until hover, no keyboard reveal (Medium), FIXED.**
+Researched WCAG 2.1.1 (keyboard-operability) — hover-only reveal with no focus
+equivalent is a real violation. All 7 sites (`DocumentList.tsx`, `FolderTree.tsx` ×3,
+`NotebookList.tsx`, `NotebookPage.tsx` ×2) gained `group-focus-within:opacity-100
+focus-visible:opacity-100` alongside the existing `opacity-0 group-hover:opacity-100`
+— purely additive, no color/spacing/behavior change. All 7 controls already had
+`aria-label`s (no additions needed there). Class-presence tests added per file (jsdom
+can't resolve `:focus-within` visually, so asserting the Tailwind classes are present
+is the correct test level).
+
+**M4 — No onboarding guidance after first document ready (Medium), FIXED.** Researched
+NotebookLM's pattern (LLM-generated starter questions) but **deliberately built STATIC
+generic chips instead** — avoids a hidden per-notebook-view LLM cost, consistent with
+this project's "wait for real evidence before building" bias (reranker seam, AI
+chunk-enrichment). 3 chips ("Summarize the key points...", "What are the main topics
+covered?", "What definitions or important terms are explained here?") render in
+`ChatPanel.tsx`'s empty state only when `hasDocuments && messages.length === 0`;
+clicking fills+submits in one step via a new shared `submitQuery()` (both the form
+submit and chip clicks now call it). **Live-verified**: chips rendered on a real
+notebook with one attached document; clicking one submitted immediately and produced a
+real cited answer.
+
+**L1 — Display name guessed from email (Low), FIXED with a real field (user's
+explicit choice over the cheaper regex-only option).** New `users.name` column
+(**migration 0018**, nullable). `SignupRequest.name` optional; blank/whitespace
+normalizes to `NULL` server-side (not persisted as `""`). `HomePage.tsx` uses
+`user.name` when present, else a new `deriveDisplayNameFromEmail()` fallback (splits
+the email local-part on `.`/`_`/`-`/digits, title-cases each segment — e.g.
+"j.smith23@company.com" → "J Smith" instead of the old raw "J.smith23"). Invite/accept-
+invite flow deliberately NOT wired with a name field this round (invited members stay
+null until a future profile-edit feature — explicitly scoped out, tested to confirm the
+null stays honest rather than silently guessed). **Live-verified**: signed up with
+"Priya Verify" as the name, home page showed "Welcome, Priya Verify" verbatim.
+
+**L2 — No copy/feedback controls on answers (Low), FIXED per user's explicit split:
+copy is REAL, feedback is a UI-only stub.** `handleCopy` calls
+`navigator.clipboard.writeText`, flips to "Copied" for 1.5s. Thumbs up/down is
+component-local tri-state (`Record<messageId, "up"|"down"|undefined>`), NO backend
+call, no persistence, no TODO comment — built exactly as scoped, not half-wired toward
+a future endpoint. "Regenerate" explicitly skipped (not asked for). Control row gated
+on `isFinalAssistant && msg.messageId !== undefined` (every role sees it, unlike the
+admin-only Debug toggle it sits next to). **Live-verified**: Copy/👍/👎 row rendered
+under a real answer bubble.
+
+**L3 — Status pill never animates (Low), FIXED.** A small `animate-pulse` dot
+(`bg-current`, so it auto-matches the badge's warning/success/danger color, `aria-
+hidden` since it's decorative) renders before the label ONLY for non-terminal statuses
+(UPLOADED/PARSING/STRUCTURING/EMBEDDING) — chosen over pulsing the whole badge's
+opacity, which would make the label text itself flicker and hurt legibility.
+**Live-verified**: pulse dot visible on a real in-progress "Uploaded" badge; gone once
+the document reached "Ready".
+
+**Verification (independently re-run by this session's orchestrator, not just
+subagent-reported, after every wave)**: final state **252 backend passed, 2 skipped**
+(was 229 baseline before this session — includes M1's 22 doc tests + L1's 34 auth tests
++ others), **138 frontend passed across 18 files** (was 101 baseline), `tsc -b` clean,
+`vite build` clean, `ruff check`/`ruff format --check` clean (only the 3 standing
+pre-existing `scripts/inspect_document.py` findings). Both new migrations (0017, 0018)
+applied cleanly to the real dev Postgres (`alembic current` confirmed `0018 (head)`),
+not just the Testcontainers run.
+
+**Two subagent failures this session, both real gotchas worth remembering:**
+1. **A background subagent's task-notification can report `status: failed` (API stream
+   error) even when the agent's actual file edits were already complete and correct.**
+   Happened twice: M2 (citation page numbers) failed mid-final-report but its full
+   diff was present, tests passed, everything correct — verified independently and
+   accepted as done, no re-dispatch needed. L1 (display name) failed with ZERO actual
+   changes made (`git status` showed nothing from that task) — re-dispatched fresh and
+   it completed cleanly the second time. **Lesson: on any subagent `failed` status,
+   check actual repo state (`git status`/`git diff`) before assuming no progress was
+   made — a failure notification is not proof of zero work, and re-dispatching a task
+   that already succeeded wastes a full round-trip.**
+2. **This dev environment's real entrypoints are `backend/main.py` and
+   `backend/worker.py`** (top-level, not `app/main.py`/`app/worker.py` — a natural but
+   wrong guess given the `app/` package layout) — `uvicorn main:app` / `arq
+   worker.WorkerSettings`, run from inside `backend/` with `backend/.venv/Scripts/
+   python.exe`. Also: the dev `.env` has `STORAGE_MODE` unset (defaults to `r2` with
+   empty R2 credentials) and no arq worker was running — both needed for a live upload
+   to actually reach READY. Started both with `STORAGE_MODE=local` as process env
+   (not written to `.env`, matching the established "throwaway override for live
+   verification" precedent from the 2026-07-19 session) and a fresh `arq
+   worker.WorkerSettings` process.
+
+**Committed and pushed `8193f41` → `origin/main`** (one commit, 43 files, matching the
+prior two audit sessions' single-commit precedent). Next migration is now **0019**.
+
+## Next session starts with
+
+**The published UX audit is now fully closed — all 15 findings (4 Critical, 4 High, 4
+Medium, 3 Low) are fixed, verified, and shipped.** No open items from that artifact
+remain. Nothing else is queued — future work is V2/V3/Enterprise buildplan items or a
+new direct ask. If a new upload/ingestion live-check is needed, remember the
+`backend/main.py`/`worker.py` entrypoint + `STORAGE_MODE=local` + arq-worker gotcha
+above rather than rediscovering it.
+
+---
+
 ## UX audit — 4 High findings fixed + live-verified (2026-07-19 session — UNCOMMITTED, frontend-only)
 
 **Direct continuation of the 2026-07-16 critical-findings session**: the user pasted the

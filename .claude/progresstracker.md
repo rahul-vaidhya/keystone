@@ -896,7 +896,7 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       The remaining 11 non-critical findings (High/Medium/Low) from the same audit are
       untouched.
 
-## Maintenance — UX audit: 4 High findings fixed (2026-07-19, this session — UNCOMMITTED, frontend-only)
+## Maintenance — UX audit: 4 High findings fixed (2026-07-19 — committed `8861a7c`, frontend-only)
 - [x] Fixed and live-verified all 4 HIGH findings from the same published "Veratas —
       Product UX Audit" artifact, continuing directly from the 2026-07-16 critical-
       findings session: (1) empty-notebook Ask now disables the input and explains why
@@ -925,9 +925,45 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       in this sandbox — mobile-width visual proof is still outstanding; the dev `arq`
       worker wasn't running this session, so a populated non-empty search-results
       round-trip couldn't be demonstrated live). 7 findings remain untouched (4 Medium,
-      3 Low).
+      3 Low). **Correction (2026-07-20):** committed as `8861a7c` — a prior "NOT YET
+      COMMITTED" note here was stale by the start of the next session.
 
-Next action: none from the buildplan. Future work = V2/V3/Enterprise items
+## Maintenance — UX audit: final 7 findings fixed (2026-07-20, this session — committed `8193f41`)
+- [x] Fixed and live-verified the remaining 4 Medium + 3 Low findings from the same
+      published "Veratas — Product UX Audit" artifact, **closing the audit entirely**
+      (all 15 original findings now fixed across 3 sessions: 4 Critical `8964ec6`,
+      4 High `8861a7c`, these final 7 `8193f41`). Orchestrated as one chat dispatching
+      subagents in 3 file-overlap-respecting waves: (1) document table showed only
+      title+status — new `documents.uploaded_by` column (migration `0017`) + uploader-
+      email/date/size/pages columns + a click-through `DocumentDetailModal.tsx`; (2)
+      citations showed only raw char offsets — chunk→section LEFT JOIN surfaces
+      `page_start`/`page_end` on `ResolvedCitation`, shown as "Page N" alongside (not
+      replacing) the existing char-offset line; (3) hover-only row actions had no
+      keyboard equivalent (WCAG 2.1.1) — `group-focus-within:opacity-100 focus-visible:
+      opacity-100` added to all 7 sites across `DocumentList.tsx`/`FolderTree.tsx`/
+      `NotebookList.tsx`/`NotebookPage.tsx`; (4) empty notebooks had no onboarding
+      guidance — 3 static starter-question chips in `ChatPanel.tsx`'s empty state,
+      click-to-submit (deliberately static, not LLM-generated, to avoid a hidden
+      per-view LLM cost); (5) display names were guessed from email — real
+      `users.name` column (migration `0018`) + optional signup field + an improved
+      email-derived fallback heuristic; (6) no copy/feedback controls on answers —
+      working copy-to-clipboard + a UI-only (unpersisted, by design) thumbs up/down
+      toggle; (7) status pill never animated — a small `animate-pulse` dot on
+      non-terminal statuses only. **252 backend passed (2 skipped, was 229), 138
+      frontend passed across 18 files (was 101)**, `tsc -b`/`vite build`/`ruff` all
+      clean, both new migrations applied to the real dev Postgres (`0018` head).
+      Live-verified end-to-end in a real browser: signup with a name → "Welcome, Priya
+      Verify"; a real upload showing uploader/date/size in the table + a working
+      detail modal; a notebook's starter chips producing a real cited answer with
+      "Page 1" shown in the citation panel; working copy/feedback controls. See
+      memory.md "UX audit — final 7 findings" for full detail, including two subagent-
+      failure gotchas (a `failed` task-notification doesn't always mean zero progress —
+      check `git status` before re-dispatching) and this dev environment's real
+      entrypoints (`backend/main.py`/`worker.py`, not `app/main.py`/`app/worker.py`).
+      **Committed and pushed `8193f41` → `origin/main`.** Next migration: `0019`.
+
+Next action: none from the buildplan — the published UX audit is now fully closed
+(all 15 findings fixed across three sessions). Future work = V2/V3/Enterprise items
 (architecture.md "Postponed") or direct asks. Ops notes: add
 `OPENAI_API_KEY`/`OPENAI_BASE_URL` (+ `*_MODE=real`, `STORAGE_MODE=local`) to
 backend/.env before user-run real-seam dev sessions; `SEAMS_MODE`/`RLS_ENABLED` lines
