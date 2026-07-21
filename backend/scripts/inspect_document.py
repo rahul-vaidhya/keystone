@@ -26,10 +26,10 @@ from pathlib import Path
 
 import structlog
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
 from app.services.ingestion.structuring import _build_sections_and_chunks
 from app.services.seams import RealParser
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _gap_overlap_report(sections, chunks) -> list[str]:
@@ -49,7 +49,7 @@ def _gap_overlap_report(sections, chunks) -> list[str]:
                 f"[{section.path}] first chunk starts at {own[0].char_start}, "
                 f"section starts at {section.char_start}"
             )
-        for prev, nxt in zip(own, own[1:]):
+        for prev, nxt in zip(own, own[1:], strict=False):
             if nxt.char_start < prev.char_end:
                 issues.append(
                     f"[{section.path}] overlap: chunk ends {prev.char_end}, "
