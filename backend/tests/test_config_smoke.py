@@ -6,7 +6,9 @@ from app.config.settings import Settings, settings
 
 
 def test_defaults() -> None:
-    assert settings.RLS_ENABLED is False  # enforced RLS is OFF until Phase 6
+    # RLS_ENABLED defaults True post-F60 (enforced RLS shipped); the field itself is now
+    # vestigial, kept only because migrations/0002 imports it at runtime.
+    assert settings.RLS_ENABLED is True
     # no vendor keys needed in dev/test — each seam defaults to fake independently (F23)
     assert settings.PARSER_MODE == "fake"
     assert settings.EMBEDDER_MODE == "fake"

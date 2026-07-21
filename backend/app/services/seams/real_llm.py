@@ -21,9 +21,16 @@ def _classify_transient(exc: Exception) -> bool:
     try:
         from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
     except ImportError:  # pragma: no cover - only reachable if openai is somehow absent
-        return False
-    if isinstance(exc, (APITimeoutError, APIConnectionError, RateLimitError, InternalServerError)):
-        return True
+        pass
+    else:
+        transient_types = (
+            APITimeoutError,
+            APIConnectionError,
+            RateLimitError,
+            InternalServerError,
+        )
+        if isinstance(exc, transient_types):
+            return True
     status_code = getattr(exc, "status_code", None)
     return status_code is not None and (status_code == 429 or status_code >= 500)
 
