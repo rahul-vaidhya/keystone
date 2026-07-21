@@ -2,6 +2,10 @@
 
 Vite + React SPA with JWT auth and a role-aware app shell.
 
+> For the full "clone to running" setup (infra, backend, worker, seam modes,
+> troubleshooting), see the [root README](../README.md). This file covers
+> frontend-only details.
+
 ## Quick start
 
 1. Start Postgres + Redis (from repo root): `docker compose up -d`

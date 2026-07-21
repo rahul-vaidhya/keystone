@@ -2,6 +2,10 @@
 
 FastAPI + arq workers + Postgres/pgvector. Modular monolith. See `../.claude/context/`.
 
+> For the full "clone to running" setup (infra, worker, frontend, seam modes,
+> troubleshooting), see the [root README](../README.md). This file covers backend-only
+> details.
+
 ## Layout
 
 ```
@@ -48,7 +52,19 @@ pytest
 - `uvicorn --reload` can fail with multiprocessing/named-pipe errors in some sandboxed
   shells on Windows; drop `--reload` if you hit that, or run it from a normal terminal.
 
+## Running the background worker
+
+Ingestion (parse → structure → embed) runs as async arq jobs, not inline in the API
+process. Run alongside `uvicorn` (same venv, from `backend/`):
+
+```bash
+arq worker.WorkerSettings
+```
+
+Without this running, uploaded documents never advance past `UPLOADED`.
+
 ## Status
 
-Phase 0: **F00 (layout) + F01 (DB + migrations) done.** Next: F02 tenant isolation,
-F03 seams + fakes, F04 CI against Testcontainers.
+See `../.claude/progresstracker.md` for the current, authoritative status — the
+buildplan (all phases 0–6) is complete; this file is kept only for backend-specific
+setup notes.
