@@ -962,7 +962,42 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       entrypoints (`backend/main.py`/`worker.py`, not `app/main.py`/`app/worker.py`).
       **Committed and pushed `8193f41` → `origin/main`.** Next migration: `0019`.
 
-Next action: none from the buildplan — the published UX audit is now fully closed
+## Maintenance — Embeddable website chatbot widget (2026-07-23, this session — UNCOMMITTED)
+- [x] Embed widget feature built exactly per the pre-approved `docs/embed-widget-plan.md`
+      (/architect output from an earlier 2026-07-23 chat; all scoping decisions confirmed
+      there). Orchestrated as one chat dispatching Sonnet subagents per slice (backend,
+      frontend, independent §9-checklist reviewer), every diff reviewed and every
+      verification independently re-run by the orchestrator. **Backend**: migration
+      `0019` (`widgets` table with full 0016-pattern RLS block + plaintext globally-unique
+      `public_id`; `conversations.widget_id` nullable FK), new embed domain
+      (`models/services/controllers/routes/embed.py`, services file FLAT per convention),
+      admin CRUD under `require_admin`, public no-auth `GET .../config` +
+      `POST .../stream` (SSE) with anti-enumeration WidgetNotFound→404, origin allowlist
+      (empty = allow-all with UI warning), NEW `app/utils/rate_limit.py` (Redis
+      fixed-window, DI-selected like ObjectStore — offline suite needs no Redis),
+      per-widget + per-IP limits, `stream_ask`/`_persist` optional `widget_id=None`
+      threading (authenticated path byte-identical). Validation runs BEFORE the
+      StreamingResponse is built so 404/403/429 are real HTTP statuses. **Frontend**:
+      `public/widget.js` (ES5 IIFE bubble+iframe), public `/embed` `EmbedChatPage`
+      (outside ProtectedRoute/AppShell, bare-fetch SSE, no auth), admin `/app/embed`
+      `EmbedWidgetsPage` (create/list/revoke/delete via useDialog, copy-able script
+      snippet + iframe URL), vite proxy scoped to `/embed/widgets`+`/embed/public`
+      (bare `/embed` stays the SPA page). **Verified**: backend 269 passed / 2 skipped
+      (+17 incl. the anonymous-ctx tag-gating pin), frontend 151 passed (+13; 2
+      pre-existing files flake only under parallel vitest — pass with
+      `--no-file-parallelism`), ruff FULLY clean (the 3 historical
+      `scripts/inspect_document.py` findings no longer exist), `tsc -b`/`vite build`
+      clean, migration applied to Testcontainers AND dev Postgres (`0019 (head)`).
+      Independent review: PASS 12/12, zero blocking findings. **Live E2E in a real
+      browser**: real org/upload/notebook, widget created in admin UI, snippet on a
+      scratch `localhost:8888` page → bubble → iframe → real streamed cited answer;
+      conversation persisted with `widget_id` set + `user_id` NULL; origin rejection
+      403 proven via `127.0.0.1:8888` (different origin string); revocation → public
+      404 "This chatbot is unavailable." See memory.md "Embeddable website chatbot
+      widget" for full detail + gotchas. **Next migration: 0020.**
+
+Next action: **commit the embed-widget feature (currently UNCOMMITTED — ask the user
+first)**. After that: none from the buildplan — the published UX audit is fully closed
 (all 15 findings fixed across three sessions). Future work = V2/V3/Enterprise items
 (architecture.md "Postponed") or direct asks. Ops notes: add
 `OPENAI_API_KEY`/`OPENAI_BASE_URL` (+ `*_MODE=real`, `STORAGE_MODE=local`) to

@@ -131,6 +131,59 @@ The source quote uses a left-accent-colored border (`border-l-2 border-accent`) 
 offset label — citations are always displayed in mono font per `uitokens.md`. Panel appears as a third column
 (`w-80 border-l border-border`) inside `ChatPanel` when a citation is active.
 
+---
+
+### EmbedChatPage
+
+File: `src/pages/EmbedChatPage.tsx`
+Last updated: 2026-07-23 (embed widget feature)
+
+| Property            | Class                                                          |
+| ------------------- | -------------------------------------------------------------- |
+| Page container      | `flex flex-col h-screen bg-bg` (standalone — NO AppShell)      |
+| Header              | `shrink-0 border-b border-border px-4 py-3`                    |
+| Header text         | `text-sm font-medium truncate` + `text-xs text-muted truncate` |
+| User bubble         | `bg-accent text-white rounded-lg px-3 py-2 text-sm`            |
+| Assistant bubble    | `bg-surface border border-border text-text rounded-lg px-3 py-2 text-sm` |
+| Error bubble        | `bg-surface border border-danger/40 text-danger`               |
+| Bubble max-width    | `max-w-[85%]`                                                  |
+| Citation marker     | `<sup>` `font-mono text-accent text-[0.7em]` (NOT clickable)   |
+| Typing indicator    | `text-muted animate-pulse` (●●●) — matches ChatPanel           |
+| Input field         | `bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent disabled:opacity-50` |
+| Send button         | `bg-accent text-white rounded-md px-3 py-2 text-sm hover:opacity-90 disabled:opacity-50` |
+
+**Pattern notes:**
+Deliberately NOT built on `ChatPanel` (which is coupled to auth/documents/dialog context) — this
+page renders inside a third-party iframe for anonymous visitors and must never need app context.
+Citation `[n]` markers are plain non-clickable superscripts (MVP scope per plan — no CitationPanel).
+Errors render as an assistant-style bubble with `border-danger/40 text-danger`, with distinct copy
+for 429 vs everything else. Uses `embedApi`'s bare-fetch public functions only (no Authorization,
+no credentials).
+
+---
+
+### EmbedWidgetsPage
+
+File: `src/pages/EmbedWidgetsPage.tsx`
+Last updated: 2026-07-23 (embed widget feature)
+
+| Property         | Class                                                       |
+| ---------------- | ----------------------------------------------------------- |
+| Create form card | `bg-surface border border-border rounded-lg p-4`            |
+| Widget card      | `bg-surface border border-border rounded-lg p-4`            |
+| Status badge     | `text-xs px-2 py-0.5 rounded-sm border` — `text-success border-success` (Active) / `text-danger border-danger` (Revoked) — StatusBadge pill convention |
+| Snippet box      | `font-mono text-xs bg-bg border border-border rounded-md p-3 break-all` |
+| Copy button      | `bg-accent text-white rounded-md px-3 py-1.5 text-sm hover:opacity-90` — flips label to "Copied" for 1.5s (ChatPanel copy-control pattern) |
+| Revoke button    | `border border-danger text-danger rounded-md px-3 py-1.5 text-sm` |
+| Hint text        | `text-xs text-muted`                                        |
+
+**Pattern notes:**
+Admin-gated page mirroring `AccessRolesPage` layout conventions. Origins editor is a one-per-line
+`textarea` (trim + drop empties on submit) with an explicit "leave empty to allow ANY site" warning —
+the empty-allowlist = allow-all decision is surfaced in copy, never silent. Revoke/Delete go through
+`useDialog().confirm` with danger styling (never `window.confirm`). "Get embed code" is a per-card
+expandable revealing BOTH the script snippet and raw iframe URL, each with its own copy button.
+
 ## Rule
 Before creating a new component, check this list. Reuse or extend an existing one rather than
 duplicating. Run **Imprint** to record anything new here.

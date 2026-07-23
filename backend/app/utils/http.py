@@ -33,6 +33,7 @@ from app.services.documents import (
     FolderNotFound,
     TagNotFound,
 )
+from app.services.embed import EmbedError, OriginNotAllowed, WidgetNotFound, WidgetRateLimited
 from app.services.knowledge import KnowledgeError, NotebookNotFound
 
 
@@ -197,4 +198,32 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"detail": str(exc) or "Access Roles error"},
+        )
+
+    @app.exception_handler(WidgetNotFound)
+    async def _widget_not_found(_request: Request, exc: WidgetNotFound) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": str(exc) or "Widget not found"},
+        )
+
+    @app.exception_handler(OriginNotAllowed)
+    async def _origin_not_allowed(_request: Request, exc: OriginNotAllowed) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": str(exc) or "Origin not allowed"},
+        )
+
+    @app.exception_handler(WidgetRateLimited)
+    async def _widget_rate_limited(_request: Request, exc: WidgetRateLimited) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": str(exc) or "Rate limit exceeded"},
+        )
+
+    @app.exception_handler(EmbedError)
+    async def _embed_error(_request: Request, exc: EmbedError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": str(exc) or "Embed error"},
         )

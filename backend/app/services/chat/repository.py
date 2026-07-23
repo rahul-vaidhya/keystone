@@ -18,10 +18,17 @@ class ConversationRepository(BaseRepository[Conversation]):
     model = Conversation
 
     async def create(
-        self, *, knowledge_base_id: uuid.UUID, user_id: uuid.UUID | None
+        self,
+        *,
+        knowledge_base_id: uuid.UUID,
+        user_id: uuid.UUID | None,
+        widget_id: uuid.UUID | None = None,
     ) -> Conversation:
         conversation = Conversation(
-            org_id=self._ctx.org_id, knowledge_base_id=knowledge_base_id, user_id=user_id
+            org_id=self._ctx.org_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=user_id,
+            widget_id=widget_id,
         )
         self._db.add(conversation)
         await self._db.flush()

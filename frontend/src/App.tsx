@@ -12,6 +12,8 @@ import { SignupPage } from "./pages/SignupPage";
 import { AcceptInvitePage } from "./pages/AcceptInvitePage";
 import { UsersPage } from "./pages/UsersPage";
 import { AccessRolesPage } from "./pages/AccessRolesPage";
+import { EmbedWidgetsPage } from "./pages/EmbedWidgetsPage";
+import { EmbedChatPage } from "./pages/EmbedChatPage";
 import { AuthProvider } from "./context/AuthContext";
 import { DialogProvider } from "./context/DialogContext";
 
@@ -28,6 +30,10 @@ export default function App() {
               <Route path="/login" element={<LoginPage />} />
               <Route path="/signup" element={<SignupPage />} />
               <Route path="/accept-invite" element={<AcceptInvitePage />} />
+              {/* Public, unauthenticated — rendered standalone inside widget.js's
+                  iframe on a third-party site. Outside ProtectedRoute/AppShell:
+                  no sidebar, no auth context, no dialog context. */}
+              <Route path="/embed" element={<EmbedChatPage />} />
               <Route element={<ProtectedRoute />}>
                 <Route path="/app" element={<AppShell />}>
                   <Route index element={<HomePage />} />
@@ -38,6 +44,7 @@ export default function App() {
                   <Route element={<AdminRoute />}>
                     <Route path="users" element={<UsersPage />} />
                     <Route path="access-roles" element={<AccessRolesPage />} />
+                    <Route path="embed" element={<EmbedWidgetsPage />} />
                   </Route>
                 </Route>
               </Route>

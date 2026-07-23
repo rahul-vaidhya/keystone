@@ -41,6 +41,12 @@ class Conversation(Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # Nullable FK to widgets.id (migration 0019) — set only for conversations that
+    # originated from an anonymous embed-widget visitor (never authenticated chat).
+    # ON DELETE SET NULL: deleting a widget must never delete its conversation history.
+    widget_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("widgets.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

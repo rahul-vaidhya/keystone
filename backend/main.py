@@ -15,6 +15,7 @@ from app.routes.access_roles import router as access_roles_router
 from app.routes.auth import router as auth_router
 from app.routes.chat import router as chat_router
 from app.routes.documents import router as documents_router
+from app.routes.embed import router as embed_router
 from app.routes.ingestion import router as ingestion_router
 from app.routes.notebooks import router as knowledge_router
 from app.routes.retrieval import router as retrieval_router
@@ -41,6 +42,7 @@ app.include_router(knowledge_router)
 app.include_router(retrieval_router)
 app.include_router(chat_router)
 app.include_router(access_roles_router)
+app.include_router(embed_router)
 
 
 @app.get("/health")

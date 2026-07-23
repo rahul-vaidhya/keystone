@@ -109,5 +109,15 @@ class Settings(BaseSettings):
     R2_SECRET_ACCESS_KEY: str | None = None
     R2_BUCKET: str | None = None
 
+    # --- Embed widget (docs/embed-widget-plan.md) ---
+    # Base URL of the deployed frontend SPA — used to build the admin-facing embed
+    # snippet/iframe URL (WidgetOut.embed_snippet/iframe_url). Not the backend's own
+    # URL; the widget.js/iframe are served by the SPA, not this API.
+    PUBLIC_APP_URL: str = "http://localhost:5173"
+    # Redis fixed-window rate limits on the PUBLIC (unauthenticated) embed chat
+    # endpoint — per-widget and per-IP, both enforced (see app/utils/rate_limit.py).
+    WIDGET_RATE_LIMIT_PER_MINUTE: int = 30
+    WIDGET_IP_RATE_LIMIT_PER_MINUTE: int = 10
+
 
 settings = Settings()

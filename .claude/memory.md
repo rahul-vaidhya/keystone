@@ -6,7 +6,145 @@
 
 ---
 
-## UX audit — final 7 findings (4 Medium + 3 Low) fixed, verified, and COMMITTED (2026-07-20, this session — `8193f41`, pushed to `origin/main`)
+## Embeddable website chatbot widget — BUILT + LIVE-VERIFIED (2026-07-23, this session — UNCOMMITTED)
+
+**A direct ask executing the pre-approved plan `docs/embed-widget-plan.md`** (produced
+2026-07-23 via /architect in an earlier chat; all scoping decisions confirmed there —
+do not relitigate). This chat acted as orchestrator only: one Sonnet subagent per slice
+(backend → frontend → independent §9-checklist reviewer), every returned diff reviewed
+directly via `git diff`/file reads, every verification INDEPENDENTLY re-run by the
+orchestrator, then full live browser verification (claude-in-chrome) against real dev
+servers with real OpenRouter seams. **All slices done, review PASS 12/12, live E2E
+proven. NOT YET COMMITTED — tree is dirty with the whole feature + docs.**
+
+**What was built (backend — migration `0019`):**
+- `widgets` table (org_id, knowledge_base_id, name, globally-unique PLAINTEXT
+  `public_id` via `secrets.token_urlsafe(16)` — public by design, deliberately NOT
+  hashed unlike invite tokens; `allowed_origins` JSONB, `is_active`, `created_by`,
+  timestamps) with the full 0016-pattern RLS block (ENABLE+FORCE + `tenant_isolation`
+  w/ NULLIF cast + `app_user` grant), plus `conversations.widget_id` (nullable FK,
+  ON DELETE SET NULL, no new RLS needed per 0017 precedent).
+- New embed domain: `models/embed.py`, `services/embed.py` (FLAT, 285 lines —
+  repo+service same-file shape, `auth.py` precedent), `controllers/embed.py`,
+  `routes/embed.py`. Admin CRUD (`require_admin`): POST/GET/PATCH/DELETE
+  `/embed/widgets`. Public (NO auth, accept-invite precedent):
+  `GET /embed/public/{org_id}/{public_id}/config`, `POST .../stream` (SSE).
+  Anti-enumeration: missing/revoked/wrong-org widget → ONE generic `WidgetNotFound`
+  → 404. Cross-domain strictly via `knowledge_service.get_notebook` /
+  `chat_service.stream_ask`.
+- **Load-bearing design point**: `EmbedService.public_chat_stream` is a plain
+  `async def` with NO yield in its own body — it validates (widget load → origin
+  allowlist → rate limits) eagerly when awaited, then RETURNS the async generator
+  from `chat_service.stream_ask`. The controller awaits it BEFORE constructing
+  `StreamingResponse`, so 404/403/429 are real HTTP statuses, never mid-stream SSE
+  error events. (An async-generator-shaped version would defer all validation to
+  first iteration — after headers are sent.)
+- Origin allowlist semantics: **empty `allowed_origins` = allow-all** (plan's
+  recommended decision; admin UI warns). Non-empty list → exact-match on the
+  `parent_origin` the embed page relays from widget.js's `?parent=` query param.
+  Spoofable by non-browser clients — named, accepted caveat; rate limits +
+  revocation are the backstops.
+- New `app/utils/rate_limit.py`: `RateLimiter` Protocol + `RedisRateLimiter`
+  (fixed-window INCR + EXPIRE-only-on-first-hit, shared lazy redis.asyncio client)
+  + `get_rate_limiter()` FastAPI dependency — DI-selected infra like
+  ObjectStore/JobQueue, NOT a seam; tests override with an in-file fake, offline
+  suite never needs Redis. Settings: `PUBLIC_APP_URL` (default localhost:5173),
+  `WIDGET_RATE_LIMIT_PER_MINUTE=30`, `WIDGET_IP_RATE_LIMIT_PER_MINUTE=10`. Both
+  per-widget AND per-IP limits enforced per request.
+- `stream_ask`/`_persist`/`ConversationRepository.create` gained optional
+  `widget_id=None` kwarg — `ask()` untouched, authenticated path byte-identical;
+  only `services/embed.py` ever passes it.
+
+**Frontend:**
+- `frontend/public/widget.js` — hand-written ES5 IIFE (~5KB, zero deps, inline
+  styles): reads its own script tag's `data-org`/`data-widget-id`/optional
+  `data-base-url` (else derives base by stripping `/widget.js` from its src),
+  injects fixed bottom-right bubble (z-index 2147483000), lazily creates a toggling
+  iframe panel at `{base}/embed?org=&widget=&parent={encodeURIComponent(origin)}`.
+  Double-injection guard `window.__veratasWidgetLoaded`.
+- `EmbedChatPage.tsx` (public `/embed` route OUTSIDE ProtectedRoute/AppShell —
+  deliberately NOT reusing ChatPanel): config fetch → "This chatbot is
+  unavailable." on any failure/missing params; slim streamed chat with `[n]` as
+  plain non-clickable superscripts; 429 gets distinct friendly copy.
+- `services/embedService.ts`: authed admin CRUD via apiFetch + PUBLIC bare-fetch
+  functions (`getPublicConfig`, `streamPublicChat` — NO Authorization, NO
+  credentials, chatApi.streamAsk's exact SSE mechanics; pre-stream HTTP failures
+  surfaced via `onError(message, status)`).
+- `EmbedWidgetsPage.tsx` (admin `/app/embed` inside AdminRoute + Sidebar item
+  gated like Users/Access Roles): create form (notebook select, one-origin-per-line
+  textarea with explicit allow-all warning), widget cards with Active/Revoked
+  badge, Revoke/Reactivate + Delete via `useDialog().confirm` (danger), expandable
+  embed-code box showing BOTH script snippet and iframe URL with copy-to-clipboard
+  ("Copied" 1.5s flip). Registered both pages in uiregistry.md via /imprint.
+- **vite proxy gotcha solved**: the SPA page route `/embed` and the API prefix
+  `/embed` collide in dev — proxy entries are scoped to `/embed/widgets` +
+  `/embed/public` (prefix match), so bare `GET /embed?...` falls through to the SPA
+  history fallback. NEVER add a bare `/embed` proxy entry.
+
+**Verification (all independently re-run by orchestrator, not just
+subagent-reported):** backend **269 passed / 2 skipped** (baseline 252 + 17 new
+`test_embed.py` tests incl. the anonymous-ctx tag-gating pin: a tag granted to an
+Access Role makes that document invisible to the widget's
+`TenantContext(org_id, user_id=None, role=None)` — previously-unexercised
+`resolve_user_granted_tags(user_id=None)` behavior now pinned). Frontend **151
+passed** (baseline 138 + 13 new; NOTE: 2 pre-existing files — `FolderTree.test.tsx`,
+`SearchPage.test.tsx` — flake under parallel vitest in this sandbox from resource
+contention; both pass standalone and under `--no-file-parallelism`, which is the
+reliable way to run the full suite here). `tsc -b` clean, `vite build` clean
+(`dist/widget.js` emitted as static asset), **ruff fully clean — the 3 standing
+`scripts/inspect_document.py` findings are GONE** (fixed in commit `5b983fd`; stop
+citing them as expected residue). Migration 0019 applied to BOTH Testcontainers
+(suite) and the real dev Postgres (`alembic current` → `0019 (head)`). Independent
+Sonnet reviewer: PASS on all 12 §9-checklist items, zero blocking findings.
+
+**Live E2E (real OpenRouter parser/embedder/LLM, STORAGE_MODE=local, uvicorn:8010 +
+arq worker + vite:5173 + throwaway `python -m http.server 8888` scratch host page):**
+fresh org signup → kech104.pdf upload → READY via the real worker chain (36 pages,
+~25s) → notebook attach → widget created in the new admin page (allowlist
+`http://localhost:8888`) → snippet pasted into the scratch page → **bubble → iframe
+→ real streamed grounded answer with a citation superscript** ("The octet rule …
+[7]"); DB confirmed `conversations.widget_id` set + `user_id` NULL and
+`chat.citations_resolved num_resolved=1` in logs. **Origin rejection proven** by
+loading the same page via `http://127.0.0.1:8888` (different origin string!) → 403
+Forbidden in the backend log + friendly error bubble. **Revocation proven**: Revoke
+via the custom dialog → public config 404 → "This chatbot is unavailable."
+`127.0.0.1` vs `localhost` being different origins is a genuinely useful trick for
+allowlist testing — same server, zero extra setup.
+
+**Gotchas hit this session (new or reconfirmed):**
+1. **Admin JWT expired mid-session** — a Revoke PATCH silently returned 401 (the
+   UI's error alert didn't fire visibly / the first attempt also hit Cancel due to
+   coordinate scaling). A page reload triggered the refresh-cookie flow
+   (`POST /auth/refresh` 200) and the retry worked. When a mutation seems to
+   no-op during long browser sessions, check the backend access log for 401 before
+   suspecting the feature.
+2. **CDP coordinate clicks/typing into the widget's cross-origin iframe are
+   unreliable** (clicks land, keystrokes don't reach the iframe's input; screenshot
+   scale also drifted 1568 vs 1600 px). Reliable pattern: prove the iframe
+   mechanics once via coordinates on a fresh tab, then drive the embed page
+   DIRECTLY in its own tab (`/embed?org=&widget=&parent=<encoded>` — same code
+   path widget.js produces) and submit via `javascript_tool` with the React-native
+   setter + `dispatchEvent(new Event('input',{bubbles:true}))` + `form.requestSubmit()`.
+3. `reportlab` is NOT in the backend venv (prior sessions' synthetic PDFs came from
+   elsewhere) — `pdf/kech104.pdf` remains the go-to live-test asset.
+4. The vitest parallel-run flakiness above (use `--no-file-parallelism` for full-suite runs).
+
+**Next migration is 0020.**
+
+## Next session starts with
+
+**The embed-widget feature is DONE and live-verified but UNCOMMITTED** — the tree
+holds the whole feature (8 modified + 9 new backend/frontend files + uiregistry/
+memory/progresstracker edits + `docs/embed-widget-plan.md`). First action: ask the
+user whether to commit (single feature commit matching the UX-audit precedent).
+Test data left behind: org "Embed Live Test Org" (embedlive-admin@example.com) with
+one revoked widget in the dev DB; scratch host page in the session scratchpad. The
+dev backend/worker/frontend were left running (uvicorn:8010, arq, vite:5173,
+http.server:8888) — restart stale ones per the standing gotcha if code changed.
+
+---
+
+## UX audit — final 7 findings (4 Medium + 3 Low) fixed, verified, and COMMITTED (2026-07-20 — `8193f41`, pushed to `origin/main`)
 
 **Direct continuation of the 2026-07-16/2026-07-19 UX-audit sessions**: the user pasted
 the same published "Veratas — Product UX Audit" artifact and asked this chat to act as

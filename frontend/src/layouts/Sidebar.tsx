@@ -99,6 +99,9 @@ export function Sidebar({
           {canManageTeam && (
             <NavItem to="/app/access-roles" label="Access Roles" onNavigate={onClose} />
           )}
+          {canManageTeam && (
+            <NavItem to="/app/embed" label="Embed widgets" onNavigate={onClose} />
+          )}
         </nav>
 
         <div className="px-2 pb-3 space-y-1 border-t border-border pt-3">

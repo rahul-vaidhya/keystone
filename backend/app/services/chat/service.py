@@ -262,16 +262,21 @@ class ChatService:
         citations: list[ResolvedCitation],
         hits: list[ContextBlock],
         final_prompt: str,
+        widget_id: uuid.UUID | None = None,
     ) -> tuple[uuid.UUID, uuid.UUID]:
         """Every ``/chat/ask`` call creates a FRESH conversation and its user/assistant
         message pair — no reuse across calls yet. Reuse only earns its place alongside
         multi-turn history-threading (a future feature); building append-to-conversation
         with no read side yet would be speculative storage (hard rule #8). Also writes the
         F42 debug bundle (``message_traces``) for the assistant message, in the same
-        transaction — the trace dies with its message, never persisted separately."""
+        transaction — the trace dies with its message, never persisted separately.
+        ``widget_id`` (default ``None``) marks a conversation as widget-originated — only
+        ever passed by ``stream_ask`` when called from the embed widget's public
+        endpoint; the authenticated ``ask``/``stream_ask`` paths never pass it, so this
+        stays ``None`` and the existing chat behavior is byte-identical."""
         async with db_mod.tenant_session(ctx.org_id) as session:
             conversation = await ConversationRepository(session, ctx).create(
-                knowledge_base_id=req.notebook_id, user_id=ctx.user_id
+                knowledge_base_id=req.notebook_id, user_id=ctx.user_id, widget_id=widget_id
             )
             await MessageRepository(session, ctx).create(
                 conversation_id=conversation.id,
@@ -301,11 +306,16 @@ class ChatService:
         embedder: Embedder,
         llm: LLM,
         correlation_id: str,
+        widget_id: uuid.UUID | None = None,
     ) -> AsyncIterator[dict]:
         """SSE streaming variant of ``ask``: yields ``{"type":"token","content":"..."}``
         events as the LLM generates output, then a final ``{"type":"done",...}`` event
         carrying the persisted conversation/citations. No mid-stream retry — once tokens
-        are flowing the client has partial output and a restart would confuse it."""
+        are flowing the client has partial output and a restart would confuse it.
+        ``widget_id`` (default ``None``) is only ever passed by the embed widget's public
+        controller (``app/services/embed.py``); the authenticated ``/chat/stream`` route
+        never passes it, so its default path stays byte-identical to before this kwarg
+        existed."""
         retrieval_response = await retrieval_service.search(
             ctx,
             RetrievalSearchRequest(notebook_id=req.notebook_id, query=req.query, k=req.k),
@@ -338,6 +348,7 @@ class ChatService:
             citations=citations,
             hits=retrieval_response.results,
             final_prompt=format_prompt_for_trace(messages),
+            widget_id=widget_id,
         )
         yield {
             "type": "done",
