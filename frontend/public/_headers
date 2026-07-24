@@ -1,0 +1,45 @@
+# Clickjacking protection for the authenticated SPA routes.
+#
+# The bare /embed route is the public embed-widget chat page (see public/widget.js) —
+# it MUST stay embeddable by arbitrary third-party sites, so it is deliberately never
+# mentioned below and gets no restrictive header (the correct default for it is
+# "allow"). Every other route is where a real Veratas session lives (login, signup,
+# accept-invite, the whole authenticated /app/* admin+chat SPA, including /app/embed —
+# the ADMIN widget-management page, not to be confused with the public /embed page) and
+# must never be framable by an attacker's page, or a clickjacking attack could trick a
+# logged-in user into clicking a disguised "Delete"/"Revoke" button they can't see.
+#
+# Rules are listed per-path rather than "wildcard-deny-then-override-embed" specifically
+# to avoid depending on any host's precedence semantics between an exact-path rule and a
+# splat/wildcard rule for the SAME header — some real-world Netlify deployments have hit
+# surprises with inherited splat-path headers not cleanly overriding. Explicit is safer
+# here than clever.
+#
+# This file uses the Netlify/Cloudflare Pages "_headers" convention (both auto-detect a
+# file with this exact name at the publish root; Vite copies everything under public/
+# verbatim into dist/, so this works with zero extra build config on either platform).
+# On any OTHER host (Vercel, a custom nginx/Caddy reverse proxy, etc.) this file is
+# inert — replicate the same per-path rules in that host's own config format instead.
+# If a new authenticated route is ever added to App.tsx, add its path here too — these
+# rules are enumerated, not a catch-all, so a forgotten route fails open (framable),
+# not closed.
+
+/login
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'
+
+/signup
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'
+
+/accept-invite
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'
+
+/app/*
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'
+
+/
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'
