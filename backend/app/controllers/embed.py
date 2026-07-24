@@ -28,6 +28,7 @@ from app.models.embed import (
 )
 from app.services.embed import embed_service
 from app.services.seams import LLM, Embedder, get_embedder, get_llm
+from app.utils.http import get_client_ip
 from app.utils.rate_limit import RateLimiter, get_rate_limiter
 
 logger = get_logger(__name__)
@@ -81,7 +82,7 @@ async def stream_public_chat(
     validation runs and can raise BEFORE this function ever constructs the
     ``StreamingResponse`` — a 404/403/429 from that call becomes a real HTTP status via
     the registered exception handlers, never a mid-stream SSE error event."""
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     correlation_id = str(uuid.uuid4())
 
     event_stream = await embed_service.public_chat_stream(

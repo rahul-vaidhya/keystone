@@ -45,10 +45,21 @@ async def _get_shared_redis() -> object:
 
 
 class RedisRateLimiter:
-    """Fixed-window counter keyed on ``f"ratelimit:{key}:{window}"`` where ``window``
-    is the current window-seconds-wide time bucket. ``INCR`` then ``EXPIRE`` ONLY when
-    the incremented count is exactly 1 (the first hit in this window) — expiring on
-    every hit would silently extend the window indefinitely under sustained traffic."""
+    """Sliding-window-COUNTER rate limiter, keyed on
+    ``f"ratelimit:{key}:{window}"`` where ``window`` is a window-seconds-wide time
+    bucket. Blends the current window's count with the immediately-previous window's
+    count, weighted by how far into the current window "now" is — this is what avoids
+    a PLAIN fixed-window counter's well-known boundary flaw: a client could otherwise
+    send a full quota in the last instant of one window and a full quota again in the
+    first instant of the next, briefly bursting to ~2x the configured limit. O(1)
+    memory per key (two windows), no new dependency — the standard technique used by
+    e.g. Cloudflare/Kong's public rate-limiting write-ups, chosen over a token bucket
+    or a full request log to keep this a small, self-contained change.
+
+    ``INCR`` then ``EXPIRE`` ONLY when the incremented count is exactly 1 (the first
+    hit in this window). The expiry is 2 windows wide (not 1) so THIS window's key is
+    still readable as "the previous window" once the next window begins — letting it
+    expire naturally after that is simpler than deleting it manually."""
 
     def __init__(self, redis_client: object | None = None) -> None:
         self._redis = redis_client
@@ -59,13 +70,22 @@ class RedisRateLimiter:
         return self._redis
 
     async def hit(self, key: str, limit: int, window_seconds: int = 60) -> bool:
-        window = int(time.time() // window_seconds)
+        now = time.time()
+        current_window = int(now // window_seconds)
+        previous_window = current_window - 1
         redis_client = await self._get_redis()
-        full_key = f"ratelimit:{key}:{window}"
-        count = await redis_client.incr(full_key)  # type: ignore[attr-defined]
-        if count == 1:
-            await redis_client.expire(full_key, window_seconds)  # type: ignore[attr-defined]
-        return count <= limit
+
+        current_key = f"ratelimit:{key}:{current_window}"
+        current_count = await redis_client.incr(current_key)  # type: ignore[attr-defined]
+        if current_count == 1:
+            await redis_client.expire(current_key, window_seconds * 2)  # type: ignore[attr-defined]
+
+        previous_raw = await redis_client.get(f"ratelimit:{key}:{previous_window}")  # type: ignore[attr-defined]
+        previous_count = int(previous_raw) if previous_raw is not None else 0
+
+        elapsed_fraction = (now % window_seconds) / window_seconds
+        weighted_count = previous_count * (1 - elapsed_fraction) + current_count
+        return weighted_count <= limit
 
 
 def get_rate_limiter() -> RateLimiter:

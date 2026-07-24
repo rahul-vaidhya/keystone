@@ -1,4 +1,4 @@
-"""Global HTTP exception mapping."""
+"""Global HTTP exception mapping + shared request helpers."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from app.config.settings import settings
 from app.models.auth import LoginAmbiguousResponse, OrgChoice
 from app.services.access_roles import (
     AccessRoleNameConflict,
@@ -35,6 +36,35 @@ from app.services.documents import (
 )
 from app.services.embed import EmbedError, OriginNotAllowed, WidgetNotFound, WidgetRateLimited
 from app.services.knowledge import KnowledgeError, NotebookNotFound
+
+
+def get_client_ip(request: Request) -> str:
+    """Real visitor IP for rate limiting, correct whether or not this app runs behind
+    a reverse proxy/load balancer. ``request.client.host`` alone is WRONG in any
+    deployment fronted by a proxy (nginx, a load balancer, a CDN) — it would be the
+    proxy's own address for every request, collapsing a per-IP limit into one shared
+    bucket for every real visitor behind it.
+
+    Only trusts ``X-Forwarded-For`` when the DIRECT peer (``request.client.host``) is
+    itself one of ``settings.TRUSTED_PROXY_IPS`` — a client that connects directly and
+    forges that header (trivial — it's just an HTTP header) is never trusted, since
+    its peer address won't be in the configured list. Reads right-to-left (nearest hop
+    first) and returns the first entry that isn't itself a trusted proxy — the
+    standard algorithm for a chain of one or more trusted hops (mirrors what
+    ``uvicorn.middleware.proxy_headers.ProxyHeadersMiddleware`` does).
+    """
+    direct_ip = request.client.host if request.client else "unknown"
+    trusted = {ip.strip() for ip in settings.TRUSTED_PROXY_IPS.split(",") if ip.strip()}
+    if not trusted or direct_ip not in trusted:
+        return direct_ip
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if not forwarded_for:
+        return direct_ip
+    hops = [ip.strip() for ip in forwarded_for.split(",") if ip.strip()]
+    for ip in reversed(hops):
+        if ip not in trusted:
+            return ip
+    return direct_ip
 
 
 def register_exception_handlers(app: FastAPI) -> None:

@@ -114,10 +114,19 @@ class Settings(BaseSettings):
     # snippet/iframe URL (WidgetOut.embed_snippet/iframe_url). Not the backend's own
     # URL; the widget.js/iframe are served by the SPA, not this API.
     PUBLIC_APP_URL: str = "http://localhost:5173"
-    # Redis fixed-window rate limits on the PUBLIC (unauthenticated) embed chat
+    # Redis sliding-window rate limits on the PUBLIC (unauthenticated) embed chat
     # endpoint — per-widget and per-IP, both enforced (see app/utils/rate_limit.py).
     WIDGET_RATE_LIMIT_PER_MINUTE: int = 30
     WIDGET_IP_RATE_LIMIT_PER_MINUTE: int = 10
+    # Comma-separated IPs of reverse proxies/load balancers this app runs behind, in
+    # front of the PUBLIC embed endpoint. Empty (default) = trust nothing, use the
+    # raw socket peer address (correct for local dev / direct connections). When a
+    # request's peer address IS one of these, app/utils/http.py:get_client_ip reads
+    # the real visitor IP from X-Forwarded-For instead — otherwise per-IP rate
+    # limiting silently degrades to a single shared bucket for every visitor behind
+    # the proxy. Never trust X-Forwarded-For from a peer NOT in this list (any client
+    # can forge that header directly).
+    TRUSTED_PROXY_IPS: str = ""
 
 
 settings = Settings()
