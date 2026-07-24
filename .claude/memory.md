@@ -6,7 +6,164 @@
 
 ---
 
-## Embeddable website chatbot widget — BUILT + LIVE-VERIFIED (2026-07-23, this session — UNCOMMITTED)
+## Embed widget hardening: reverse-proxy IP + rate-limit sliding window (2026-07-24, this session — COMMITTED `b649754`, pushed to `origin/main`)
+
+**Direct continuation of the 2026-07-23 embed-widget feature** (that feature is now
+confirmed committed as `7ee4a0e` — the "UNCOMMITTED" note in the section right below
+this one was stale by the start of this session). This session: (1) a thorough
+review-only pass over the whole feature (full code read, independent test-suite
+re-run, live browser E2E via claude-in-chrome, best-practice web research — zero
+code changes), producing a written findings report; (2) at direct request, FIXED the
+two most significant findings from that report; (3) live-verified both fixes in a
+real browser; (4) committed and pushed.
+
+**Review findings (full list, for reference — only the first two were fixed this
+session, the rest are recorded as known/accepted or low-priority)**:
+1. **Reverse-proxy IP gap (FIXED)** — the public embed endpoint's per-IP rate limit
+   used `request.client.host` directly, which is the proxy's own address in any
+   deployment fronted by nginx/a load balancer/a CDN — collapsing per-IP limiting to
+   one shared bucket for every real visitor behind it.
+2. **Fixed-window rate-limit boundary burst (FIXED)** — a plain fixed-window counter
+   lets a client send a full quota in the last instant of one window and a full quota
+   again in the first instant of the next, briefly bursting to ~2x the configured
+   limit. Current rate-limiting best practice (Cloudflare/Kong write-ups, confirmed via
+   WebSearch) treats this as a real weakness for public/unauthenticated endpoints
+   specifically — which is exactly what this one is.
+3. No `X-Frame-Options`/CSP `frame-ancestors` anywhere in the app (necessary for
+   `/embed` to be framable by third-party sites, but means the rest of the SPA —
+   `/login`, `/app/*` — is *also* framable by any origin; a pre-existing gap the widget
+   feature exposes rather than introduces). NOT fixed — not asked for.
+4. `PUBLIC_APP_URL` (builds every widget's embed snippet/iframe URL) has no entry in
+   `.env.example` and silently defaults to `localhost:5173` — an easy-to-miss
+   production footgun. NOT fixed — not asked for.
+5. Already-accepted caveats re-confirmed, not new: spoofable `parent_origin` outside a
+   real browser, no CAPTCHA/spend cap, anonymous visitors see all non-tag-gated
+   documents in the notebook.
+6. Minor defense-in-depth notes: no `max_length` on the public `query` field (matches
+   every other query field in the app, but this is the one unauthenticated surface
+   reaching the LLM); `widget.js`'s iframe has no `sandbox` attribute (low real risk —
+   its `src` is always Veratas' own trusted domain).
+
+**What was fixed (findings 1 & 2 only, per direct instruction — nothing else touched)**:
+- **`app/utils/http.py`: new `get_client_ip(request)`** — only trusts
+  `X-Forwarded-For` when the DIRECT peer (`request.client.host`) is itself one of the
+  new `settings.TRUSTED_PROXY_IPS` (comma-separated, empty by default = trust nothing,
+  byte-identical behavior to before for direct connections). Reads the header
+  right-to-left (nearest hop first), returns the first entry that isn't itself a
+  trusted proxy — the standard algorithm for one or more trusted hops (mirrors
+  `uvicorn.middleware.proxy_headers.ProxyHeadersMiddleware`). Wired into
+  `controllers/embed.py`'s `stream_public_chat` in place of the old inline
+  `request.client.host if request.client else "unknown"`. New setting documented in
+  `.env.example`.
+- **`app/utils/rate_limit.py`: `RedisRateLimiter` is now a sliding-window COUNTER**,
+  not a plain fixed window — blends the current window's count with the
+  immediately-previous window's count, weighted by how far into the current window
+  "now" is. `INCR`+conditional `EXPIRE` unchanged in spirit, but the key now lives for
+  `window_seconds * 2` (not 1x) so it's still readable as "the previous window" once
+  the next window begins. O(1) memory (2 keys), no new dependency.
+- **New test files** (both fully offline — no real Redis, matching the CI-offline
+  invariant; Redis is never available in CI, only in local dev via docker-compose):
+  `tests/test_client_ip.py` (7 tests, hand-built Starlette `Request` over a raw ASGI
+  scope — direct-peer-not-trusted ignores the header, trusted-peer reads it,
+  multi-hop chains, whitespace-tolerant comma parsing, no-client-on-scope) and
+  `tests/test_rate_limit.py` (4 tests against a minimal in-memory fake Redis client
+  with `time.time` monkeypatched for deterministic window-boundary control — the
+  **exact boundary-burst scenario is pinned directly**: 5 hits at t=59.999, 5 more at
+  t=60.001, sliding window must reject part of the second burst, which it does).
+- **A test-writing gotcha hit and fixed this session**: my first draft of the
+  "previous window weight decays" test asserted a full fresh 5-hit burst would ALL
+  succeed late in the next window (t=119.9) — failed on the 5th hit. The math was
+  right and my test's expectation was wrong: at t=119.9 (essentially the very end of
+  the window), the previous window's weight has decayed to ~0.0083, not exactly 0, so
+  a razor-thin excess over the limit on the 5th hit is *correct* sliding-window
+  behavior, not a bug. Fixed by comparing two independent probes (early-in-window vs.
+  late-in-window) instead of asserting an exact full-burst pass — a more honest test of
+  "decay is progressive," not "previous window's weight reaches exactly zero within
+  the same window" (it never does, mathematically, until the window fully elapses).
+
+**Verification**: full backend suite grew to **280 passed, 2 skipped** (was 269; +11
+new), `ruff check`/`ruff format --check` fully clean, migration/DB untouched (no
+schema change — this was pure application-logic hardening). **Live-verified twice**:
+first via `curl` directly (restarted uvicorn with `--forwarded-allow-ips=""` to
+disable uvicorn's OWN default proxy-header trust — uvicorn trusts `127.0.0.1` for
+`X-Forwarded-For` **by default**, out of the box, independent of anything this app
+configures — so isolating the app-level `TRUSTED_PROXY_IPS` logic for a clean
+before/after required suppressing that first; reproduced the exact bug with
+`TRUSTED_PROXY_IPS` unset — 11 distinct simulated visitors collapsed into one
+bucket, 11th wrongly 429'd — then confirmed the fix with it set to `127.0.0.1` — same
+11 requests all succeed, while a genuine repeat single visitor is still correctly
+capped). Second, in a **real browser via claude-in-chrome**: reactivated the
+"Support Bot" widget, confirmed the happy path (streamed grounded answer + citation)
+is byte-identical to before the fix; fired a real burst through the actual embed page
+and confirmed the UI shows the correct friendly "You're sending messages too
+quickly" message on 429; re-confirmed the origin-allowlist 403 path still works
+unchanged. Zero console errors, zero backend tracebacks throughout. **Note**: the
+reverse-proxy fix's `X-Forwarded-For`-trust logic can *never* be exercised from
+browser JS — it's a forbidden header name `fetch`/`XHR` are not permitted to set, by
+spec, in any browser — so that half was only ever verifiable via `curl`/HTTP-level
+testing, which is what was done; this is a real constraint, not a gap in the
+verification.
+
+**Uvicorn default worth remembering**: `uvicorn.config.Config` defaults
+`proxy_headers=True` and `forwarded_allow_ips="127.0.0.1"` — meaning **any** bare
+`uvicorn main:app` invocation, with zero flags, already trusts `X-Forwarded-For` from
+loopback out of the box. This is usually fine (a same-host proxy sidecar genuinely
+does connect via loopback) but means uvicorn's own default and this app's new
+`TRUSTED_PROXY_IPS` setting are two independent, stacked layers of trust — worth
+knowing if a future session needs to reason precisely about where a given deployment's
+real trust boundary actually is.
+
+**Commit `b649754`, pushed to `origin/main`** (findings 1 & 2 only).
+
+**Follow-up, same session: findings 3 & 4 fixed too, at direct request.**
+- **Finding 4 (`PUBLIC_APP_URL` undocumented) — FIXED.** Added `PUBLIC_APP_URL`,
+  `WIDGET_RATE_LIMIT_PER_MINUTE`, `WIDGET_IP_RATE_LIMIT_PER_MINUTE` to
+  `backend/.env.example` with a comment naming the exact footgun (silently defaults to
+  `localhost:5173` in production). Fully verified: backend suite unaffected (280/2,
+  it's a comment-only env-template change).
+- **Finding 3 (no clickjacking protection) — FIXED, with real constraints named.**
+  New `frontend/public/_headers` — `X-Frame-Options: DENY` +
+  `Content-Security-Policy: frame-ancestors 'none'` on every real authenticated route
+  (`/login`, `/signup`, `/accept-invite`, `/app/*`, `/`), deliberately never mentioning
+  the public `/embed` route so it keeps its default "framable by anyone" behavior.
+  **This project has NO committed hosting/reverse-proxy config anywhere** (no
+  Dockerfile, nginx conf, `vercel.json` — just the Vite dev server), so there is no
+  single place in-repo to set a per-route HTTP header for a client-routed SPA (every
+  path serves the same `index.html`). `_headers` is the Netlify/Cloudflare Pages
+  convention — Vite copies `public/` verbatim into `dist/` (confirmed via a real
+  build: `dist/_headers` present, byte-identical), so this activates with ZERO extra
+  config if this project ever deploys to either of those platforms; on any OTHER host
+  it is inert and the same per-path rules must be replicated in that host's own config
+  (noted directly in the file's own comments, along with the "add new authenticated
+  routes here by hand" fail-open caveat). Deliberately used enumerated per-path rules
+  instead of a "deny-everything, override `/embed`" wildcard scheme — Netlify's own
+  precedence semantics for overlapping header rules have real documented edge cases
+  (a support-forum thread specifically about inherited splat-path headers not cleanly
+  overriding) and there was no live Netlify/Cloudflare Pages deployment available to
+  test against, so the version that depends on zero precedence semantics was chosen.
+  **Could not live-verify the actual header in a browser** — that needs a real
+  deployment to one of those platforms, which doesn't exist for this project; what WAS
+  verified: `vite build` correctly emits `dist/_headers`, `tsc -b` clean, frontend
+  suite 151/151, backend suite unaffected.
+
+## Next session starts with
+
+Nothing outstanding from this review — all 4 findings are now fixed (1 & 2 in
+`b649754`; 3 & 4 follow-up same session). If a real hosting decision is ever made for
+the frontend (Netlify/Cloudflare Pages vs. Vercel vs. a custom nginx/Caddy proxy), the
+clickjacking `_headers` rules need to be reconciled with whatever that host actually
+uses — right now they only take effect on Netlify/Cloudflare Pages by convention.
+Otherwise nothing else is queued — future work is V2/V3/Enterprise buildplan items or
+a new direct ask.
+
+---
+
+## Embeddable website chatbot widget — BUILT + LIVE-VERIFIED (2026-07-23 — COMMITTED `7ee4a0e`)
+
+**Correction (2026-07-24):** this feature is confirmed committed and pushed — a
+prior "UNCOMMITTED" note here (and the matching note in progresstracker.md) was
+stale by the start of the 2026-07-24 session. See the section above this one for
+that session's follow-up hardening (reverse-proxy IP + rate-limit sliding window).
 
 **A direct ask executing the pre-approved plan `docs/embed-widget-plan.md`** (produced
 2026-07-23 via /architect in an earlier chat; all scoping decisions confirmed there —
@@ -133,14 +290,9 @@ allowlist testing — same server, zero extra setup.
 
 ## Next session starts with
 
-**The embed-widget feature is DONE and live-verified but UNCOMMITTED** — the tree
-holds the whole feature (8 modified + 9 new backend/frontend files + uiregistry/
-memory/progresstracker edits + `docs/embed-widget-plan.md`). First action: ask the
-user whether to commit (single feature commit matching the UX-audit precedent).
-Test data left behind: org "Embed Live Test Org" (embedlive-admin@example.com) with
-one revoked widget in the dev DB; scratch host page in the session scratchpad. The
-dev backend/worker/frontend were left running (uvicorn:8010, arq, vite:5173,
-http.server:8888) — restart stale ones per the standing gotcha if code changed.
+**CLOSED (2026-07-24):** this feature was confirmed committed as `7ee4a0e` at the
+start of the next session — the "UNCOMMITTED" note above was stale. See the top of
+this file for that follow-up session's reverse-proxy IP + rate-limit hardening.
 
 ---
 

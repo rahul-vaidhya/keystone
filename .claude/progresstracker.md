@@ -962,7 +962,7 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       entrypoints (`backend/main.py`/`worker.py`, not `app/main.py`/`app/worker.py`).
       **Committed and pushed `8193f41` → `origin/main`.** Next migration: `0019`.
 
-## Maintenance — Embeddable website chatbot widget (2026-07-23, this session — UNCOMMITTED)
+## Maintenance — Embeddable website chatbot widget (2026-07-23 — committed `7ee4a0e`)
 - [x] Embed widget feature built exactly per the pre-approved `docs/embed-widget-plan.md`
       (/architect output from an earlier 2026-07-23 chat; all scoping decisions confirmed
       there). Orchestrated as one chat dispatching Sonnet subagents per slice (backend,
@@ -995,11 +995,49 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       403 proven via `127.0.0.1:8888` (different origin string); revocation → public
       404 "This chatbot is unavailable." See memory.md "Embeddable website chatbot
       widget" for full detail + gotchas. **Next migration: 0020.**
+      **Correction (2026-07-24):** committed as `7ee4a0e` — a prior "UNCOMMITTED" note
+      here was stale by the start of the next session.
 
-Next action: **commit the embed-widget feature (currently UNCOMMITTED — ask the user
-first)**. After that: none from the buildplan — the published UX audit is fully closed
-(all 15 findings fixed across three sessions). Future work = V2/V3/Enterprise items
-(architecture.md "Postponed") or direct asks. Ops notes: add
+## Maintenance — Embed widget hardening: reverse-proxy IP + rate-limit sliding window (2026-07-24 — committed `b649754`, pushed to `origin/main`)
+- [x] A direct ask: review the embed-widget feature thoroughly (full code read,
+      independent test re-run, live browser E2E, best-practice research — zero code
+      changes), then fix the two most significant findings from that review. New
+      `get_client_ip()` (`app/utils/http.py`) only trusts `X-Forwarded-For` when the
+      direct peer is a configured `TRUSTED_PROXY_IPS` entry (empty by default —
+      byte-identical to before for direct connections), closing the gap where the
+      public embed endpoint's per-IP rate limit would silently collapse into one
+      shared bucket for every visitor behind a real reverse proxy/load balancer.
+      `RedisRateLimiter` (`app/utils/rate_limit.py`) changed from a plain fixed-window
+      counter to a sliding-window counter, closing the well-known boundary-doubling
+      burst flaw. 11 new offline tests (`tests/test_client_ip.py`,
+      `tests/test_rate_limit.py`) — suite now **280 passed, 2 skipped**. Live-verified
+      twice: via `curl` (reproduced the exact bug with the setting unset, confirmed
+      the fix with it set), and in a real browser via claude-in-chrome (happy path
+      unchanged, rate-limit 429 shows the correct friendly UI message, origin
+      allowlist 403 unchanged, zero console errors). See memory.md "Embed widget
+      hardening" for full detail, including a uvicorn-defaults gotcha
+      (`proxy_headers=True`/`forwarded_allow_ips="127.0.0.1"` out of the box) and a
+      test-writing gotcha (sliding-window decay never reaches exactly zero within the
+      same window — a boundary-adjacent assertion needs comparing two probes, not
+      asserting an exact full-burst pass). **Follow-up, same session, at direct
+      request: the remaining 2 review findings fixed too.** `PUBLIC_APP_URL` +
+      the two `WIDGET_*_RATE_LIMIT_PER_MINUTE` settings documented in
+      `backend/.env.example` (were silently undocumented — production footgun).
+      New `frontend/public/_headers` (Netlify/Cloudflare Pages convention, Vite
+      copies `public/` verbatim into `dist/`) sets `X-Frame-Options: DENY` +
+      `frame-ancestors 'none'` on every real authenticated route, leaving the public
+      `/embed` page unmentioned (correctly stays framable). **Honest caveat**: this
+      project has no committed hosting config anywhere, so the header only takes
+      effect if deployed to Netlify/Cloudflare Pages specifically; any other host
+      needs the same rules replicated in its own config. Could not live-verify the
+      actual header in a browser (no real deployment target exists) — verified
+      instead via a real `vite build` (`dist/_headers` present) + full test suites
+      unaffected (backend 280/2, frontend 151/151, `tsc -b` clean).
+
+Next action: none from the buildplan — the published UX audit is fully closed (all 15
+findings fixed across three sessions), and the embed-widget feature is shipped and
+hardened. Future work = V2/V3/Enterprise items (architecture.md "Postponed") or direct
+asks. Ops notes: add
 `OPENAI_API_KEY`/`OPENAI_BASE_URL` (+ `*_MODE=real`, `STORAGE_MODE=local`) to
 backend/.env before user-run real-seam dev sessions; `SEAMS_MODE`/`RLS_ENABLED` lines
 in .env are dead and can be deleted; restart stale uvicorn/arq after backend edits.
