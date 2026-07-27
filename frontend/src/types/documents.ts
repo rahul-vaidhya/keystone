@@ -6,6 +6,10 @@ export type Folder = {
   path: string;
   tag_ids: string[];
   created_at: string;
+  // Computed per-request for the requesting user: whether they may rename/move/delete
+  // this folder or move documents into/out of it. A folder still shows up in listings
+  // even when this is false — only the mutating actions are gated.
+  can_manage: boolean;
 };
 
 export type Tag = {

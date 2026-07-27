@@ -10,7 +10,13 @@ from fastapi import Depends
 from app.middleware.context import TenantContext
 from app.middleware.deps import get_ctx
 from app.models.documents import DocumentOut
-from app.models.knowledge import NotebookCreate, NotebookOut, NotebookUpdate
+from app.models.knowledge import (
+    NotebookCreate,
+    NotebookOut,
+    NotebookShareCreate,
+    NotebookShareOut,
+    NotebookUpdate,
+)
 from app.services.knowledge import knowledge_service
 
 
@@ -64,3 +70,25 @@ async def list_notebook_documents(
     notebook_id: uuid.UUID, ctx: Annotated[TenantContext, Depends(get_ctx)]
 ) -> list[DocumentOut]:
     return await knowledge_service.list_notebook_documents(ctx, notebook_id)
+
+
+async def list_shares(
+    notebook_id: uuid.UUID, ctx: Annotated[TenantContext, Depends(get_ctx)]
+) -> list[NotebookShareOut]:
+    return await knowledge_service.list_shares(ctx, notebook_id)
+
+
+async def share_notebook(
+    notebook_id: uuid.UUID,
+    req: NotebookShareCreate,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+) -> None:
+    await knowledge_service.share_notebook(ctx, notebook_id, req)
+
+
+async def unshare_notebook(
+    notebook_id: uuid.UUID,
+    user_id: uuid.UUID,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+) -> None:
+    await knowledge_service.unshare_notebook(ctx, notebook_id, user_id)

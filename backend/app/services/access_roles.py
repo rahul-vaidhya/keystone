@@ -22,7 +22,9 @@ from app.models.access_roles import (
     AccessRoleTag,
     UserAccessRole,
 )
+from app.models.documents import FolderOut
 from app.services.base import BaseRepository
+from app.utils.constants import ADMIN_ROLES
 
 
 # ---- exceptions ----
@@ -255,3 +257,49 @@ async def resolve_access_controlling_tags(ctx: TenantContext) -> set[uuid.UUID]:
     carrying none of these tags is open to everyone, regardless of role."""
     async with db_mod.tenant_session(ctx.org_id) as session:
         return await AccessRoleTagRepository(session, ctx).list_all_granted_tag_ids()
+
+
+def resolve_folder_effective_tags(folders: list[FolderOut]) -> dict[uuid.UUID, set[uuid.UUID]]:
+    """A folder's effective (inherited) tag set: its own direct tags UNION its parent's
+    already-computed effective set. Moved here (was ``retrieval._inherited_folder_tags``,
+    private) so both ``resolve_allowed_documents`` (document visibility) and
+    ``resolve_accessible_folder_ids`` (folder mutation gating) share one computation
+    instead of two copies drifting apart. ``folders`` must be parent-before-child
+    ordered (``documents_service.list_folders``'s materialized-``path`` sort already
+    guarantees this — a child's path always sorts after its parent's)."""
+    effective: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for folder in folders:
+        parent_tags = effective.get(folder.parent_id, set()) if folder.parent_id else set()
+        effective[folder.id] = set(folder.tag_ids) | parent_tags
+    return effective
+
+
+async def resolve_accessible_folder_ids(
+    ctx: TenantContext, folders: list[FolderOut]
+) -> set[uuid.UUID] | None:
+    """The folder-side counterpart to ``resolve_allowed_documents`` — same tag-gating
+    rule, applied to a folder's own effective tag set instead of a document's
+    folder-inherited-tags ∪ direct-tags. Used to gate folder MUTATION (rename/move/
+    delete/create-subfolder/document-move-in-or-out), never browsing — ``GET
+    /documents/folders`` stays open to everyone, by the same "browsing is open, only
+    the gated action is checked" convention resolve_allowed_documents already
+    established for retrieval vs. document browsing.
+
+    Returns ``None`` when EVERYONE can access every folder (owner/admin, or no tag has
+    ever been granted to any Access Role) — the common case, and the same short-circuit
+    ``resolve_allowed_documents`` takes. Otherwise returns the set of folder ids
+    ``ctx.user_id`` may touch; callers must explicitly deny anything not in that set.
+    """
+    if ctx.role in ADMIN_ROLES:
+        return None
+    access_controlling = await resolve_access_controlling_tags(ctx)
+    if not access_controlling:
+        return None
+    effective_tags = resolve_folder_effective_tags(folders)
+    user_granted = await resolve_user_granted_tags(ctx)
+    allowed: set[uuid.UUID] = set()
+    for folder in folders:
+        gating = effective_tags.get(folder.id, set()) & access_controlling
+        if not gating or (gating & user_granted):
+            allowed.add(folder.id)
+    return allowed

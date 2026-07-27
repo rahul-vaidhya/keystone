@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { Notebook } from "../types/knowledge";
 import { notebooksApi } from "../services/notebooksService";
+import { useAuth } from "../hooks/useAuth";
 import { DialogProvider } from "../context/DialogContext";
 import { NotebookList } from "./NotebookList";
 
@@ -21,15 +22,38 @@ vi.mock("../services/notebooksService", async () => {
   };
 });
 
+vi.mock("../hooks/useAuth", () => ({ useAuth: vi.fn() }));
+
+function mockUser(id = "u-1") {
+  vi.mocked(useAuth).mockReturnValue({
+    user: {
+      id,
+      org_id: "org-1",
+      email: "u@test.com",
+      name: null,
+      role: "member",
+      is_active: true,
+      created_at: "2026-01-01T00:00:00Z",
+    },
+    loading: false,
+    login: vi.fn(),
+    signup: vi.fn(),
+    acceptInvite: vi.fn(),
+    logout: vi.fn(),
+  });
+}
+
 // useNavigate is real but we don't assert on navigation in unit tests — wrapping with
 // MemoryRouter is enough to satisfy the hook, and RTL/jsdom doesn't have a real browser.
+// created_by defaults to the mocked user's own id ("u-1") so existing owner-flow tests
+// (delete button visible, etc.) keep their prior behavior unchanged.
 function makeNotebook(overrides: Partial<Notebook> = {}): Notebook {
   return {
     id: "nb-1",
     org_id: "org-1",
     name: "Chemistry Notes",
     description: null,
-    created_by: null,
+    created_by: "u-1",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     ...overrides,
@@ -52,6 +76,7 @@ describe("NotebookList", () => {
     vi.mocked(notebooksApi.list).mockReset();
     vi.mocked(notebooksApi.create).mockReset();
     vi.mocked(notebooksApi.delete).mockReset();
+    mockUser();
   });
 
   it("renders a list of notebooks returned by notebooksApi.list", async () => {
@@ -132,5 +157,17 @@ describe("NotebookList", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(notebooksApi.delete).not.toHaveBeenCalled();
+  });
+
+  it("shows a 'Shared' badge and hides delete for a notebook the user doesn't own", async () => {
+    vi.mocked(notebooksApi.list).mockResolvedValue([
+      makeNotebook({ name: "Someone else's", created_by: "u-2" }),
+    ]);
+
+    renderWithAll(<NotebookList />);
+    await waitFor(() => expect(screen.getByText("Someone else's")).toBeInTheDocument());
+
+    expect(screen.getByText("Shared")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Delete Someone else's")).not.toBeInTheDocument();
   });
 });

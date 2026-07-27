@@ -1,6 +1,6 @@
 import { apiFetch } from "./http";
 import type { Document } from "../types/documents";
-import type { Notebook } from "../types/knowledge";
+import type { Notebook, NotebookShare } from "../types/knowledge";
 
 export const notebooksApi = {
   list: () => apiFetch<Notebook[]>("/notebooks"),
@@ -29,4 +29,16 @@ export const notebooksApi = {
 
   detachDocument: (notebookId: string, documentId: string) =>
     apiFetch<void>(`/notebooks/${notebookId}/documents/${documentId}`, { method: "DELETE" }),
+
+  listShares: (notebookId: string) =>
+    apiFetch<NotebookShare[]>(`/notebooks/${notebookId}/shares`),
+
+  share: (notebookId: string, userId: string) =>
+    apiFetch<void>(`/notebooks/${notebookId}/shares`, {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId }),
+    }),
+
+  unshare: (notebookId: string, userId: string) =>
+    apiFetch<void>(`/notebooks/${notebookId}/shares/${userId}`, { method: "DELETE" }),
 };

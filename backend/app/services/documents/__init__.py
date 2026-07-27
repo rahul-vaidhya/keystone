@@ -26,6 +26,9 @@ from app.services.documents.exceptions import (
     DocumentsError as DocumentsError,
 )
 from app.services.documents.exceptions import (
+    FolderAccessDenied as FolderAccessDenied,
+)
+from app.services.documents.exceptions import (
     FolderCycleError as FolderCycleError,
 )
 from app.services.documents.exceptions import (

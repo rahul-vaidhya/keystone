@@ -68,6 +68,38 @@ class NotebookDocument(Base):
     )
 
 
+class NotebookShare(Base):
+    """A direct per-person grant of view+chat access to a private notebook — see
+    migration 0020's docstring for why this is per-person rather than routed through
+    the Access Role group system."""
+
+    __tablename__ = "notebook_shares"
+
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    notebook_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+    shared_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 # ---- API schemas ----
 
 
@@ -89,5 +121,17 @@ class NotebookOut(BaseModel):
     created_by: uuid.UUID | None
     created_at: datetime
     updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class NotebookShareCreate(BaseModel):
+    user_id: uuid.UUID
+
+
+class NotebookShareOut(BaseModel):
+    user_id: uuid.UUID
+    email: str
+    created_at: datetime
 
     model_config = {"from_attributes": True}

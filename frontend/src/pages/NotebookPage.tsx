@@ -1,24 +1,31 @@
+import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { documentsApi } from "../services/documentsService";
 import { notebooksApi } from "../services/notebooksService";
 import { useDialog } from "../hooks/useDialog";
+import { useAuth } from "../hooks/useAuth";
 import { ApiError } from "../types/auth";
 import type { Document } from "../types/documents";
 import { StatusBadge } from "../components/StatusBadge";
 import { ChatPanel } from "../components/ChatPanel";
+import { ShareNotebookDialog } from "../components/ShareNotebookDialog";
 
 export function NotebookPage() {
   const { notebookId } = useParams<{ notebookId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const dialog = useDialog();
+  const { user } = useAuth();
+  const [shareOpen, setShareOpen] = useState(false);
 
   const notebookQuery = useQuery({
     queryKey: ["notebooks", notebookId],
     queryFn: () => notebooksApi.get(notebookId!),
     enabled: !!notebookId,
   });
+
+  const isOwner = !!user && notebookQuery.data?.created_by === user.id;
 
   const nbDocsQuery = useQuery({
     queryKey: ["notebooks", notebookId, "documents"],
@@ -68,11 +75,32 @@ export function NotebookPage() {
           {notebookQuery.isLoading ? (
             <p className="text-sm text-muted">Loading…</p>
           ) : (
-            <h1 className="text-sm font-semibold truncate" title={notebookQuery.data?.name}>
-              {notebookQuery.data?.name ?? "Notebook"}
-            </h1>
+            <div className="flex items-center justify-between gap-2">
+              <h1 className="text-sm font-semibold truncate" title={notebookQuery.data?.name}>
+                {notebookQuery.data?.name ?? "Notebook"}
+              </h1>
+              {isOwner ? (
+                <button
+                  type="button"
+                  onClick={() => setShareOpen(true)}
+                  className="shrink-0 text-xs text-accent hover:underline"
+                >
+                  Share
+                </button>
+              ) : (
+                <span className="shrink-0 text-xs text-muted">Shared with you</span>
+              )}
+            </div>
           )}
         </div>
+        {isOwner && notebookQuery.data && (
+          <ShareNotebookDialog
+            open={shareOpen}
+            notebookId={notebookQuery.data.id}
+            notebookName={notebookQuery.data.name}
+            onClose={() => setShareOpen(false)}
+          />
+        )}
 
         <div className="flex-1 overflow-y-auto">
           {/* Documents in this notebook */}
@@ -97,15 +125,17 @@ export function NotebookPage() {
                       </p>
                       <StatusBadge status={doc.status} failedStage={doc.failed_stage} />
                     </div>
-                    <button
-                      type="button"
-                      aria-label={`Remove ${doc.title} from notebook`}
-                      onClick={() => detachMutation.mutate(doc.id)}
-                      disabled={detachMutation.isPending}
-                      className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-danger transition text-sm px-1"
-                    >
-                      ×
-                    </button>
+                    {isOwner && (
+                      <button
+                        type="button"
+                        aria-label={`Remove ${doc.title} from notebook`}
+                        onClick={() => detachMutation.mutate(doc.id)}
+                        disabled={detachMutation.isPending}
+                        className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-danger transition text-sm px-1"
+                      >
+                        ×
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -113,7 +143,7 @@ export function NotebookPage() {
           </div>
 
           {/* Add from repository */}
-          {addableDocs.length > 0 && (
+          {isOwner && addableDocs.length > 0 && (
             <div className="px-3 pt-3 pb-3 border-t border-border mt-2">
               <p className="text-xs text-muted uppercase tracking-wide mb-2">
                 Add from repository

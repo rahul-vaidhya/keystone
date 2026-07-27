@@ -57,6 +57,7 @@ function makeFolder(overrides: Partial<Folder> = {}): Folder {
     path: "HR",
     tag_ids: [],
     created_at: "2026-01-01T00:00:00Z",
+    can_manage: true,
     ...overrides,
   };
 }
@@ -359,5 +360,41 @@ describe("FolderTree", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "HR" })).toBeInTheDocument());
 
     expect(screen.queryByLabelText("Tag HR")).not.toBeInTheDocument();
+  });
+
+  it("hides rename/delete and disallows dragging a folder the user can't manage (can_manage=false)", async () => {
+    mockUser("member");
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder({ can_manage: false })]);
+
+    renderWithClient(<FolderTree currentFolderId={null} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "HR" })).toBeInTheDocument());
+
+    expect(screen.queryByLabelText("Rename HR")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Delete HR")).not.toBeInTheDocument();
+    const row = screen.getByRole("button", { name: "HR" }).closest("div")!;
+    expect(row).toHaveAttribute("draggable", "false");
+  });
+
+  it("does not drop a folder or document onto a target folder the user can't manage", async () => {
+    mockUser("member");
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([
+      makeFolder({ id: "root", name: "HR", path: "HR", can_manage: true }),
+      makeFolder({
+        id: "vault",
+        name: "Vault",
+        path: "Vault",
+        can_manage: false,
+      }),
+    ]);
+
+    renderWithClient(<FolderTree currentFolderId={null} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "HR" })).toBeInTheDocument());
+
+    const dataTransfer = makeDataTransfer();
+    dataTransfer.setData("application/json", JSON.stringify({ type: "document", id: "doc-1" }));
+    const restrictedTarget = screen.getByRole("button", { name: "Vault" }).closest("div")!;
+    fireEvent.drop(restrictedTarget, { dataTransfer });
+
+    expect(documentsApi.moveDocument).not.toHaveBeenCalled();
   });
 });

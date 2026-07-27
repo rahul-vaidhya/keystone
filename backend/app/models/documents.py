@@ -184,6 +184,12 @@ class FolderOut(BaseModel):
     path: str
     tag_ids: list[uuid.UUID] = Field(default_factory=list)
     created_at: datetime
+    # Computed per-request for the requesting user (never persisted): whether they may
+    # rename/move/delete this folder or move documents into/out of it, per Access-Role
+    # tag gating. Browsing (this field's own container response) stays open to everyone
+    # regardless — only the MUTATING actions are gated, so a restricted folder is still
+    # visible with can_manage=False rather than hidden.
+    can_manage: bool = True
 
     model_config = {"from_attributes": True}
 

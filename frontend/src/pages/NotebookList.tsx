@@ -3,12 +3,14 @@ import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { notebooksApi } from "../services/notebooksService";
 import { useDialog } from "../hooks/useDialog";
+import { useAuth } from "../hooks/useAuth";
 import { ApiError } from "../types/auth";
 
 export function NotebookList() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const dialog = useDialog();
+  const { user } = useAuth();
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
 
@@ -109,28 +111,40 @@ export function NotebookList() {
 
         {notebooksQuery.data && notebooksQuery.data.length > 0 && (
           <div className="space-y-2">
-            {notebooksQuery.data.map((nb) => (
-              <div
-                key={nb.id}
-                onClick={() => navigate(`/app/notebooks/${nb.id}`)}
-                className="group flex items-center gap-3 bg-surface border border-border rounded-lg px-4 py-3 cursor-pointer hover:border-accent transition"
-              >
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">{nb.name}</p>
-                  {nb.description && (
-                    <p className="text-xs text-muted truncate mt-0.5">{nb.description}</p>
+            {notebooksQuery.data.map((nb) => {
+              const isOwner = !!user && nb.created_by === user.id;
+              return (
+                <div
+                  key={nb.id}
+                  onClick={() => navigate(`/app/notebooks/${nb.id}`)}
+                  className="group flex items-center gap-3 bg-surface border border-border rounded-lg px-4 py-3 cursor-pointer hover:border-accent transition"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium truncate">{nb.name}</p>
+                      {!isOwner && (
+                        <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted border border-border rounded px-1.5 py-0.5">
+                          Shared
+                        </span>
+                      )}
+                    </div>
+                    {nb.description && (
+                      <p className="text-xs text-muted truncate mt-0.5">{nb.description}</p>
+                    )}
+                  </div>
+                  {isOwner && (
+                    <button
+                      type="button"
+                      aria-label={`Delete ${nb.name}`}
+                      onClick={(e) => void handleDelete(e, nb.id, nb.name)}
+                      className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-danger transition p-1 rounded"
+                    >
+                      ×
+                    </button>
                   )}
                 </div>
-                <button
-                  type="button"
-                  aria-label={`Delete ${nb.name}`}
-                  onClick={(e) => void handleDelete(e, nb.id, nb.name)}
-                  className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-danger transition p-1 rounded"
-                >
-                  ×
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </main>

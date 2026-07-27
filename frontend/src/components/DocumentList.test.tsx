@@ -56,6 +56,7 @@ function makeFolder(overrides: Partial<Folder> = {}): Folder {
     path: "Finance",
     tag_ids: [],
     created_at: "2026-01-01T00:00:00Z",
+    can_manage: true,
     ...overrides,
   };
 }

@@ -11,10 +11,13 @@ import uuid
 from app.config.logging import get_logger
 from app.config.settings import settings
 from app.middleware.context import TenantContext
-from app.models.documents import FolderOut
 from app.models.ingestion import ChunkHit
 from app.models.retrieval import ContextBlock, RetrievalSearchRequest, RetrievalSearchResponse
-from app.services.access_roles import resolve_access_controlling_tags, resolve_user_granted_tags
+from app.services.access_roles import (
+    resolve_access_controlling_tags,
+    resolve_folder_effective_tags,
+    resolve_user_granted_tags,
+)
 from app.services.documents import documents_service
 from app.services.ingestion import ingestion_service
 from app.services.knowledge import knowledge_service
@@ -47,7 +50,7 @@ async def resolve_allowed_documents(ctx: TenantContext) -> list[uuid.UUID]:
         return [d.id for d in docs]
 
     folders = await documents_service.list_folders(ctx)
-    inherited_folder_tags = _inherited_folder_tags(folders)
+    inherited_folder_tags = resolve_folder_effective_tags(folders)
     doc_tag_ids = await documents_service.list_document_tag_ids_by_documents(
         ctx, [d.id for d in docs]
     )
@@ -61,19 +64,6 @@ async def resolve_allowed_documents(ctx: TenantContext) -> list[uuid.UUID]:
         if not gating_tags or (gating_tags & user_granted):
             allowed.append(doc.id)
     return allowed
-
-
-def _inherited_folder_tags(folders: list[FolderOut]) -> dict[uuid.UUID, set[uuid.UUID]]:
-    """Folders are ordered parent-before-child by ``list_folders`` (materialized ``path``
-    sorts that way: a child's path is always its parent's path + '/' + name, so it sorts
-    after). One top-down pass is enough: a folder's effective tag set is its own direct
-    tags UNION its parent's already-computed effective set — tags cascade down the
-    subtree and can only ever add to what's inherited, never clear it."""
-    effective: dict[uuid.UUID, set[uuid.UUID]] = {}
-    for folder in folders:
-        parent_tags = effective.get(folder.parent_id, set()) if folder.parent_id else set()
-        effective[folder.id] = set(folder.tag_ids) | parent_tags
-    return effective
 
 
 def assemble_context(query: str, hits: list[ChunkHit]) -> RetrievalSearchResponse:

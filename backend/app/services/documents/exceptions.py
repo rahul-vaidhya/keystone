@@ -23,6 +23,14 @@ class FolderCycleError(DocumentsError):
     """Move would place a folder inside itself or one of its own descendants."""
 
 
+class FolderAccessDenied(DocumentsError):
+    """A member whose Access Roles don't grant them one of the folder's effective
+    (inherited) access-controlling tags tried to rename/move/delete it, create a
+    subfolder under it, or move a document into/out of it. Org owner/admin always
+    bypass this (unlike notebook privacy) — they keep full document access. Maps to
+    403, not the generic 400 ``DocumentsError`` gets."""
+
+
 class TagNotFound(DocumentsError):
     pass
 

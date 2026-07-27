@@ -18,6 +18,9 @@ vi.mock("../services/notebooksService", () => ({
     listDocuments: vi.fn(),
     attachDocument: vi.fn(),
     detachDocument: vi.fn(),
+    listShares: vi.fn(() => Promise.resolve([])),
+    share: vi.fn(),
+    unshare: vi.fn(),
   },
 }));
 
@@ -34,13 +37,15 @@ vi.mock("../services/chatService", () => ({
   },
 }));
 
+// created_by defaults to the mocked user's own id ("u-1") so existing owner-flow tests
+// (attach/detach visible, etc.) keep their prior behavior unchanged.
 function makeNotebook(overrides: Partial<Notebook> = {}): Notebook {
   return {
     id: "nb-1",
     org_id: "org-1",
     name: "Chemistry",
     description: null,
-    created_by: null,
+    created_by: "u-1",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     ...overrides,
@@ -89,6 +94,9 @@ describe("NotebookPage", () => {
     vi.mocked(notebooksApi.listDocuments).mockReset();
     vi.mocked(notebooksApi.attachDocument).mockReset();
     vi.mocked(notebooksApi.detachDocument).mockReset();
+    vi.mocked(notebooksApi.listShares).mockReset().mockResolvedValue([]);
+    vi.mocked(notebooksApi.share).mockReset();
+    vi.mocked(notebooksApi.unshare).mockReset();
     vi.mocked(documentsApi.listDocuments).mockReset();
     vi.mocked(useAuth).mockReturnValue({
       user: {
@@ -217,5 +225,35 @@ describe("NotebookPage", () => {
     await waitFor(() =>
       expect(screen.getByText(/No documents yet/)).toBeInTheDocument(),
     );
+  });
+
+  it("shows a Share button for the notebook's owner", async () => {
+    vi.mocked(notebooksApi.get).mockResolvedValue(makeNotebook({ created_by: "u-1" }));
+    vi.mocked(notebooksApi.listDocuments).mockResolvedValue([]);
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([]);
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText("Share")).toBeInTheDocument());
+  });
+
+  it("hides Share, detach, and attach for a notebook shared with (not owned by) the user", async () => {
+    vi.mocked(notebooksApi.get).mockResolvedValue(makeNotebook({ created_by: "someone-else" }));
+    vi.mocked(notebooksApi.listDocuments).mockResolvedValue([
+      makeDoc({ id: "doc-1", title: "report.pdf" }),
+    ]);
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([
+      makeDoc({ id: "doc-1", title: "report.pdf" }),
+      makeDoc({ id: "doc-2", title: "other.pdf", status: "READY" }),
+    ]);
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
+
+    expect(screen.getByText("Shared with you")).toBeInTheDocument();
+    expect(screen.queryByText("Share")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Remove report.pdf from notebook")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Add other.pdf to notebook")).not.toBeInTheDocument();
   });
 });

@@ -29,13 +29,14 @@ from app.services.chat import GenerationFailed, MessageTraceNotFound
 from app.services.documents import (
     DocumentNotFound,
     DocumentsError,
+    FolderAccessDenied,
     FolderNameConflict,
     FolderNotEmpty,
     FolderNotFound,
     TagNotFound,
 )
 from app.services.embed import EmbedError, OriginNotAllowed, WidgetNotFound, WidgetRateLimited
-from app.services.knowledge import KnowledgeError, NotebookNotFound
+from app.services.knowledge import KnowledgeError, NotebookAccessDenied, NotebookNotFound
 
 
 def get_client_ip(request: Request) -> str:
@@ -103,6 +104,13 @@ def register_exception_handlers(app: FastAPI) -> None:
             content={"detail": str(exc) or "Folder name conflict"},
         )
 
+    @app.exception_handler(FolderAccessDenied)
+    async def _folder_access_denied(_request: Request, exc: FolderAccessDenied) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": str(exc) or "You do not have access to this folder"},
+        )
+
     @app.exception_handler(DocumentsError)
     async def _documents_error(_request: Request, exc: DocumentsError) -> JSONResponse:
         return JSONResponse(
@@ -115,6 +123,13 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
             content={"detail": str(exc) or "Notebook not found"},
+        )
+
+    @app.exception_handler(NotebookAccessDenied)
+    async def _notebook_access_denied(_request: Request, exc: NotebookAccessDenied) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": str(exc) or "You do not have access to this notebook"},
         )
 
     @app.exception_handler(KnowledgeError)

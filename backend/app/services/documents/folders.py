@@ -16,8 +16,10 @@ from sqlalchemy.exc import IntegrityError
 from app.config import db as db_mod
 from app.middleware.context import TenantContext
 from app.models.documents import Document, Folder, FolderCreate, FolderOut
+from app.services.access_roles import resolve_accessible_folder_ids
 from app.services.base import BaseRepository
 from app.services.documents.exceptions import (
+    FolderAccessDenied,
     FolderCycleError,
     FolderNameConflict,
     FolderNotEmpty,
@@ -113,14 +115,35 @@ class FolderRepository(BaseRepository[Folder]):
 _UNCHANGED = object()
 
 
-def _to_folder_out(folder: Folder, tag_ids: list[uuid.UUID]) -> FolderOut:
+def _to_folder_out(
+    folder: Folder, tag_ids: list[uuid.UUID], *, can_manage: bool = True
+) -> FolderOut:
     """``FolderOut.tag_ids`` isn't an ORM column — this codebase avoids ORM relationships
     (repository-explicit queries only), so tags are fetched separately (``FolderTagRepository``)
     and merged in here rather than via ``model_validate`` alone."""
-    return FolderOut.model_validate(folder).model_copy(update={"tag_ids": tag_ids})
+    return FolderOut.model_validate(folder).model_copy(
+        update={"tag_ids": tag_ids, "can_manage": can_manage}
+    )
+
+
+async def _assert_folder_access(ctx: TenantContext, folder_id: uuid.UUID) -> None:
+    """Denies rename/move/delete/subfolder-create/document-move on a folder
+    ``ctx.user_id``'s Access Roles don't grant them visibility into. Reuses
+    ``list_folders``'s already-computed ``can_manage`` (single source of truth — see
+    ``access_roles.resolve_accessible_folder_ids`` for the tag-inheritance rule itself,
+    the same one ``resolve_allowed_documents`` uses for document retrieval). A
+    nonexistent ``folder_id`` is a silent no-op here — the caller's own subsequent DB
+    fetch raises ``FolderNotFound``, which should win over an access-denied claim about
+    a folder that doesn't exist."""
+    folders = await list_folders(ctx)
+    target = next((f for f in folders if f.id == folder_id), None)
+    if target is not None and not target.can_manage:
+        raise FolderAccessDenied("You do not have access to this folder")
 
 
 async def create_folder(ctx: TenantContext, req: FolderCreate) -> FolderOut:
+    if req.parent_id is not None:
+        await _assert_folder_access(ctx, req.parent_id)
     async with db_mod.tenant_session(ctx.org_id) as session:
         repo = FolderRepository(session, ctx)
         path = req.name
@@ -149,6 +172,10 @@ async def create_folder(ctx: TenantContext, req: FolderCreate) -> FolderOut:
 
 
 async def list_folders(ctx: TenantContext) -> list[FolderOut]:
+    """Browsing stays open to everyone (unchanged) — ``can_manage`` is computed and
+    attached per folder so the caller (frontend FolderTree, or ``_assert_folder_access``
+    itself) can tell which ones this ``ctx.user_id`` may actually rename/move/delete,
+    without hiding the restricted ones from the listing."""
     # Local import: avoids a documents<->folders circular import at module load time,
     # same precedent as documents.py's upload_document (see memory.md).
     from app.services.documents.tags import FolderTagRepository
@@ -158,18 +185,18 @@ async def list_folders(ctx: TenantContext) -> list[FolderOut]:
         tag_ids_by_folder = await FolderTagRepository(session, ctx).list_tag_ids_by_folders(
             [f.id for f in folders]
         )
-    return [_to_folder_out(f, tag_ids_by_folder.get(f.id, [])) for f in folders]
+    outs = [_to_folder_out(f, tag_ids_by_folder.get(f.id, [])) for f in folders]
+    accessible = await resolve_accessible_folder_ids(ctx, outs)
+    if accessible is None:
+        return outs
+    return [o.model_copy(update={"can_manage": o.id in accessible}) for o in outs]
 
 
 async def get_folder(ctx: TenantContext, folder_id: uuid.UUID) -> FolderOut:
-    from app.services.documents.tags import FolderTagRepository
-
-    async with db_mod.tenant_session(ctx.org_id) as session:
-        folder = await FolderRepository(session, ctx).get_by_id(folder_id)
-        if folder is None:
-            raise FolderNotFound("Folder not found")
-        tag_ids = await FolderTagRepository(session, ctx).list_tag_ids(folder_id)
-    return _to_folder_out(folder, tag_ids)
+    folder = next((f for f in await list_folders(ctx) if f.id == folder_id), None)
+    if folder is None:
+        raise FolderNotFound("Folder not found")
+    return folder
 
 
 def _rebuild_subtree_paths(
@@ -210,6 +237,14 @@ async def _relocate_folder(
     new_parent_id: uuid.UUID | None | object = _UNCHANGED,
 ) -> FolderOut:
     from app.services.documents.tags import FolderTagRepository
+
+    # The folder being renamed/moved must itself be accessible; a genuine move (not a
+    # plain rename — new_parent_id is a real target, not the _UNCHANGED sentinel or a
+    # move-to-root None) also requires access to the DESTINATION, so a member can't
+    # smuggle an accessible folder into a restricted one they can't otherwise touch.
+    await _assert_folder_access(ctx, folder_id)
+    if new_parent_id is not _UNCHANGED and new_parent_id is not None:
+        await _assert_folder_access(ctx, new_parent_id)
 
     async with db_mod.tenant_session(ctx.org_id) as session:
         repo = FolderRepository(session, ctx)
@@ -272,6 +307,7 @@ DeleteMode = Literal["block", "cascade", "reflow"]
 async def delete_folder(
     ctx: TenantContext, folder_id: uuid.UUID, *, mode: DeleteMode = "block"
 ) -> None:
+    await _assert_folder_access(ctx, folder_id)
     async with db_mod.tenant_session(ctx.org_id) as session:
         repo = FolderRepository(session, ctx)
         folder = await repo.get_by_id(folder_id)

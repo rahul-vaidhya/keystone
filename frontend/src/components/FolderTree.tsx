@@ -189,6 +189,15 @@ export function FolderTree({
     runDelete(folderId, mode);
   }
 
+  // A folder the requesting user can't manage (Access-Role tag gating) can't be
+  // dragged as a source, nor accept a drop as a target — both would 403 server-side
+  // anyway; hiding the affordance client-side avoids a round trip for the common case.
+  // Root (targetId === null) is never gated — a folder id is required to carry tags.
+  function canManageFolder(folderId: string | null): boolean {
+    if (folderId === null) return true;
+    return folders.find((f) => f.id === folderId)?.can_manage ?? true;
+  }
+
   function handleDragStart(e: React.DragEvent, folderId: string) {
     const payload: DragPayload = { type: "folder", id: folderId };
     e.dataTransfer.effectAllowed = "move";
@@ -197,6 +206,7 @@ export function FolderTree({
 
   function handleDragOver(e: React.DragEvent, targetId: string | null) {
     e.preventDefault();
+    if (!canManageFolder(targetId)) return;
     e.dataTransfer.dropEffect = "move";
     setDragOverId(targetId ?? "__root__");
   }
@@ -204,6 +214,7 @@ export function FolderTree({
   function handleDrop(e: React.DragEvent, targetFolderId: string | null) {
     e.preventDefault();
     setDragOverId(null);
+    if (!canManageFolder(targetFolderId)) return;
     const raw = e.dataTransfer.getData(DRAG_MIME);
     if (!raw) return;
     let payload: DragPayload;
@@ -236,11 +247,12 @@ export function FolderTree({
   function renderNode(node: TreeNode, depth: number) {
     const isActive = currentFolderId === node.id;
     const isDragOver = dragOverId === node.id;
+    const canManage = node.can_manage;
     const grantableTags = (tagsQuery.data ?? []).filter((t) => !node.tag_ids.includes(t.id));
     return (
       <div key={node.id}>
         <div
-          draggable
+          draggable={canManage}
           onDragStart={(e) => handleDragStart(e, node.id)}
           onDragOver={(e) => handleDragOver(e, node.id)}
           onDragLeave={() => setDragOverId((prev) => (prev === node.id ? null : prev))}
@@ -307,25 +319,29 @@ export function FolderTree({
               ))}
             </select>
           )}
-          <button
-            type="button"
-            aria-label={`Rename ${node.name}`}
-            onClick={() => {
-              setRenamingId(node.id);
-              setRenameValue(node.name);
-            }}
-            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-text px-1"
-          >
-            ✎
-          </button>
-          <button
-            type="button"
-            aria-label={`Delete ${node.name}`}
-            onClick={() => void handleDelete(node)}
-            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-danger px-1"
-          >
-            ×
-          </button>
+          {canManage && (
+            <button
+              type="button"
+              aria-label={`Rename ${node.name}`}
+              onClick={() => {
+                setRenamingId(node.id);
+                setRenameValue(node.name);
+              }}
+              className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-text px-1"
+            >
+              ✎
+            </button>
+          )}
+          {canManage && (
+            <button
+              type="button"
+              aria-label={`Delete ${node.name}`}
+              onClick={() => void handleDelete(node)}
+              className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-danger px-1"
+            >
+              ×
+            </button>
+          )}
         </div>
         {node.children.map((child) => renderNode(child, depth + 1))}
       </div>
@@ -353,13 +369,15 @@ export function FolderTree({
       {tree.map((node) => renderNode(node, 0))}
 
       {newFolderParent === undefined ? (
-        <button
-          type="button"
-          onClick={() => setNewFolderParent(currentFolderId)}
-          className="text-left px-2 py-1 rounded-md text-sm text-muted hover:text-text hover:bg-surface"
-        >
-          + New folder
-        </button>
+        canManageFolder(currentFolderId) && (
+          <button
+            type="button"
+            onClick={() => setNewFolderParent(currentFolderId)}
+            className="text-left px-2 py-1 rounded-md text-sm text-muted hover:text-text hover:bg-surface"
+          >
+            + New folder
+          </button>
+        )
       ) : (
         <input
           autoFocus

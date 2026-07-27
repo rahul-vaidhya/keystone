@@ -422,8 +422,23 @@ async def move_document(
     """Re-point a document to a different folder (or ``None`` for org root) — the
     drag-and-drop target for dragging a document row onto a folder in the tree. No path
     rebuild needed (unlike folder move): a document carries only a ``folder_id``, no
-    materialized path of its own."""
-    from app.services.documents.folders import FolderRepository
+    materialized path of its own.
+
+    Both the source and destination folder must be accessible to ``ctx`` (Access-Role
+    tag gating, same rule folder rename/move/delete uses) — otherwise a member could
+    smuggle a document out of a restricted folder they can't otherwise touch, or into
+    one, without ever being allowed to manage the folder itself."""
+    from app.services.documents.folders import FolderRepository, _assert_folder_access
+
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        existing = await DocumentRepository(session, ctx).get_by_id(document_id)
+        if existing is None:
+            raise DocumentNotFound("Document not found")
+        source_folder_id = existing.folder_id
+    if source_folder_id is not None:
+        await _assert_folder_access(ctx, source_folder_id)
+    if folder_id is not None:
+        await _assert_folder_access(ctx, folder_id)
 
     async with db_mod.tenant_session(ctx.org_id) as session:
         repo = DocumentRepository(session, ctx)
