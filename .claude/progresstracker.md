@@ -1034,7 +1034,7 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       instead via a real `vite build` (`dist/_headers` present) + full test suites
       unaffected (backend 280/2, frontend 151/151, `tsc -b` clean).
 
-## Maintenance — Notebook privacy (per-person sharing) + folder-mutation Access-Role gate (2026-07-27, this session — UNCOMMITTED)
+## Maintenance — Notebook privacy (per-person sharing) + folder-mutation Access-Role gate (2026-07-27, this session — committed `e01c0f9` + `695e78b`, pushed to `origin/main`)
 - [x] Two direct-ask bugs, not buildplan items: (1) any org member could see/open/
       chat in any notebook regardless of creator — fixed with a notebook-privacy
       model (creator-only by default, **no owner/admin bypass** — the one place in
@@ -1060,11 +1060,11 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       unauthenticated stranger correctly 403'd on `GET /chat/notebooks/{id}/
       messages` too, not just the notebook page itself). See memory.md "Notebook
       privacy (per-person sharing) + folder-mutation Access-Role gate" for full
-      detail. **Not committed** — tree is dirty; ask before committing.
+      detail. **Committed `e01c0f9` (code) + `695e78b` (docs), pushed to
+      `origin/main`.**
 
-Next action: ask the user whether to commit the notebook-privacy + folder-access-gate
-work above (dirty tree, not yet committed). Otherwise none from the buildplan — the
-published UX audit is fully closed (all 15 findings fixed across three sessions), and
+Next action: none from the buildplan — the published UX audit is fully closed (all 15
+findings fixed across three sessions), and
 the embed-widget feature is shipped and hardened. Future work = V2/V3/Enterprise items
 (architecture.md "Postponed") or direct asks. Ops notes: add
 `OPENAI_API_KEY`/`OPENAI_BASE_URL` (+ `*_MODE=real`, `STORAGE_MODE=local`) to

@@ -6,7 +6,93 @@
 
 ---
 
-## Notebook privacy (per-person sharing) + folder-mutation Access-Role gate (2026-07-27, this session — UNCOMMITTED)
+## Dev-environment bug: API process running fake seams while worker ran real ones — every real question refused (2026-07-27, this session — FIXED, no app code changed)
+
+**Direct-ask bug report**: user said the parser was "messing up" and reasonable questions
+("what is a molecule", "tell me the gist of everything", "what are the topics
+introduced") all got the exact refusal string. **This was NOT a parser-quality bug.**
+Live-reproduced by signing up a throwaway org, uploading `pdf/kech104.pdf`, attaching
+it to a notebook, and using this app's own admin Debug-trace feature (F42) to inspect
+the actual retrieval hits per question.
+
+**Root cause**: two `uvicorn main:app --port 8010` processes AND two
+`arq worker.WorkerSettings` processes were running simultaneously — one pair from
+`backend/.venv/Scripts/python.exe`, the other from the bare system `C:\Python312\
+python.exe`. Only one process can hold port 8010; the one that actually was
+(confirmed via `netstat` LISTENING state, cross-checked against `Get-CimInstance
+Win32_Process` command lines) had been started at some earlier point **without** the
+real-seam process-env overrides (`PARSER_MODE`/`EMBEDDER_MODE`/`LLM_MODE=real`,
+`OPENAI_API_KEY`/`OPENAI_BASE_URL`) — `backend/.env` itself has never set these (only
+`OPENROUTER_API_KEY`/`OPENROUTER_BASE_URL`, used solely by `RealParser`), so
+`Settings` defaults every seam to `"fake"` unless a shell explicitly exports the mode
+overrides before launching. The **arq worker**, by contrast, clearly did carry the
+real-seam overrides — ingestion definitely used the real embedder (`text-embedding-
+3-small`, confirmed via a direct DB read: 110 real chunk embeddings, real — if
+OCR-garbled — extracted text).
+
+**Why this produced total, question-independent refusal**: at query time,
+`RetrievalService.search` embeds the user's question with whatever embedder the
+*API process* has (`FakeEmbedder` here → `model="fake-embed-1536"`), then
+`EmbeddingRepository.search_chunks` filters `WHERE model = :active_model`. Since the
+document's real chunks are stored under `model="text-embedding-3-small"`, that filter
+matches **zero rows** — confirmed directly via the Debug trace: `Hits (0)`,
+`"(no context was retrieved for this notebook)"`. The final LLM call therefore always
+saw an empty context block and correctly (per its own strict system prompt) emitted
+the fixed refusal string — regardless of whether the underlying LLM call itself was
+real or fake, since `FakeLLM.REFUSAL` is deliberately the same literal string the real
+system prompt instructs a real model to use. **This is a strong new class of gotcha
+worth remembering**: a total, uniform "everything refuses" symptom across
+unrelated, reasonable questions on a READY document points at a **retrieval-embedder/
+stored-embedding model mismatch**, not answer quality — check the Debug trace's
+`Hits (N)` count FIRST before suspecting the parser or the LLM.
+
+**Fix**: killed all 4 duplicate/stray processes, then started exactly one clean
+`uvicorn` + one clean `arq worker` from `backend/.venv`. **Persisted the fix to
+`backend/.env`** (user chose this over a process-env-only throwaway, explicitly to
+survive future restarts): added `PARSER_MODE=real`, `EMBEDDER_MODE=real`,
+`LLM_MODE=real`, `OPENAI_API_KEY`/`OPENAI_BASE_URL` (same OpenRouter key/base as
+`OPENROUTER_*`), and `STORAGE_MODE=local`. **This means local dev now makes real,
+billed OpenRouter calls by default** — a deliberate, explicit trade the user made
+this session; if cost becomes a concern, flip the 3 `*_MODE` vars back to `fake` in
+`.env`, not by chasing stray processes again.
+
+**Live-reverified after the fix, all correct + cited**: "what is a molecule" → real
+grounded answer citing `[3]`; "what are the topics introduced" → real 10-item cited
+list. **One question still legitimately refuses and is NOT a bug**: "tell me the gist
+of everything" — Debug trace shows retrieval genuinely found 8 real hits (distances
+0.767–0.827, i.e. weak/scattered — expected, since no single set of ~500-char chunks
+"covers everything"), but the strict system prompt correctly declines rather than
+give a partial summary. This app's MVP retrieval is flat per-chunk vector search, not
+whole-document summarization (that's V2/V3 territory) — a real, known capability gap,
+not a regression.
+
+**Also re-confirmed, unrelated and pre-existing**: the parser (`cloudflare-ai` via
+OpenRouter) still garbles some headings under OCR (e.g. "K ö s s e l - L e w i s")
+and one of `kech104.pdf`'s early chunks is literally raw PDF metadata text
+(`PDFFormatVersion=1.4...`) getting chunked/embedded as if it were content — both are
+pre-existing, previously-documented, low-impact quirks that did NOT cause any of the
+observed failures once the env mismatch was fixed. Not touched this session.
+
+**Gotcha reconfirmed**: browser-automation clicks on the chat input by raw
+`(x, y)` coordinate go stale the moment the message list grows enough to scroll the
+input off the captured-screenshot's y-position — several submit attempts silently
+no-op'd this way. Fix: re-screenshot (or scroll to the bottom) immediately before
+each click rather than reusing coordinates from an earlier screenshot, or better,
+use `find`/`read_page` to get a fresh element `ref` and click via ref instead of
+coordinates.
+
+## Next session starts with
+
+Nothing queued from this bug — it's fully fixed and persisted to `.env`. If chat
+answers ever go back to universally refusing regardless of question quality again,
+check the admin Debug trace's `Hits (N)` count first (0 hits = embedder/model
+mismatch between whatever process handled the query vs. whatever process did
+ingestion — check for duplicate/stray backend processes via `netstat -ano` +
+`Get-CimInstance Win32_Process` before suspecting the parser).
+
+---
+
+## Notebook privacy (per-person sharing) + folder-mutation Access-Role gate (2026-07-27, this session — COMMITTED `e01c0f9` + docs `695e78b`, pushed to `origin/main`)
 
 **Two direct-ask bugs the user reported, not buildplan items**: (1) any org member
 could see/open/chat-in ANY notebook in the org regardless of who created it — `GET
@@ -148,17 +234,17 @@ a self-generated throwaway test credential. Workaround used again successfully:
 widen/reposition the containing `<input>` via a pure CSS style mutation (not a data
 read), then read it visually via `computer` `zoom` on the resulting screenshot.
 
-**Not committed** — tree is dirty (12 modified backend files, 1 new migration, 2
-new backend test files; 9 modified frontend files, 1 new component). User has not
-asked for a commit yet.
+**Committed in two steps at direct request** (code separate from docs, matching an
+explicit instruction rather than this project's usual single-commit precedent):
+`e01c0f9` (26 files — all backend/frontend code, the new migration, new tests) +
+`695e78b` (`.claude/memory.md`/`progresstracker.md`). Both pushed to `origin/main`.
 
 ## Next session starts with
 
-Ask the user whether to commit this session's work (one commit, matching this
-project's usual single-commit-per-feature precedent) before doing anything else.
-No other work is queued — the buildplan is complete and the published UX audit +
-embed widget hardening are both closed; anything after this is either a new direct
-ask or a V2/V3/Enterprise buildplan item (see architecture.md "Postponed").
+Nothing outstanding from this session — code and docs are both committed and
+pushed. No other work is queued — the buildplan is complete and the published UX
+audit + embed widget hardening are both closed; anything after this is either a new
+direct ask or a V2/V3/Enterprise buildplan item (see architecture.md "Postponed").
 
 ---
 
