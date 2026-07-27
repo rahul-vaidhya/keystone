@@ -1034,10 +1034,39 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       instead via a real `vite build` (`dist/_headers` present) + full test suites
       unaffected (backend 280/2, frontend 151/151, `tsc -b` clean).
 
-Next action: none from the buildplan — the published UX audit is fully closed (all 15
-findings fixed across three sessions), and the embed-widget feature is shipped and
-hardened. Future work = V2/V3/Enterprise items (architecture.md "Postponed") or direct
-asks. Ops notes: add
+## Maintenance — Notebook privacy (per-person sharing) + folder-mutation Access-Role gate (2026-07-27, this session — UNCOMMITTED)
+- [x] Two direct-ask bugs, not buildplan items: (1) any org member could see/open/
+      chat in any notebook regardless of creator — fixed with a notebook-privacy
+      model (creator-only by default, **no owner/admin bypass** — the one place in
+      this app where the system role owner/admin does NOT see everything), new
+      per-person `notebook_shares` table (migration `0020`, full F60-pattern RLS),
+      view+chat-only share recipients, 403 (not 404) on denial; (2) a member without
+      Access-Role visibility into a tag-restricted folder could still rename/move/
+      delete it, create a subfolder under it, or move documents into/out of it — the
+      existing `resolve_allowed_documents` tag-gating rule (promoted to a shared
+      `resolve_folder_effective_tags` in `access_roles.py`) now also gates folder
+      MUTATION via new `resolve_accessible_folder_ids` + `FolderOut.can_manage`;
+      **org owner/admin DO bypass this one** (unlike notebook privacy), per direct
+      instruction. New exceptions `NotebookAccessDenied`/`FolderAccessDenied` → 403.
+      Backend: **293 passed, 2 deselected** (was 280 + 13 new:
+      `test_notebook_sharing.py`, `test_folder_access_gate.py`), ruff clean.
+      Frontend: **156 passed** (was 151 + 5 new), `tsc -b`/`vite build` clean. New
+      `ShareNotebookDialog.tsx`, `NotebookPage.tsx`/`NotebookList.tsx` ownership
+      gating, `FolderTree.tsx` `can_manage` gating (rename/delete/drag/drop/+New
+      folder). Migration `0020` applied to Testcontainers AND the real dev Postgres.
+      **Live-verified end-to-end with two real accounts + `read_network_requests`**
+      confirming actual HTTP status codes (403→200 transitions for both the
+      notebook-share grant and the Access-Role assignment, including a real
+      unauthenticated stranger correctly 403'd on `GET /chat/notebooks/{id}/
+      messages` too, not just the notebook page itself). See memory.md "Notebook
+      privacy (per-person sharing) + folder-mutation Access-Role gate" for full
+      detail. **Not committed** — tree is dirty; ask before committing.
+
+Next action: ask the user whether to commit the notebook-privacy + folder-access-gate
+work above (dirty tree, not yet committed). Otherwise none from the buildplan — the
+published UX audit is fully closed (all 15 findings fixed across three sessions), and
+the embed-widget feature is shipped and hardened. Future work = V2/V3/Enterprise items
+(architecture.md "Postponed") or direct asks. Ops notes: add
 `OPENAI_API_KEY`/`OPENAI_BASE_URL` (+ `*_MODE=real`, `STORAGE_MODE=local`) to
 backend/.env before user-run real-seam dev sessions; `SEAMS_MODE`/`RLS_ENABLED` lines
 in .env are dead and can be deleted; restart stale uvicorn/arq after backend edits.
