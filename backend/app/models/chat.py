@@ -146,6 +146,12 @@ class ChatResponse(BaseModel):
     answer: str
     citations: list[ResolvedCitation]
     model: str
+    # Reranker-score confidence gate: True when the top retrieved block's rerank_score
+    # fell below settings.RERANK_MIN_SCORE and the LLM call was skipped entirely in favor
+    # of a fixed "weak evidence" answer. Always False on the normal (LLM-answered) path,
+    # including every response while RERANKER_ENABLED=False (rerank_score is always None
+    # then, so the gate structurally cannot fire).
+    weak_evidence: bool = False
 
 
 class MessageTraceOut(BaseModel):

@@ -107,6 +107,14 @@ class Settings(BaseSettings):
     # (`s = max(k, HIERARCHICAL_TOP_SECTIONS)` in services/retrieval.py).
     RERANK_CANDIDATE_K: int = 25
     RERANK_TOP_K: int = 8
+    # Confidence gate: if the TOP result's rerank_score falls below this threshold, chat
+    # skips the LLM call entirely and returns a distinct "weak evidence" response instead
+    # (see services/chat/service.py). No separate enable flag — rerank_score is always
+    # None when RERANKER_ENABLED=False, so the gate structurally cannot fire until
+    # reranking is on. Deliberately permissive default: turning RERANKER_ENABLED=True on
+    # does NOT immediately start gating answers — raise this once real score
+    # distributions from production traffic are known.
+    RERANK_MIN_SCORE: float = -10.0
 
     # --- Chat (F40) ---
     # The LLM seam call gets an explicit timeout + retry-with-backoff, but ONLY on

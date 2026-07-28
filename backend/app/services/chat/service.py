@@ -52,6 +52,8 @@ class MessageTraceNotFound(RuntimeError):
 
 _CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
 
+_WEAK_EVIDENCE_MESSAGE = "The available sources don't contain a strong match for this question."
+
 _SYSTEM_PROMPT = (
     "You are a knowledge-base assistant. Answer ONLY using the numbered context blocks "
     "provided below the question. Cite the blocks you used by their number in square "
@@ -79,6 +81,21 @@ def format_prompt_for_trace(messages: list[SeamMessage]) -> str:
     """Pure function — renders the exact message list sent to the LLM seam into the flat
     text the F42 debug bundle persists as ``final_prompt``."""
     return "\n\n".join(f"[{m.role}]\n{m.content}" for m in messages)
+
+
+def _weak_evidence_gate_fires(blocks: list[ContextBlock]) -> bool:
+    """The reranker-score confidence gate (locked design — see ``RERANK_MIN_SCORE``'s
+    docstring in ``config/settings.py``): fires only when the TOP block carries a real
+    ``rerank_score`` below the threshold. Empty ``blocks`` (zero retrieval hits) never
+    fires this gate — that's the existing "no context -> LLM's own refusal" path,
+    deliberately left untouched. ``rerank_score`` is ``None`` on every block whenever
+    ``RERANKER_ENABLED=False``, so this structurally cannot fire without the reranker
+    feature also being on — no separate enable flag needed."""
+    return (
+        bool(blocks)
+        and blocks[0].rerank_score is not None
+        and blocks[0].rerank_score < settings.RERANK_MIN_SCORE
+    )
 
 
 async def generate_answer(messages: list[SeamMessage], *, llm: LLM) -> AsyncIterator[str]:
@@ -227,6 +244,37 @@ class ChatService:
         )
 
         messages = build_messages(req.query, retrieval_response.results)
+
+        if _weak_evidence_gate_fires(retrieval_response.results):
+            logger.info(
+                "chat.weak_evidence_gate_fired",
+                correlation_id=correlation_id,
+                notebook_id=str(req.notebook_id),
+                top_rerank_score=retrieval_response.results[0].rerank_score,
+                threshold=settings.RERANK_MIN_SCORE,
+            )
+            answer = _WEAK_EVIDENCE_MESSAGE
+            citations: list[ResolvedCitation] = []
+            conversation_id, message_id = await self._persist(
+                ctx,
+                req=req,
+                answer=answer,
+                citations=citations,
+                hits=retrieval_response.results,
+                final_prompt=format_prompt_for_trace(messages),
+            )
+            return ChatResponse(
+                correlation_id=correlation_id,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                notebook_id=req.notebook_id,
+                query=req.query,
+                answer=answer,
+                citations=citations,
+                model=llm.model,
+                weak_evidence=True,
+            )
+
         answer = await call_llm_with_retry(messages, llm=llm, correlation_id=correlation_id)
         citations = await resolve_citations(
             ctx,
@@ -253,6 +301,7 @@ class ChatService:
             answer=answer,
             citations=citations,
             model=llm.model,
+            weak_evidence=False,
         )
 
     async def _persist(
@@ -333,6 +382,39 @@ class ChatService:
         )
         messages = build_messages(req.query, retrieval_response.results)
 
+        if _weak_evidence_gate_fires(retrieval_response.results):
+            logger.info(
+                "chat.stream_weak_evidence_gate_fired",
+                correlation_id=correlation_id,
+                notebook_id=str(req.notebook_id),
+                top_rerank_score=retrieval_response.results[0].rerank_score,
+                threshold=settings.RERANK_MIN_SCORE,
+            )
+            answer = _WEAK_EVIDENCE_MESSAGE
+            citations: list[ResolvedCitation] = []
+            conversation_id, message_id = await self._persist(
+                ctx,
+                req=req,
+                answer=answer,
+                citations=citations,
+                hits=retrieval_response.results,
+                final_prompt=format_prompt_for_trace(messages),
+                widget_id=widget_id,
+            )
+            yield {
+                "type": "done",
+                "correlation_id": correlation_id,
+                "conversation_id": str(conversation_id),
+                "message_id": str(message_id),
+                "notebook_id": str(req.notebook_id),
+                "query": req.query,
+                "answer": answer,
+                "citations": [],
+                "model": llm.model,
+                "weak_evidence": True,
+            }
+            return
+
         tokens: list[str] = []
         async for token in generate_answer(messages, llm=llm):
             tokens.append(token)
@@ -364,6 +446,7 @@ class ChatService:
             "answer": answer,
             "citations": [c.model_dump(mode="json") for c in citations],
             "model": llm.model,
+            "weak_evidence": False,
         }
 
     async def list_messages(self, ctx: TenantContext, notebook_id: uuid.UUID) -> list[MessageOut]:

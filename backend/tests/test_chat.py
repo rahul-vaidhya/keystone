@@ -18,8 +18,8 @@ from app.config import settings
 from app.models.chat import Conversation, MessageTrace
 from app.models.chat import Message as MessageRow
 from app.models.documents import Document
-from app.models.ingestion import Chunk, Embedding, Section
-from app.services.seams import EMBED_DIM, Message, SeamTransientError, get_llm
+from app.models.ingestion import Chunk, ChunkHit, Embedding, Section
+from app.services.seams import EMBED_DIM, Message, SeamTransientError, get_llm, get_reranker
 from app.utils.constants import ROLE_MEMBER
 from main import app
 
@@ -1058,3 +1058,209 @@ async def test_get_trace_cross_org_404s(client: AsyncClient, session_factory) ->
 
     resp = await client.get(f"/chat/messages/{message_id}/trace", headers=headers_b)
     assert resp.status_code == 404
+
+
+# ---- Reranker-score confidence gate (RERANK_MIN_SCORE) --------------------------------
+#
+# The gate has no separate enable flag -- it's implicitly live whenever RERANKER_ENABLED
+# is True, because rerank_score is None on every ContextBlock whenever it's False. These
+# tests force a controlled rerank_score via a test-double Reranker overriding the real
+# Depends(get_reranker) wiring.
+
+
+class _FixedScoreReranker:
+    """Test double: stamps every candidate with a caller-chosen fixed rerank_score,
+    preserving order -- lets gate tests control the top block's score directly."""
+
+    def __init__(self, score: float) -> None:
+        self._score = score
+
+    async def rerank(self, query: str, candidates: list[ChunkHit], top_k: int) -> list[ChunkHit]:
+        return [hit.model_copy(update={"rerank_score": self._score}) for hit in candidates[:top_k]]
+
+
+class _RecordingLLM:
+    """Records how many times `stream` was called -- the only reliable proof the LLM seam
+    was never invoked on the gate-fire path."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    @property
+    def model(self) -> str:
+        return "recording-llm"
+
+    async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
+        self.calls += 1
+        for token in "should not be called".split(" "):
+            yield token + " "
+
+
+async def test_ask_weak_evidence_gate_fires_skips_llm_call(
+    client: AsyncClient, session_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RERANKER_ENABLED=True + top block's rerank_score below RERANK_MIN_SCORE: the LLM
+    seam is never called, the response carries weak_evidence=True, the fixed weak-evidence
+    message, and zero citations."""
+    from app.services.chat.service import _WEAK_EVIDENCE_MESSAGE
+
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_MIN_SCORE", 0.5)
+
+    tokens = await _signup(client, "chat-weak-ask@test.com", "WeakAsk")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "alpha content about onboarding"
+    )
+
+    recording_llm = _RecordingLLM()
+    app.dependency_overrides[get_llm] = lambda: recording_llm
+    app.dependency_overrides[get_reranker] = lambda: _FixedScoreReranker(score=0.1)
+    try:
+        resp = await client.post(
+            "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "alpha"}
+        )
+    finally:
+        app.dependency_overrides.pop(get_reranker, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["weak_evidence"] is True
+    assert body["answer"] == _WEAK_EVIDENCE_MESSAGE
+    assert body["citations"] == []
+    assert recording_llm.calls == 0
+
+
+async def test_ask_weak_evidence_gate_does_not_fire_above_threshold(
+    client: AsyncClient, session_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RERANKER_ENABLED=True but the top block's rerank_score is ABOVE RERANK_MIN_SCORE:
+    the normal LLM-call path proceeds unchanged, weak_evidence=False."""
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_MIN_SCORE", 0.5)
+
+    tokens = await _signup(client, "chat-weak-above@test.com", "WeakAbove")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "alpha content about onboarding"
+    )
+
+    app.dependency_overrides[get_reranker] = lambda: _FixedScoreReranker(score=0.9)
+    try:
+        resp = await client.post(
+            "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "alpha"}
+        )
+    finally:
+        app.dependency_overrides.pop(get_reranker, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["weak_evidence"] is False
+    assert "[1]" in body["answer"]
+    assert len(body["citations"]) == 1
+
+
+async def test_ask_weak_evidence_gate_never_fires_when_reranker_disabled(
+    client: AsyncClient, session_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RERANKER_ENABLED=False (the default): rerank_score is always None regardless of
+    what a reranker double would have returned (it's never even called), so the
+    confidence gate structurally cannot fire. Uses an absurdly permissive-looking
+    RERANK_MIN_SCORE and a reranker double that WOULD fail the threshold if it were ever
+    consulted, to prove the gate is truly inert rather than coincidentally passing."""
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", False)
+    monkeypatch.setattr(settings, "RERANK_MIN_SCORE", 999.0)
+
+    tokens = await _signup(client, "chat-weak-off@test.com", "WeakOff")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "alpha content about onboarding"
+    )
+
+    app.dependency_overrides[get_reranker] = lambda: _FixedScoreReranker(score=-1000.0)
+    try:
+        resp = await client.post(
+            "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "alpha"}
+        )
+    finally:
+        app.dependency_overrides.pop(get_reranker, None)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["weak_evidence"] is False
+    assert "[1]" in body["answer"]
+
+
+async def test_weak_evidence_gate_persists_trace_with_would_be_prompt(
+    client: AsyncClient, session_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On gate-fire, the assistant message + trace are persisted normally: the trace's
+    final_prompt captures the prompt that WOULD have been sent (build_messages still ran,
+    it's just never handed to the LLM), and raw_output is the fixed weak-evidence
+    message."""
+    from app.services.chat.service import _WEAK_EVIDENCE_MESSAGE
+
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_MIN_SCORE", 0.5)
+
+    tokens = await _signup(client, "chat-weak-trace@test.com", "WeakTrace")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "alpha content about onboarding"
+    )
+
+    app.dependency_overrides[get_reranker] = lambda: _FixedScoreReranker(score=0.1)
+    try:
+        resp = await client.post(
+            "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "alpha"}
+        )
+    finally:
+        app.dependency_overrides.pop(get_reranker, None)
+
+    message_id = resp.json()["message_id"]
+    trace_resp = await client.get(f"/chat/messages/{message_id}/trace", headers=headers)
+    assert trace_resp.status_code == 200
+    trace = trace_resp.json()
+    assert trace["raw_output"] == _WEAK_EVIDENCE_MESSAGE
+    assert "alpha" in trace["final_prompt"]
+    assert len(trace["hits"]) == 1
+
+
+async def test_stream_weak_evidence_gate_yields_only_done_event(
+    client: AsyncClient, session_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SSE variant: on gate-fire, zero token events are emitted (no LLM call happened),
+    exactly one done event carries weak_evidence=True."""
+    from app.services.chat.service import _WEAK_EVIDENCE_MESSAGE
+
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_MIN_SCORE", 0.5)
+
+    tokens = await _signup(client, "chatstream-weak@test.com", "StreamWeak")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "alpha content about onboarding"
+    )
+
+    app.dependency_overrides[get_reranker] = lambda: _FixedScoreReranker(score=0.1)
+    try:
+        resp = await client.post(
+            "/chat/stream", headers=headers, json={"notebook_id": notebook_id, "query": "alpha"}
+        )
+    finally:
+        app.dependency_overrides.pop(get_reranker, None)
+
+    assert resp.status_code == 200
+    events = _parse_sse_events(resp.text)
+    token_events = [e for e in events if e["type"] == "token"]
+    done_events = [e for e in events if e["type"] == "done"]
+    assert len(token_events) == 0
+    assert len(done_events) == 1
+    assert done_events[0]["weak_evidence"] is True
+    assert done_events[0]["answer"] == _WEAK_EVIDENCE_MESSAGE
+    assert done_events[0]["citations"] == []
