@@ -11,7 +11,9 @@ retry, citation resolution, ``ChatService``) lives in ``service.py``. Same conve
 
 from __future__ import annotations
 
+from app.services.chat.service import FeedbackOnUserMessage as FeedbackOnUserMessage
 from app.services.chat.service import GenerationFailed as GenerationFailed
+from app.services.chat.service import MessageNotFound as MessageNotFound
 from app.services.chat.service import MessageTraceNotFound as MessageTraceNotFound
 from app.services.chat.service import build_messages as build_messages
 from app.services.chat.service import chat_service as chat_service

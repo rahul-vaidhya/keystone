@@ -46,6 +46,16 @@ export type ChatHistoryMessage = {
   content: string;
   citations: ResolvedCitation[] | null;
   created_at: string;
+  // The CALLING user's own prior rating on this message — never anyone else's, never
+  // an aggregate. null when this user hasn't rated it yet.
+  my_feedback: "up" | "down" | null;
+};
+
+// POST /chat/messages/{message_id}/feedback — mirrors app.models.chat.FeedbackCreate.
+// Only `rating` is sent by the wired-up thumbs buttons today; the other fields exist
+// schema-ready on the backend for a future admin labeling UI.
+export type FeedbackRequest = {
+  rating: "up" | "down";
 };
 
 // F42 admin debug bundle — the persisted trace for one answer.

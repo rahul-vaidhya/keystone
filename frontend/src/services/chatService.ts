@@ -3,6 +3,7 @@ import type {
   ChatHistoryMessage,
   ChatRequest,
   ChatResponse,
+  FeedbackRequest,
   MessageTrace,
   SSEEvent,
 } from "../types/chat";
@@ -14,6 +15,14 @@ export const chatApi = {
   // Chat history hydration — every prior message in a notebook, chronological.
   listMessages: (notebookId: string) =>
     apiFetch<ChatHistoryMessage[]>(`/chat/notebooks/${notebookId}/messages`),
+
+  // Rate an assistant message (thumbs up/down) — upserts, one current rating per user
+  // per message. The real access gate (notebook visibility) is enforced server-side.
+  submitFeedback: (messageId: string, body: FeedbackRequest) =>
+    apiFetch<void>(`/chat/messages/${messageId}/feedback`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
 
   /**

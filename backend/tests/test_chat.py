@@ -1264,3 +1264,193 @@ async def test_stream_weak_evidence_gate_yields_only_done_event(
     assert done_events[0]["weak_evidence"] is True
     assert done_events[0]["answer"] == _WEAK_EVIDENCE_MESSAGE
     assert done_events[0]["citations"] == []
+
+
+# ---- message_feedback (POST /chat/messages/{message_id}/feedback) ---------------------
+
+
+async def test_submit_feedback_then_resubmit_upserts_single_row(
+    client: AsyncClient, session_factory
+) -> None:
+    """Upsert on (message_id, user_id): re-rating the same message updates the existing
+    row's rating in place, never inserts a second row."""
+    tokens = await _signup(client, "feedback-upsert@test.com", "FeedbackUpsert")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "alpha content about onboarding"
+    )
+    ask = await client.post(
+        "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "alpha"}
+    )
+    message_id = ask.json()["message_id"]
+
+    first = await client.post(
+        f"/chat/messages/{message_id}/feedback", headers=headers, json={"rating": "up"}
+    )
+    assert first.status_code == 200
+    first_id = first.json()["id"]
+
+    second = await client.post(
+        f"/chat/messages/{message_id}/feedback", headers=headers, json={"rating": "down"}
+    )
+    assert second.status_code == 200
+    assert second.json()["id"] == first_id
+    assert second.json()["rating"] == "down"
+
+    async with session_factory() as session:
+        from app.models.chat import MessageFeedback
+
+        rows = (
+            (
+                await session.execute(
+                    select(MessageFeedback).where(
+                        MessageFeedback.message_id == uuid.UUID(message_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1
+    assert rows[0].rating == "down"
+
+
+async def test_submit_feedback_on_user_message_400s(client: AsyncClient, session_factory) -> None:
+    tokens = await _signup(client, "feedback-usermsg@test.com", "FeedbackUserMsg")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, headers, session_factory, org_id, "alpha content"
+    )
+    ask = await client.post(
+        "/chat/ask", headers=headers, json={"notebook_id": notebook_id, "query": "alpha"}
+    )
+    conversation_id = ask.json()["conversation_id"]
+
+    async with session_factory() as session:
+        user_message = (
+            await session.execute(
+                select(MessageRow).where(
+                    MessageRow.conversation_id == uuid.UUID(conversation_id),
+                    MessageRow.role == "user",
+                )
+            )
+        ).scalar_one()
+        user_message_id = user_message.id
+
+    resp = await client.post(
+        f"/chat/messages/{user_message_id}/feedback", headers=headers, json={"rating": "up"}
+    )
+    assert resp.status_code == 400
+
+
+async def test_submit_feedback_nonexistent_message_404s(client: AsyncClient) -> None:
+    tokens = await _signup(client, "feedback-missing@test.com", "FeedbackMissing")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    resp = await client.post(
+        f"/chat/messages/{uuid.uuid4()}/feedback", headers=headers, json={"rating": "up"}
+    )
+    assert resp.status_code == 404
+
+
+async def test_submit_feedback_cross_org_message_404s(client: AsyncClient, session_factory) -> None:
+    tokens_a = await _signup(client, "feedback-isoa@test.com", "FeedbackIsoA")
+    tokens_b = await _signup(client, "feedback-isob@test.com", "FeedbackIsoB")
+    headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}
+    headers_b = {"Authorization": f"Bearer {tokens_b['access_token']}"}
+    org_id_a = await _org_id(client, headers_a)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, headers_a, session_factory, org_id_a, "org A content"
+    )
+    ask = await client.post(
+        "/chat/ask", headers=headers_a, json={"notebook_id": notebook_id, "query": "q"}
+    )
+    message_id = ask.json()["message_id"]
+
+    resp = await client.post(
+        f"/chat/messages/{message_id}/feedback", headers=headers_b, json={"rating": "up"}
+    )
+    assert resp.status_code == 404
+
+
+async def test_submit_feedback_on_private_notebook_message_403s(
+    client: AsyncClient, session_factory
+) -> None:
+    """A member who was never shared into the notebook (private by default per the
+    2026-07-27 notebook-privacy feature) cannot rate a message in it — reuses the exact
+    same NotebookAccessDenied check list_messages already performs."""
+    owner_tokens = await _signup(client, "feedback-priv-owner@test.com", "FeedbackPrivOwner")
+    owner_headers = {"Authorization": f"Bearer {owner_tokens['access_token']}"}
+    org_id = await _org_id(client, owner_headers)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, owner_headers, session_factory, org_id, "private content"
+    )
+    ask = await client.post(
+        "/chat/ask", headers=owner_headers, json={"notebook_id": notebook_id, "query": "q"}
+    )
+    message_id = ask.json()["message_id"]
+
+    member_tokens = await _invite_member(client, owner_headers, "feedback-priv-member@test.com")
+    member_headers = {"Authorization": f"Bearer {member_tokens['access_token']}"}
+
+    resp = await client.post(
+        f"/chat/messages/{message_id}/feedback", headers=member_headers, json={"rating": "up"}
+    )
+    assert resp.status_code == 403
+
+
+async def test_list_messages_my_feedback_scoped_per_user_no_leak(
+    client: AsyncClient, session_factory
+) -> None:
+    """The calling user's own feedback shows up in list_messages; a DIFFERENT user's
+    feedback on the same message must never leak into the first user's my_feedback."""
+    owner_tokens = await _signup(client, "feedback-scope-owner@test.com", "FeedbackScopeOwner")
+    owner_headers = {"Authorization": f"Bearer {owner_tokens['access_token']}"}
+    org_id = await _org_id(client, owner_headers)
+    notebook_id, _doc_id = await _make_notebook_with_document(
+        client, owner_headers, session_factory, org_id, "shared content"
+    )
+    ask = await client.post(
+        "/chat/ask", headers=owner_headers, json={"notebook_id": notebook_id, "query": "q"}
+    )
+    message_id = ask.json()["message_id"]
+
+    member_tokens = await _invite_member(client, owner_headers, "feedback-scope-member@test.com")
+    member_headers = {"Authorization": f"Bearer {member_tokens['access_token']}"}
+    member_me = (await client.get("/auth/me", headers=member_headers)).json()
+    share = await client.post(
+        f"/notebooks/{notebook_id}/shares",
+        headers=owner_headers,
+        json={"user_id": member_me["id"]},
+    )
+    assert share.status_code == 204
+
+    owner_rate = await client.post(
+        f"/chat/messages/{message_id}/feedback", headers=owner_headers, json={"rating": "up"}
+    )
+    assert owner_rate.status_code == 200
+
+    member_history = await client.get(
+        f"/chat/notebooks/{notebook_id}/messages", headers=member_headers
+    )
+    assert member_history.status_code == 200
+    member_assistant_msg = next(m for m in member_history.json() if m["role"] == "assistant")
+    assert member_assistant_msg["my_feedback"] is None  # owner's rating doesn't leak
+
+    member_rate = await client.post(
+        f"/chat/messages/{message_id}/feedback", headers=member_headers, json={"rating": "down"}
+    )
+    assert member_rate.status_code == 200
+
+    owner_history = await client.get(
+        f"/chat/notebooks/{notebook_id}/messages", headers=owner_headers
+    )
+    owner_assistant_msg = next(m for m in owner_history.json() if m["role"] == "assistant")
+    assert owner_assistant_msg["my_feedback"] == "up"  # owner's own rating still shows
+
+    member_history_2 = await client.get(
+        f"/chat/notebooks/{notebook_id}/messages", headers=member_headers
+    )
+    member_assistant_msg_2 = next(m for m in member_history_2.json() if m["role"] == "assistant")
+    assert member_assistant_msg_2["my_feedback"] == "down"  # member's own rating shows

@@ -143,7 +143,9 @@ export function ChatPanel({
   const [activeCitation, setActiveCitation] = useState<ResolvedCitation | null>(null);
   const [openTraceIndex, setOpenTraceIndex] = useState<number | null>(null);
   // Finding B (Low, UX audit): copy-to-clipboard confirmation + thumbs up/down feedback.
-  // Feedback is UI-only (tri-state per messageId, no backend persistence) per direct scope decision.
+  // Feedback is tri-state locally (clicking the selected reaction deselects it) and is
+  // persisted server-side via chatApi.submitFeedback (message_feedback feature) —
+  // seeded from history's my_feedback on mount so it survives navigation/reload.
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Record<string, "up" | "down" | undefined>>({});
   const abortRef = useRef<(() => void) | null>(null);
@@ -179,6 +181,17 @@ export function ChatPanel({
               }))
             : prev,
         );
+        // Seed the feedback button state from each history message's own prior
+        // my_feedback — otherwise the buttons reset to blank on every navigation even
+        // though the rating was persisted server-side.
+        setFeedback((prev) => {
+          if (Object.keys(prev).length > 0) return prev;
+          const seeded: Record<string, "up" | "down" | undefined> = {};
+          for (const m of history) {
+            if (m.my_feedback) seeded[m.id] = m.my_feedback;
+          }
+          return seeded;
+        });
       })
       .catch(() => {
         /* history hydration failure isn't fatal — the panel still works for new asks */
@@ -276,6 +289,10 @@ export function ChatPanel({
       // Tri-state: clicking the already-selected reaction deselects it.
       [messageId]: prev[messageId] === value ? undefined : value,
     }));
+    // Fire-and-forget: the optimistic local state above is already applied, and a
+    // network failure here shouldn't break the UI (no toast/error surface for this
+    // round — see message_feedback feature notes).
+    chatApi.submitFeedback(messageId, { rating: value }).catch(() => {});
   }
 
   const showCitationPanel = activeCitation !== null;

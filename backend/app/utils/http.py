@@ -25,7 +25,12 @@ from app.services.auth import (
     InvalidInviteToken,
     TargetUserNotFound,
 )
-from app.services.chat import GenerationFailed, MessageTraceNotFound
+from app.services.chat import (
+    FeedbackOnUserMessage,
+    GenerationFailed,
+    MessageNotFound,
+    MessageTraceNotFound,
+)
 from app.services.documents import (
     DocumentNotFound,
     DocumentsError,
@@ -213,6 +218,22 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
             content={"detail": str(exc) or "Trace not found"},
+        )
+
+    @app.exception_handler(MessageNotFound)
+    async def _message_not_found(_request: Request, exc: MessageNotFound) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": str(exc) or "Message not found"},
+        )
+
+    @app.exception_handler(FeedbackOnUserMessage)
+    async def _feedback_on_user_message(
+        _request: Request, exc: FeedbackOnUserMessage
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": str(exc) or "Only assistant messages can be rated"},
         )
 
     @app.exception_handler(AuthError)

@@ -16,6 +16,7 @@ vi.mock("../services/chatService", () => ({
     streamAsk: vi.fn(),
     getTrace: vi.fn(),
     listMessages: vi.fn(),
+    submitFeedback: vi.fn(),
   },
 }));
 
@@ -91,6 +92,7 @@ function makeHistoryMessage(overrides: Partial<ChatHistoryMessage> = {}): ChatHi
     content: "prior question",
     citations: null,
     created_at: "2026-01-01T00:00:00Z",
+    my_feedback: null,
     ...overrides,
   };
 }
@@ -129,6 +131,8 @@ describe("ChatPanel", () => {
     vi.mocked(chatApi.getTrace).mockReset();
     vi.mocked(chatApi.listMessages).mockReset();
     vi.mocked(chatApi.listMessages).mockResolvedValue([]);
+    vi.mocked(chatApi.submitFeedback).mockReset();
+    vi.mocked(chatApi.submitFeedback).mockResolvedValue(undefined);
     mockUser("member");
   });
 
@@ -475,6 +479,69 @@ describe("ChatPanel", () => {
       );
       expect(screen.getByRole("button", { name: "Good response" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Bad response" })).toBeInTheDocument();
+    });
+
+    it("calls chatApi.submitFeedback with the message id and rating when a thumb is clicked", async () => {
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(makeDoneResponse({ message_id: "msg-42" }));
+        return () => {};
+      });
+
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      const input = screen.getByPlaceholderText("Ask a question…");
+      fireEvent.change(input, { target: { value: "test" } });
+      fireEvent.submit(input.closest("form")!);
+
+      const up = await screen.findByRole("button", { name: "Good response" });
+      fireEvent.click(up);
+      await waitFor(() =>
+        expect(chatApi.submitFeedback).toHaveBeenCalledWith("msg-42", { rating: "up" }),
+      );
+
+      const down = screen.getByRole("button", { name: "Bad response" });
+      fireEvent.click(down);
+      await waitFor(() =>
+        expect(chatApi.submitFeedback).toHaveBeenCalledWith("msg-42", { rating: "down" }),
+      );
+    });
+
+    it("does not break the UI when submitFeedback rejects (fire-and-forget)", async () => {
+      vi.mocked(chatApi.submitFeedback).mockRejectedValue(new Error("network error"));
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(makeDoneResponse());
+        return () => {};
+      });
+
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      const input = screen.getByPlaceholderText("Ask a question…");
+      fireEvent.change(input, { target: { value: "test" } });
+      fireEvent.submit(input.closest("form")!);
+
+      const up = await screen.findByRole("button", { name: "Good response" });
+      fireEvent.click(up);
+
+      // Optimistic local state still applies even though the network call rejects.
+      await waitFor(() => expect(up).toHaveAttribute("aria-pressed", "true"));
+    });
+
+    it("seeds the feedback button state from history's my_feedback on mount", async () => {
+      vi.mocked(chatApi.listMessages).mockResolvedValue([
+        makeHistoryMessage({
+          id: "h1",
+          role: "assistant",
+          content: "earlier answer [1]",
+          citations: [makeCitation()],
+          my_feedback: "up",
+        }),
+      ]);
+      vi.mocked(chatApi.streamAsk).mockReturnValue(() => {});
+
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+
+      const up = await screen.findByRole("button", { name: "Good response" });
+      const down = screen.getByRole("button", { name: "Bad response" });
+      expect(up).toHaveAttribute("aria-pressed", "true");
+      expect(down).toHaveAttribute("aria-pressed", "false");
     });
   });
 });

@@ -17,7 +17,14 @@ from fastapi.responses import StreamingResponse
 from app.config.logging import get_logger
 from app.middleware.context import TenantContext
 from app.middleware.deps import get_ctx, require_admin
-from app.models.chat import ChatRequest, ChatResponse, MessageOut, MessageTraceOut
+from app.models.chat import (
+    ChatRequest,
+    ChatResponse,
+    FeedbackCreate,
+    FeedbackOut,
+    MessageOut,
+    MessageTraceOut,
+)
 from app.services.chat import chat_service
 from app.services.seams import LLM, Embedder, Reranker, get_embedder, get_llm, get_reranker
 
@@ -98,3 +105,14 @@ async def list_messages(
     """Chat history hydration for a notebook — every member can see it, same access
     level as asking a question in the notebook."""
     return await chat_service.list_messages(ctx, notebook_id)
+
+
+async def submit_feedback(
+    message_id: uuid.UUID,
+    req: FeedbackCreate,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+) -> FeedbackOut:
+    """Rate an assistant message (thumbs up/down). Any authenticated org member may
+    call this — the real gate is inside the service (the same notebook-visibility
+    check ``list_messages`` performs, via ``knowledge_service.get_notebook``)."""
+    return await chat_service.submit_feedback(ctx, message_id, req)

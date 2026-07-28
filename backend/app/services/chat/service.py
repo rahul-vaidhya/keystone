@@ -21,12 +21,19 @@ from app.middleware.context import TenantContext
 from app.models.chat import (
     ChatRequest,
     ChatResponse,
+    FeedbackCreate,
+    FeedbackOut,
     MessageOut,
     MessageTraceOut,
     ResolvedCitation,
 )
 from app.models.retrieval import ContextBlock, RetrievalSearchRequest
-from app.services.chat.repository import ConversationRepository, MessageRepository, TraceRepository
+from app.services.chat.repository import (
+    ConversationRepository,
+    FeedbackRepository,
+    MessageRepository,
+    TraceRepository,
+)
 from app.services.ingestion import ingestion_service
 from app.services.knowledge import knowledge_service
 from app.services.retrieval import retrieval_service
@@ -48,6 +55,17 @@ class GenerationFailed(RuntimeError):
 class MessageTraceNotFound(RuntimeError):
     """F42: no trace exists for this message_id within the caller's org — either the
     message never belonged to this org, or it doesn't exist at all. Mapped to a 404."""
+
+
+class MessageNotFound(RuntimeError):
+    """No message exists with this message_id within the caller's org — either it
+    never belonged to this org or it doesn't exist at all (same "not found means
+    either" shape as ``MessageTraceNotFound``). Mapped to a 404."""
+
+
+class FeedbackOnUserMessage(RuntimeError):
+    """Raised when feedback targets a ``role='user'`` message — only assistant answers
+    can be rated; a user can't thumbs-up/down their own question. Mapped to a 400."""
 
 
 _CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
@@ -453,13 +471,53 @@ class ChatService:
         """History hydration for the chat panel (fixes the "conversation vanishes on
         navigation" bug — nothing previously read ``conversations``/``messages`` back for
         a user). Validates the notebook exists and belongs to this org first, via
-        ``knowledge_service.get_notebook`` (raises ``NotebookNotFound`` -> 404 for both
-        "doesn't exist" and "belongs to another org" — the correct multi-tenant check),
-        same precedent ``retrieval_service.search`` already follows."""
+        ``knowledge_service.get_notebook`` (raises ``NotebookNotFound``/
+        ``NotebookAccessDenied`` -> 404/403 — the correct multi-tenant + notebook-privacy
+        check), same precedent as ``submit_feedback``. Also seeds each message's
+        ``my_feedback`` from the CALLING user's own prior rating only — never another
+        user's rating on the same message."""
         await knowledge_service.get_notebook(ctx, notebook_id)
         async with db_mod.tenant_session(ctx.org_id) as session:
             messages = await MessageRepository(session, ctx).list_for_notebook(notebook_id)
-        return [MessageOut.model_validate(m) for m in messages]
+            feedback_by_message: dict[uuid.UUID, str] = {}
+            if ctx.user_id is not None:
+                feedback_by_message = await FeedbackRepository(session, ctx).get_for_messages(
+                    [m.id for m in messages], ctx.user_id
+                )
+        return [
+            MessageOut.model_validate(m).model_copy(
+                update={"my_feedback": feedback_by_message.get(m.id)}
+            )
+            for m in messages
+        ]
+
+    async def submit_feedback(
+        self, ctx: TenantContext, message_id: uuid.UUID, req: FeedbackCreate
+    ) -> FeedbackOut:
+        """Rate an assistant message (upsert — one current rating per user per
+        message). Reaches the notebook-privacy check via ``knowledge_service.
+        get_notebook`` (raises ``NotebookAccessDenied``/``NotebookNotFound`` as
+        appropriate) rather than reimplementing it — the exact same check
+        ``list_messages`` already performs (module-boundary rule: chat reaches
+        knowledge only through its service, never its repository/tables)."""
+        assert ctx.user_id is not None, "submit_feedback is only reachable via get_ctx"
+        async with db_mod.tenant_session(ctx.org_id) as session:
+            found = await MessageRepository(session, ctx).get_with_notebook_id(message_id)
+            if found is None:
+                raise MessageNotFound("Message not found")
+            message, notebook_id = found
+            if message.role != "assistant":
+                raise FeedbackOnUserMessage("Only assistant messages can be rated")
+            await knowledge_service.get_notebook(ctx, notebook_id)
+            feedback = await FeedbackRepository(session, ctx).upsert(
+                message_id=message_id,
+                user_id=ctx.user_id,
+                rating=req.rating,
+                reason_tags=req.reason_tags,
+                comment=req.comment,
+                corrected_answer=req.corrected_answer,
+            )
+        return FeedbackOut.model_validate(feedback)
 
     async def get_trace(self, ctx: TenantContext, message_id: uuid.UUID) -> MessageTraceOut:
         """F42: read-only, admin-gated at the controller (``require_admin``). Returns the

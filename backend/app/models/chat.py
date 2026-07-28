@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, ForeignKey, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.config.db import Base
@@ -108,6 +109,48 @@ class MessageTrace(Base):
     )
 
 
+class MessageFeedback(Base):
+    """Per-user rating on an assistant message (thumbs up/down) — one row per
+    ``(message_id, user_id)``, the upsert target: a user re-rating the same message
+    updates their existing row rather than inserting a second one (not an audit log of
+    every click). Dies with its message (same precedent as ``MessageTrace``).
+    ``reason_tags``/``comment``/``corrected_answer`` exist schema-ready for a FUTURE
+    admin labeling UI — only ``rating`` is populated by the wired-up thumbs buttons
+    today."""
+
+    __tablename__ = "message_feedback"
+    __table_args__ = (
+        UniqueConstraint("message_id", "user_id", name="uq_message_feedback_message_user"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("messages.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    rating: Mapped[str] = mapped_column(Text, nullable=False)  # 'up' | 'down'
+    reason_tags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, server_default="{}")
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    corrected_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 # ---- API schemas ----
 
 
@@ -176,6 +219,37 @@ class MessageOut(BaseModel):
     role: str
     content: str
     citations: list[ResolvedCitation] | None
+    created_at: datetime
+    # The CALLING user's own prior rating on this message — never anyone else's, never
+    # an aggregate. None when this user hasn't rated it (or the message is a 'user' one,
+    # which can never be rated). Populated by ChatService.list_messages from a
+    # FeedbackRepository.get_for_messages read scoped to ctx.user_id.
+    my_feedback: Literal["up", "down"] | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class FeedbackCreate(BaseModel):
+    """Only ``rating`` is populated by the wired-up thumbs buttons this round —
+    ``reason_tags``/``comment``/``corrected_answer`` exist schema-ready for a FUTURE
+    admin labeling UI, unpopulated by any UI today."""
+
+    rating: Literal["up", "down"]
+    reason_tags: list[str] | None = None
+    comment: str | None = None
+    corrected_answer: str | None = None
+
+
+class FeedbackOut(BaseModel):
+    """The persisted feedback row, echoed back verbatim after an upsert."""
+
+    id: uuid.UUID
+    message_id: uuid.UUID
+    user_id: uuid.UUID
+    rating: Literal["up", "down"]
+    reason_tags: list[str]
+    comment: str | None
+    corrected_answer: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True}
