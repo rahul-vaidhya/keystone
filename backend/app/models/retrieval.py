@@ -26,7 +26,11 @@ class ContextBlock(BaseModel):
     char_start: int
     char_end: int
     content: str
-    distance: float
+    # `None` only for a lexical-only hit (hybrid search's full-text candidate path,
+    # migration 0021 — a lexical match has no cosine distance). Every vector-kNN block
+    # (flat or hierarchical) still always carries a real float, unchanged — surfaced
+    # from `ChunkHit.distance` unchanged.
+    distance: float | None = None
     # [later] V2 reranker — surfaced from `ChunkHit.rerank_score` unchanged, additive
     # only. Always `None` when `RERANKER_ENABLED=False` (the default); `distance` is
     # never touched or removed.

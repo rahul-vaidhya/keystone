@@ -116,6 +116,18 @@ class Settings(BaseSettings):
     # distributions from production traffic are known.
     RERANK_MIN_SCORE: float = -10.0
 
+    # --- Hybrid search / V2+ (native Postgres full-text + vector, fused via RRF) ---
+    # Off by default (same pattern as RERANKER_ENABLED/HIERARCHICAL_RETRIEVAL_ENABLED) —
+    # shipping this changes nothing in existing retrieval behavior until explicitly
+    # turned on. Lexical backend is native Postgres full-text search (tsvector/GIN,
+    # migration 0021) — no third-party extension, no Docker image change.
+    HYBRID_SEARCH_ENABLED: bool = False
+    # Both the vector and lexical candidate pools are widened to
+    # max(k, HYBRID_CANDIDATE_K) before RRF fusion — mirrors RERANK_CANDIDATE_K's
+    # widening pattern. When RERANKER_ENABLED is also on, the effective candidate pool
+    # is max(k, RERANK_CANDIDATE_K, HYBRID_CANDIDATE_K) (see services/retrieval.py).
+    HYBRID_CANDIDATE_K: int = 25
+
     # --- Chat (F40) ---
     # The LLM seam call gets an explicit timeout + retry-with-backoff, but ONLY on
     # transient failures (SeamTransientError from the seam, or our own timeout) — never on

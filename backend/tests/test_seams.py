@@ -149,6 +149,18 @@ async def test_fake_reranker_never_calls_network() -> None:
     assert await FakeReranker().rerank("q", [], top_k=8) == []
 
 
+async def test_fake_reranker_handles_lexical_only_hit_with_no_distance() -> None:
+    """A hybrid-search lexical-only hit (distance=None, migration 0021) must not crash
+    `1.0 - hit.distance` — regression test for a real interaction bug found while
+    reviewing the hybrid search feature: with RERANKER_ENABLED and HYBRID_SEARCH_ENABLED
+    both on, a lexical-only candidate can reach the reranker."""
+    candidates = [_chunk_hit(0.4), ChunkHit(**{**_chunk_hit(0.0).model_dump(), "distance": None})]
+    result = await FakeReranker().rerank("q", candidates, top_k=8)
+    assert result[0].rerank_score == pytest.approx(0.6)
+    assert result[1].distance is None
+    assert result[1].rerank_score == 0.0
+
+
 def test_real_llm_exposes_configured_model_name(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "LLM_MODEL", "some-model")
     assert RealLLM().model == "some-model"

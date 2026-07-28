@@ -16,8 +16,8 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from pydantic import BaseModel
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import Computed, DateTime, ForeignKey, Integer, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.config.db import Base
@@ -86,6 +86,20 @@ class Chunk(Base):
     char_end: Mapped[int] = mapped_column(Integer, nullable=False)
     metadata_: Mapped[dict] = mapped_column(
         "metadata", JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    # Hybrid search's lexical candidate path (migration 0021): a STORED generated column
+    # (`GENERATED ALWAYS AS (to_tsvector('english', content)) STORED`), computed by
+    # Postgres itself on every insert/update — the app NEVER writes to this column. The
+    # `Computed(...)` marker here is DML-only signaling (it tells SQLAlchemy's ORM to
+    # ALWAYS exclude this column from INSERT/UPDATE statements, including its
+    # `insertmanyvalues` batch-insert path used by `bulk_create`, which otherwise sends
+    # an explicit NULL for every row and Postgres rejects any explicit value — even
+    # NULL — into a generated column); the actual DDL is owned entirely by migration
+    # 0021's raw SQL, never regenerated from this model (this project never runs
+    # Alembic autogenerate against `Base.metadata`, so no DDL drift risk). Backed by a
+    # GIN index (`ix_chunks_content_tsv`) for `@@`/`ts_rank` queries.
+    content_tsv: Mapped[str | None] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('english', content)", persisted=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -162,7 +176,10 @@ class ChunkHit(BaseModel):
     content: str
     char_start: int
     char_end: int
-    distance: float
+    # `None` only for a lexical-only hit (hybrid search's full-text candidate path,
+    # migration 0021 — a lexical match has no cosine distance). Every vector-kNN hit
+    # (flat or hierarchical) still always carries a real float, unchanged.
+    distance: float | None = None
     # [later] V2 reranker — stamped by `Reranker.rerank` (architecture.md "A Reranker
     # seam is added in V2, not now"), additive only. Always `None` when
     # `RERANKER_ENABLED=False` (the default); never removes/replaces `distance`, which

@@ -101,12 +101,17 @@ class FakeReranker:
     """TRUE identity passthrough — never calls a network/vendor. Preserves `candidates`'
     existing order exactly as received (cosine-distance order from `search_chunks`),
     truncates to `top_k`, and stamps `rerank_score = 1.0 - hit.distance` on each returned
-    hit (deterministic, monotonic with distance). This lets a FUTURE confidence-gate
-    feature's tests control the reranker score just by controlling embedding distance via
-    `FakeEmbedder`, without this fake ever needing real reranking logic."""
+    hit (deterministic, monotonic with distance). This lets a confidence-gate feature's
+    tests control the reranker score just by controlling embedding distance via
+    `FakeEmbedder`, without this fake ever needing real reranking logic. A hit with no
+    distance (a lexical-only hybrid-search match, `distance=None` — see migration 0021)
+    gets `rerank_score=0.0`: a neutral placeholder, since this fake has no real signal to
+    derive a score from for a chunk it never vector-searched."""
 
     async def rerank(self, query: str, candidates: list[ChunkHit], top_k: int) -> list[ChunkHit]:
         return [
-            hit.model_copy(update={"rerank_score": 1.0 - hit.distance})
+            hit.model_copy(
+                update={"rerank_score": 1.0 - hit.distance if hit.distance is not None else 0.0}
+            )
             for hit in candidates[:top_k]
         ]

@@ -118,6 +118,19 @@ class IngestionService:
             section_ids=section_ids,
         )
 
+    async def search_chunks_lexical(
+        self,
+        ctx: TenantContext,
+        *,
+        query: str,
+        document_ids: list[uuid.UUID],
+        k: int,
+        section_ids: list[uuid.UUID] | None = None,
+    ) -> list[ChunkHit]:
+        return await _search.search_chunks_lexical(
+            ctx, query=query, document_ids=document_ids, k=k, section_ids=section_ids
+        )
+
     async def search_sections(
         self,
         ctx: TenantContext,

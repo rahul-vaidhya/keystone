@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.models.ingestion import Chunk, ChunkHit, Embedding, Section, SectionHit
@@ -103,6 +103,50 @@ class ChunkRepository(BaseRepository[Chunk]):
         )
         result = await self._db.execute(stmt)
         return [(chunk, page_start, page_end) for chunk, page_start, page_end in result]
+
+    async def search_chunks_lexical(
+        self,
+        query: str,
+        document_ids: list[uuid.UUID],
+        k: int,
+        *,
+        section_ids: list[uuid.UUID] | None = None,
+    ) -> list[ChunkHit]:
+        """Hybrid search's lexical (full-text) candidate path (migration 0021) — native
+        Postgres full-text search over ``chunks.content_tsv`` (a STORED generated
+        ``tsvector`` column + GIN index), no third-party extension. Queries ``chunks``
+        directly with no embeddings join (unlike ``EmbeddingRepository.search_chunks``),
+        so this lives on ``ChunkRepository`` instead. Filters ``org_id`` directly
+        (independent backstop, same precedent as ``EmbeddingRepository.search_chunks``).
+        Ranked by ``ts_rank``; ``distance`` is explicitly ``None`` on every returned hit
+        — a lexical match has no cosine distance, and ``None`` is the honest
+        representation (never a fabricated stand-in value). When ``section_ids`` is
+        provided (V2 hierarchical retrieval's fine pass), narrows to those sections
+        only, mirroring ``search_chunks``'s own ``section_ids`` filter."""
+        if not document_ids:
+            return []
+        tsquery = func.websearch_to_tsquery("english", query)
+        where_clauses = [
+            Chunk.org_id == self._ctx.org_id,
+            Chunk.document_id.in_(document_ids),
+            Chunk.content_tsv.op("@@")(tsquery),
+        ]
+        if section_ids:
+            where_clauses.append(Chunk.section_id.in_(section_ids))
+        stmt = (
+            select(
+                Chunk.id.label("chunk_id"),
+                Chunk.document_id,
+                Chunk.content,
+                Chunk.char_start,
+                Chunk.char_end,
+            )
+            .where(*where_clauses)
+            .order_by(func.ts_rank(Chunk.content_tsv, tsquery).desc())
+            .limit(k)
+        )
+        rows = await self._db.execute(stmt)
+        return [ChunkHit(**row._mapping, distance=None) for row in rows]
 
 
 class EmbeddingRepository(BaseRepository[Embedding]):

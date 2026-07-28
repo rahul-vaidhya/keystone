@@ -28,6 +28,23 @@ async def search_chunks(
         )
 
 
+async def search_chunks_lexical(
+    ctx: TenantContext,
+    *,
+    query: str,
+    document_ids: list[uuid.UUID],
+    k: int,
+    section_ids: list[uuid.UUID] | None = None,
+) -> list[ChunkHit]:
+    """Hybrid search's lexical candidate path — all SQL lives in
+    ``ChunkRepository.search_chunks_lexical``; this is pure orchestration (mirrors
+    ``search_chunks`` above)."""
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        return await ChunkRepository(session, ctx).search_chunks_lexical(
+            query, document_ids, k, section_ids=section_ids
+        )
+
+
 async def search_sections(
     ctx: TenantContext,
     *,

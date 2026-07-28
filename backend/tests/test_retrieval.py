@@ -16,7 +16,12 @@ from app.models.auth import Organization
 from app.models.documents import Document
 from app.models.ingestion import Chunk, ChunkHit, Embedding
 from app.services.ingestion import ingestion_service
-from app.services.retrieval import assemble_context, resolve_allowed_documents, retrieval_service
+from app.services.retrieval import (
+    assemble_context,
+    fuse_rrf,
+    resolve_allowed_documents,
+    retrieval_service,
+)
 from app.services.seams import EMBED_DIM, FakeReranker
 from app.utils.constants import ROLE_MEMBER
 from main import app
@@ -694,3 +699,224 @@ async def test_reranker_gate_off_context_block_rerank_score_is_none_over_http(
     results = resp.json()["results"]
     assert len(results) == 1
     assert results[0]["rerank_score"] is None
+
+
+# --- Hybrid search (HYBRID_SEARCH_ENABLED gate) ---------------------------------------
+
+
+def _rrf_hit(chunk_id: uuid.UUID, *, distance: float | None = None) -> ChunkHit:
+    """A minimal ChunkHit for fuse_rrf's pure-function tests — content/offsets/
+    document_id are irrelevant to RRF's rank-based scoring, only chunk_id (the dedup
+    key) and distance (None = lexical-only) matter."""
+    return ChunkHit(
+        chunk_id=chunk_id,
+        document_id=uuid.uuid4(),
+        content="irrelevant",
+        char_start=0,
+        char_end=1,
+        distance=distance,
+    )
+
+
+def test_fuse_rrf_vector_only_returns_vector_order() -> None:
+    a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    vector_hits = [_rrf_hit(a, distance=0.1), _rrf_hit(b, distance=0.2), _rrf_hit(c, distance=0.3)]
+    fused = fuse_rrf(vector_hits, [])
+    assert [h.chunk_id for h in fused] == [a, b, c]
+
+
+def test_fuse_rrf_lexical_only_returns_lexical_order() -> None:
+    a, b = uuid.uuid4(), uuid.uuid4()
+    lexical_hits = [_rrf_hit(a), _rrf_hit(b)]
+    fused = fuse_rrf([], lexical_hits)
+    assert [h.chunk_id for h in fused] == [a, b]
+
+
+def test_fuse_rrf_overlapping_hit_scores_boosted_and_appears_once() -> None:
+    a, b = uuid.uuid4(), uuid.uuid4()
+    vector_hits = [_rrf_hit(a, distance=0.1), _rrf_hit(b, distance=0.2)]
+    lexical_hits = [_rrf_hit(a)]
+    fused = fuse_rrf(vector_hits, lexical_hits)
+    ids = [h.chunk_id for h in fused]
+    assert ids.count(a) == 1
+    # `a` appears in both lists (rank 1 in each) -- its summed score must outrank `b`,
+    # which appears only in the vector list.
+    assert fused[0].chunk_id == a
+
+
+def test_fuse_rrf_both_empty_returns_empty_list() -> None:
+    assert fuse_rrf([], []) == []
+
+
+def test_fuse_rrf_double_top_rank_outranks_single_top_rank() -> None:
+    """A chunk ranked #1 in BOTH lists outranks a chunk ranked #1 in only one list."""
+    a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    vector_hits = [_rrf_hit(a, distance=0.1), _rrf_hit(b, distance=0.2)]
+    lexical_hits = [_rrf_hit(a), _rrf_hit(c)]
+    fused = fuse_rrf(vector_hits, lexical_hits)
+    assert fused[0].chunk_id == a
+
+
+async def test_search_chunks_lexical_finds_rare_term_and_scopes_by_org(
+    session_factory, tenant_engine
+) -> None:
+    """Repository-level test against a REAL Testcontainers Postgres -- exercises the
+    actual GIN index + websearch_to_tsquery/ts_rank SQL (not mockable). Also confirms
+    the generated `content_tsv` column is populated and searchable for a chunk inserted
+    fresh against the already-migrated schema (migration 0021 ran once for the whole
+    Testcontainers session before any test's rows exist)."""
+    org_a, org_b = uuid.uuid4(), uuid.uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(Organization(id=org_a, name="LexOrgA"))
+        session.add(Organization(id=org_b, name="LexOrgB"))
+        await session.flush()
+        doc_a = uuid.uuid4()
+        session.add(Document(id=doc_a, org_id=org_a, title="A"))
+        doc_b = uuid.uuid4()
+        session.add(Document(id=doc_b, org_id=org_b, title="B"))
+
+    rare_chunk_id = await _seed_chunk_with_embedding(
+        session_factory,
+        org_id=org_a,
+        document_id=doc_a,
+        ordinal=0,
+        content="The device shipped with a rare component called Zylophone-9000 attached.",
+    )
+    await _seed_chunk_with_embedding(
+        session_factory,
+        org_id=org_a,
+        document_id=doc_a,
+        ordinal=1,
+        content="A generic paragraph about nothing in particular.",
+        seed=1,
+    )
+    # A chunk in a DIFFERENT org, also containing the rare term -- must never be
+    # returned when searching in org_a's scope (tenant isolation, independent backstop).
+    await _seed_chunk_with_embedding(
+        session_factory,
+        org_id=org_b,
+        document_id=doc_b,
+        ordinal=0,
+        content="Another Zylophone-9000 mention, but in a different org entirely.",
+        seed=2,
+    )
+
+    ctx_a = TenantContext(org_id=org_a)
+    hits = await ingestion_service.search_chunks_lexical(
+        ctx_a, query="Zylophone-9000", document_ids=[doc_a, doc_b], k=10
+    )
+    assert [h.chunk_id for h in hits] == [rare_chunk_id]
+    assert hits[0].distance is None
+
+    # Empty document_ids returns [] immediately, mirroring search_chunks.
+    empty_hits = await ingestion_service.search_chunks_lexical(
+        ctx_a, query="Zylophone-9000", document_ids=[], k=10
+    )
+    assert empty_hits == []
+
+    # Control: org B's own context CAN see its own chunk -- proving the absence above
+    # is the org filter, not e.g. a query bug that returns nothing for anyone.
+    ctx_b = TenantContext(org_id=org_b)
+    control_hits = await ingestion_service.search_chunks_lexical(
+        ctx_b, query="Zylophone-9000", document_ids=[doc_b], k=10
+    )
+    assert len(control_hits) == 1
+
+
+async def test_hybrid_gate_off_never_calls_lexical_search_and_matches_pre_feature_behavior(
+    session_factory, tenant_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HYBRID_SEARCH_ENABLED=False (the default): _retrieve_hits never calls
+    search_chunks_lexical (proven by making it raise if called) and results are
+    identical in count/shape to before this feature existed."""
+    monkeypatch.setattr(settings, "HYBRID_SEARCH_ENABLED", False)
+
+    async def _boom(*args, **kwargs):
+        raise AssertionError(
+            "search_chunks_lexical must never be called when HYBRID_SEARCH_ENABLED=False"
+        )
+
+    monkeypatch.setattr(ingestion_service, "search_chunks_lexical", _boom)
+
+    org_id, doc_id = await _seed_org_and_document(session_factory)
+    for i in range(3):
+        await _seed_chunk_with_embedding(
+            session_factory,
+            org_id=org_id,
+            document_id=doc_id,
+            ordinal=i,
+            content=f"chunk {i}",
+            seed=i,
+        )
+
+    ctx = TenantContext(org_id=org_id)
+    recorder = _RecordingReranker()
+    hits = await retrieval_service._retrieve_hits(
+        ctx,
+        query_vector=_vector(0),
+        scope=[doc_id],
+        model=FAKE_MODEL,
+        k=2,
+        reranker=recorder,
+        query="a query",
+    )
+    assert len(hits) == 2  # unwidened: req.k passed straight to the SQL LIMIT
+    assert recorder.received_candidate_count is None  # reranker.rerank was never called
+
+
+async def test_hybrid_gate_on_finds_lexical_match_pure_vector_search_misses(
+    session_factory, tenant_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The core proof hybrid search exists for. A chunk containing an exact rare term
+    ("Zylophone-9000") is embedded with a vector ORTHOGONAL to the query vector (cosine
+    distance ~1.0 -- would never surface via pure vector kNN at a small k), while decoy
+    chunks are embedded IDENTICAL to the query vector (cosine distance 0.0 -- always win
+    pure vector kNN). First confirms the gate-OFF baseline genuinely misses the target;
+    then confirms gate-ON finds it via the lexical candidate path, fused in via RRF."""
+    org_id, doc_id = await _seed_org_and_document(session_factory)
+    query_vec = _vector(0)
+    target_chunk_id = await _seed_chunk_with_embedding(
+        session_factory,
+        org_id=org_id,
+        document_id=doc_id,
+        ordinal=0,
+        content="The device shipped with a rare component called Zylophone-9000 attached.",
+        seed=1,  # orthogonal to query_vec == _vector(0)
+    )
+    for i in range(3):
+        await _seed_chunk_with_embedding(
+            session_factory,
+            org_id=org_id,
+            document_id=doc_id,
+            ordinal=i + 1,
+            content=f"generic filler paragraph number {i}",
+            seed=0,  # identical to query_vec -- always wins pure vector kNN
+        )
+
+    ctx = TenantContext(org_id=org_id)
+    recorder = _RecordingReranker()
+
+    monkeypatch.setattr(settings, "HYBRID_SEARCH_ENABLED", False)
+    vector_only_hits = await retrieval_service._retrieve_hits(
+        ctx,
+        query_vector=query_vec,
+        scope=[doc_id],
+        model=FAKE_MODEL,
+        k=1,
+        reranker=recorder,
+        query="Zylophone-9000",
+    )
+    assert target_chunk_id not in [h.chunk_id for h in vector_only_hits]
+
+    monkeypatch.setattr(settings, "HYBRID_SEARCH_ENABLED", True)
+    monkeypatch.setattr(settings, "HYBRID_CANDIDATE_K", 5)
+    hybrid_hits = await retrieval_service._retrieve_hits(
+        ctx,
+        query_vector=query_vec,
+        scope=[doc_id],
+        model=FAKE_MODEL,
+        k=1,
+        reranker=recorder,
+        query="Zylophone-9000",
+    )
+    assert target_chunk_id in [h.chunk_id for h in hybrid_hits]

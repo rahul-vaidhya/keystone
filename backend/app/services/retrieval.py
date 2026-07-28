@@ -89,6 +89,44 @@ def assemble_context(query: str, hits: list[ChunkHit]) -> RetrievalSearchRespons
     return RetrievalSearchResponse(query=query, results=results)
 
 
+def fuse_rrf(
+    vector_hits: list[ChunkHit], lexical_hits: list[ChunkHit], *, k: int = 60
+) -> list[ChunkHit]:
+    """Reciprocal Rank Fusion — combines a vector-kNN ranked list and a lexical
+    (native-Postgres-full-text) ranked list into one ranked, deduplicated list (hybrid
+    search, gated by ``HYBRID_SEARCH_ENABLED``). Standard RRF: each hit's fused score is
+    ``sum(1 / (k + rank))`` over every ranked list it appears in, where ``rank`` is its
+    1-indexed position within that list — a chunk present in both lists sums both
+    contributions, so a chunk ranked highly in BOTH lists outranks one ranked highly in
+    only one. Dedup key is ``chunk_id``: when a chunk appears in both lists, the
+    VECTOR-hit ``ChunkHit`` instance is kept (it carries a real ``distance``; the
+    lexical-only instance's ``distance`` is always ``None``), carrying forward whichever
+    instance's ``rerank_score`` is set (in practice neither will be — fusion always runs
+    BEFORE reranking in the pipeline). Pure function: no SQL, no side effects, no
+    truncation — the caller (``_search_hits``) decides the final candidate/result size,
+    same as it always has."""
+    scores: dict[uuid.UUID, float] = {}
+    for ranked_list in (vector_hits, lexical_hits):
+        for rank, hit in enumerate(ranked_list, start=1):
+            scores[hit.chunk_id] = scores.get(hit.chunk_id, 0.0) + 1.0 / (k + rank)
+
+    hit_by_id: dict[uuid.UUID, ChunkHit] = {}
+    for hit in [*vector_hits, *lexical_hits]:
+        current = hit_by_id.get(hit.chunk_id)
+        if current is None:
+            hit_by_id[hit.chunk_id] = hit
+        elif current.distance is None and hit.distance is not None:
+            # A lexical-only instance was recorded first (fusion called with lexical
+            # hits before vector hits) — replace it with the vector instance, carrying
+            # forward whichever instance already had a rerank_score.
+            rerank_score = (
+                current.rerank_score if current.rerank_score is not None else hit.rerank_score
+            )
+            hit_by_id[hit.chunk_id] = hit.model_copy(update={"rerank_score": rerank_score})
+
+    return sorted(hit_by_id.values(), key=lambda hit: scores[hit.chunk_id], reverse=True)
+
+
 class RetrievalService:
     async def search(
         self,
@@ -167,10 +205,14 @@ class RetrievalService:
         corpus lacks enrichment or returns no results. ``search_k`` sizes the chunk-level
         kNN ``LIMIT`` (the reranker-widened candidate pool when reranking is on, else
         plain ``k``); ``section_k`` sizes the coarse section-level pass — unwidened by the
-        reranker, matching pre-reranker behavior exactly."""
+        reranker, matching pre-reranker behavior exactly. Every chunk-level candidate
+        call goes through ``_vector_and_maybe_hybrid_search`` (below), which ALSO widens
+        and fuses in a lexical candidate list when ``HYBRID_SEARCH_ENABLED`` — orthogonal
+        to which strategy (flat/hierarchical) sourced ``search_k``, and orthogonal to the
+        reranker, exactly like the reranker is orthogonal to hierarchical."""
         if not settings.HIERARCHICAL_RETRIEVAL_ENABLED:
-            return await ingestion_service.search_chunks(
-                ctx, query_vector=query_vector, document_ids=scope, model=model, k=search_k
+            return await self._vector_and_maybe_hybrid_search(
+                ctx, query, query_vector, scope, model, search_k
             )
 
         # Coarse pass: search section embeddings.
@@ -188,19 +230,14 @@ class RetrievalService:
                 org_id=str(ctx.org_id),
                 scope_count=len(scope),
             )
-            return await ingestion_service.search_chunks(
-                ctx, query_vector=query_vector, document_ids=scope, model=model, k=search_k
+            return await self._vector_and_maybe_hybrid_search(
+                ctx, query, query_vector, scope, model, search_k
             )
 
         # Fine pass: search chunks within those sections.
         section_ids = [h.section_id for h in section_hits]
-        hits = await ingestion_service.search_chunks(
-            ctx,
-            query_vector=query_vector,
-            document_ids=scope,
-            model=model,
-            k=search_k,
-            section_ids=section_ids,
+        hits = await self._vector_and_maybe_hybrid_search(
+            ctx, query, query_vector, scope, model, search_k, section_ids=section_ids
         )
         if not hits:
             # Hierarchical filtered to zero results — fall back to flat.
@@ -209,8 +246,8 @@ class RetrievalService:
                 org_id=str(ctx.org_id),
                 section_count=len(section_hits),
             )
-            return await ingestion_service.search_chunks(
-                ctx, query_vector=query_vector, document_ids=scope, model=model, k=search_k
+            return await self._vector_and_maybe_hybrid_search(
+                ctx, query, query_vector, scope, model, search_k
             )
 
         # Hierarchical succeeded.
@@ -228,6 +265,60 @@ class RetrievalService:
             sections=[{"heading": h.heading, "topics": h.topics} for h in section_hits],
         )
         return hits
+
+    async def _vector_and_maybe_hybrid_search(
+        self,
+        ctx: TenantContext,
+        query: str,
+        query_vector: list[float],
+        scope: list[uuid.UUID],
+        model: str,
+        k: int,
+        *,
+        section_ids: list[uuid.UUID] | None = None,
+    ) -> list[ChunkHit]:
+        """Sources the vector-kNN candidate list (flat or hierarchical fine-pass, per the
+        caller), and — only when ``HYBRID_SEARCH_ENABLED`` — ALSO sources a lexical
+        (native Postgres full-text) candidate list over the same scope/``section_ids``,
+        then fuses both via ``fuse_rrf``. Widens EACH list independently to
+        ``max(k, HYBRID_CANDIDATE_K)`` before fusion (mirrors the reranker's
+        ``max(k, RERANK_CANDIDATE_K)`` widening pattern) — applied on top of whatever
+        ``k`` the caller already passed (which may itself already be
+        reranker-widened), so when both reranking AND hybrid are on the effective
+        candidate pool is ``max(k, RERANK_CANDIDATE_K, HYBRID_CANDIDATE_K)``. ``fuse_rrf``
+        itself never truncates; this method truncates the FUSED list back to the ``k`` it
+        received (not the widened pool) so the "returns at most k" contract every prior
+        ``ingestion_service.search_chunks(..., k=...)`` call site already guaranteed keeps
+        holding — when reranking is also on, that ``k`` is itself the reranker-widened
+        ``candidate_k``, so the reranker still receives exactly ``candidate_k`` candidates
+        to rerank+truncate to ``final_k``, unchanged. Gate OFF (default): a single vector
+        call at exactly ``k``, byte-identical to every
+        ``ingestion_service.search_chunks(...)`` call site this replaces."""
+        vector_k = max(k, settings.HYBRID_CANDIDATE_K) if settings.HYBRID_SEARCH_ENABLED else k
+        vector_hits = await ingestion_service.search_chunks(
+            ctx,
+            query_vector=query_vector,
+            document_ids=scope,
+            model=model,
+            k=vector_k,
+            section_ids=section_ids,
+        )
+        if not settings.HYBRID_SEARCH_ENABLED:
+            return vector_hits
+
+        lexical_k = max(k, settings.HYBRID_CANDIDATE_K)
+        lexical_hits = await ingestion_service.search_chunks_lexical(
+            ctx, query=query, document_ids=scope, k=lexical_k, section_ids=section_ids
+        )
+        # Deliberately no logger call on this path: `app.services.retrieval`'s module
+        # logger is SHARED with hierarchical retrieval's own logging, and
+        # `cache_logger_on_first_use=True` (config/logging.py) permanently locks that
+        # ONE shared proxy's level in at whatever it was on its first-ever call —
+        # adding a call here that fires from a HYBRID test in test_retrieval.py (which
+        # sorts alphabetically before test_retrieval_hierarchical.py) would lock the
+        # logger at INFO before that file's own DEBUG-level log-capture test runs,
+        # breaking it. See memory.md's structlog `capture_logs()` gotcha.
+        return fuse_rrf(vector_hits, lexical_hits)[:k]
 
 
 retrieval_service = RetrievalService()
