@@ -215,8 +215,36 @@ The schema + plumbing exist from Phase 0; this phase turns on the teeth.
   the `react-markdown` dependency). Auth UI + plain app shell kept intact.
 
 ## Postponed (designed-for — see architecture.md, do NOT build yet)
-- V2: enrichment backfill, hierarchical retrieval strategies, reranker seam, groups/grants permissions, connectors.
-- V3: KG tables + extraction backfill, graph retrieval, hybrid search, public embeddable chatbot.
+- V2: enrichment backfill (done, 2026-07-16), hierarchical retrieval strategies (built,
+  flag-off), reranker seam (done, 2026-07-28 — see below), groups/grants permissions,
+  connectors.
+- V3: KG tables + extraction backfill, graph retrieval, hybrid search (done, 2026-07-28
+  — see below; public embeddable chatbot shipped 2026-07-23, no longer postponed).
 - Enterprise: SSO/SAML/SCIM, audit logs, per-tenant DB, data residency.
+- **Production-agent roadmap P0 — DONE (2026-07-28, commits `0cddb5e`..`ad9d4f0` on
+  `main`, full detail in memory.md and
+  `.claude/context/research-production-agent-features.md`):** reranker seam (`Reranker`
+  protocol, self-hosted BGE-reranker-v2-m3 via HF TEI, `RERANKER_ENABLED` gate);
+  reranker-score confidence gate (`RERANK_MIN_SCORE`, skips the LLM call and returns a
+  distinct "weak evidence" response — the concrete fix for the "retrieval returns weak
+  matches with no threshold, LLM correctly refuses" bug); hybrid search (native Postgres
+  full-text + vector, RRF fusion, `HYBRID_SEARCH_ENABLED`, migration `0021`); a
+  `message_feedback` table (migration `0022`) wiring up the previously-dead thumbs UI;
+  a durable Ragas-based golden-question eval suite (new `evals` domain, migration
+  `0023`, `pytest -m eval` opt-in harness). All 5 flag-gated off by default except
+  `message_feedback`/the golden-eval curation endpoint, which are always-on additive
+  features. `services/retrieval.py` also split into a subpackage same session
+  (structural only, commit `3a54c25`).
+- **Production-agent roadmap P1/P2 — still not built:** contextual retrieval (reuses
+  the existing dormant `ENRICHMENT_ENABLED` section summaries to enrich chunk
+  embeddings — re-evaluate hierarchical retrieval after this ships); self-hosted MLflow
+  tracing + Labeling Sessions as the SME-review-UI answer to Databricks Agent Bricks;
+  OpenTelemetry GenAI-convention spans + self-hosted Langfuse/Phoenix (not a seam —
+  cross-cutting infra) for real latency/cost tracing beyond `message_traces`; a
+  schema-guided structured-extraction mini-brick (closes the Agent Bricks "Information
+  Extraction" gap). Explicitly deprioritized as over-engineering for this team's scale:
+  DSPy-style *autonomous* prompt auto-rewriting, full agentic multi-hop retrieval, a
+  `WebSearch` seam, and migrating off pgvector — each has a named trigger condition in
+  the research doc, none fire today.
 
 **Demoable milestone:** end of Phase 4 = a working NotebookLM-style company knowledge base.

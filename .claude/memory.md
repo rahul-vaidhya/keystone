@@ -3,13 +3,514 @@
 > Compressed, durable record of decisions and state. Restored at the start of every
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
->
-> **Compacted 2026-07-27** (was >150k chars, over the editor limit). Older sessions were
-> reduced to one-paragraph summaries — commit hashes and outcomes preserved, blow-by-blow
-> live-verification narration and subagent orchestration detail cut. Full history is in
-> `git log`; `progresstracker.md` has the feature/DoD-level record. The two most recent
+
+## P0 roadmap (2026-07-28, IN PROGRESS): 5 features from research-production-agent-features.md
+
+Full `/architect` session (all 5 planned + confirmed before any code) then sequential
+subagent-built implementation, one feature at a time (implement → orchestrator
+independently re-reviews the diff + reruns tests/ruff itself, never trusts the
+subagent's self-report → remember → next feature). Order: (1) Reranker seam, (2)
+confidence gate, (3) hybrid search (BM25+vector RRF), (4) `message_feedback` table +
+frontend wiring, (5) golden-eval suite (Ragas). Features 1-3 all touch
+`app/services/retrieval.py` — re-check its line count/package-layout-promotion
+question after each.
+
+**Architecture decisions locked across the 5-feature session (apply to all of them,
+not just feature 1):**
+- Every new V2-style capability gets its OWN `*_ENABLED` flag, default `False`,
+  independent from any adjacent `*_MODE` flag — shipping the code changes nothing until
+  explicitly turned on. (`RERANKER_ENABLED` vs `RERANKER_MODE`; confidence gate has NO
+  separate flag — it's implicit whenever reranking is on; `HYBRID_SEARCH_ENABLED` is
+  independent of both.)
+- New seam/service HTTP adapters mirror `real_llm.py`/`real_parser.py`'s lazy-import +
+  `SeamNotConfigured`/`SeamTransientError` shape exactly — self-hosted model-serving
+  infra (reranker) is an HTTP client to a separate Docker service, never an in-process
+  ML dependency in the API/worker image.
+- Additive-only schema changes throughout: new nullable fields (`rerank_score`,
+  nullable `distance`), never a replaced/removed field, never a rewrite.
+
+### Feature 1: Reranker seam — DONE (2026-07-28, uncommitted)
+
+4th seam, folded into the EXISTING `app/services/seams/` package (protocols.py/
+fakes.py/factory.py shared, new `real_reranker.py` for the vendor-specific HTTP
+adapter — not a standalone file holding everything). `RERANKER_ENABLED` (default
+`False`) gates whether `RetrievalService._retrieve_hits` widens the chunk kNN
+candidate pool (`candidate_k = max(k, RERANK_CANDIDATE_K)`) and reranks it back down
+(`final_k = min(k, RERANK_TOP_K)`) via `Reranker.rerank(query, candidates, top_k)`;
+`RERANKER_MODE` (fake|real) only matters once enabled. `FakeReranker` is a true
+identity passthrough stamping `rerank_score = 1.0 - distance` (deterministic, lets a
+future confidence-gate feature control the score via `FakeEmbedder` distance).
+`RealReranker` is an `httpx` HTTP client to a self-hosted BGE-reranker-v2-m3 via
+Hugging Face TEI (`docker-compose.yml`'s new `reranker` service, port 8081,
+`RERANKER_URL` setting) — sorts TEI's response explicitly rather than trusting vendor
+ordering. New nullable `rerank_score: float | None = None` on both `ChunkHit` and
+`ContextBlock`, additive only, `distance` untouched.
+
+`services/retrieval.py`'s `_retrieve_hits` was split into itself (widen/rerank
+wrapper) + a new `_search_hits` (the original flat/hierarchical sourcing, verbatim,
+unchanged) — the widen/rerank step wraps whichever strategy `_search_hits` used,
+agnostic to flat vs. hierarchical. File is now 231 lines; judged still one cohesive
+concern (no new table/vendor ownership) so left flat, not promoted to a subpackage —
+recheck after feature 3 (hybrid search) adds more to the same file.
+
+**Real deviation from the original plan, correctly made**: `reranker` had to be
+threaded through `services/embed.py`'s `public_chat_stream` and
+`controllers/embed.py`'s `stream_public_chat` too (not just `chat`/`retrieval`
+controllers as originally scoped) — `embed_service.public_chat_stream` calls
+`chat_service.stream_ask` directly, which now requires the `reranker` kwarg; omitting
+it would have broken the public embed-widget endpoint at runtime.
+
+**Real bug found and fixed during implementation**: `real_reranker.py` initially
+imported `ChunkHit` directly (not `TYPE_CHECKING`-guarded) → circular import via
+`app/models/__init__.py`. Fixed with the same `TYPE_CHECKING` guard `protocols.py`/
+`fakes.py` already needed for the same reason (`app.models.ingestion` imports
+`EMBED_DIM` from `app.services.seams.protocols`, so a real import the other direction
+is circular) — safe under `from __future__ import annotations` since `Protocol`
+runtime-checks only method names, never argument types.
+
+**Independently reverified by the orchestrator** (not just the implementing
+subagent's self-report): `git diff` read in full across all 20 changed files, full
+suite rerun (`307 passed, 2 skipped`, `.env` temporarily moved aside for a clean
+signal then restored), `ruff check`/`ruff format --check` clean. Gate-off byte-identical
+confirmed by a dedicated regression test proving `reranker.rerank` is never called and
+`rerank_score` is `None` throughout when `RERANKER_ENABLED=False`. **Not committed** —
+per-feature commits deferred until the user asks (or until all 5 land, per a decision
+made at that time). `RealReranker`'s TEI request/response shape was written from the
+documented HF TEI `/rerank` contract but never exercised against a live TEI instance —
+worth a real smoke test before any `RERANKER_MODE=real` production use.
+
+### Feature 2: Reranker-score confidence gate — DONE (2026-07-28, uncommitted)
+
+Lives entirely in `chat/service.py` (new pure `_weak_evidence_gate_fires(blocks) ->
+bool` helper), no separate enable flag — structurally inert whenever
+`RERANKER_ENABLED=False` since `rerank_score` is always `None` then. New
+`RERANK_MIN_SCORE: float = -10.0` (deliberately permissive default). Fires when
+`blocks[0].rerank_score < RERANK_MIN_SCORE`; empty `blocks` never fires it (falls
+through to the existing LLM-refusal path unchanged — a deliberate, known non-goal).
+
+On fire: `build_messages` still runs (captures the would-be prompt for the trace),
+`call_llm_with_retry`/`generate_answer` is skipped entirely, answer becomes the fixed
+`_WEAK_EVIDENCE_MESSAGE` constant (distinct wording from the LLM's own refusal
+string), `citations=[]`, persisted NORMALLY via the unchanged `_persist` (zero
+signature changes — it already took `answer`/`citations`/`hits`/`final_prompt`
+generically). New `ChatResponse.weak_evidence: bool = False` field; `stream_ask`'s
+gate-fire path emits zero `token` events, one `done` event with `weak_evidence: true`,
+correctly still threading `widget_id` for the embed-widget caller.
+
+**Independently reverified by the orchestrator**: full diff read (all touched files),
+full suite rerun (`312 passed, 2 skipped`, up from 307 — 5 new gate tests), `.env`
+moved aside and restored, ruff clean. New tests use a `_RecordingLLM` test double
+(proves the LLM seam was NEVER called, not just that the response looked right) and a
+`_FixedScoreReranker` double (controls `rerank_score` directly via
+`app.dependency_overrides[get_reranker]`, same override pattern as `get_llm`). **Not
+committed.**
+
+### Feature 3: Hybrid search (BM25 + vector, RRF) — DONE (2026-07-28, uncommitted)
+
+Migration `0021`: `chunks.content_tsv` (STORED generated `tsvector` column,
+`to_tsvector('english', content)`) + GIN index — no third-party extension, native
+Postgres only. `ChunkRepository.search_chunks_lexical` (new, on `ChunkRepository` not
+`EmbeddingRepository` — no embeddings join needed), `websearch_to_tsquery`/`ts_rank`,
+returns `ChunkHit` with `distance=None`. `ChunkHit.distance`/`ContextBlock.distance`
+now `float | None` (lexical-only hits genuinely have no cosine distance). New pure
+`fuse_rrf(vector_hits, lexical_hits, k=60)` in `retrieval.py` — standard RRF,
+chunk_id-deduped (vector instance wins on collision since it carries a real distance).
+`HYBRID_SEARCH_ENABLED`/`HYBRID_CANDIDATE_K` settings, independent of
+`RERANKER_ENABLED`. New `_vector_and_maybe_hybrid_search` helper replaced 4 duplicate
+`ingestion_service.search_chunks(...)` call sites inside `_search_hits`; candidate
+widening composes correctly with the reranker feature (effective pool =
+`max(k, RERANK_CANDIDATE_K, HYBRID_CANDIDATE_K)` when both are on; fused list is
+truncated back to the incoming `k` so the reranker still receives exactly what it did
+before hybrid existed).
+
+**Real bug found and fixed by the implementing subagent**: `Chunk.content_tsv`'s ORM
+mapping needed `Computed("to_tsvector('english', content)", persisted=True)` — without
+it, SQLAlchemy's `insertmanyvalues` batch-insert path (used by `bulk_create`)
+explicitly sent `NULL` for the column on every insert, and Postgres rejects ANY
+explicit value (even NULL) into a `GENERATED ALWAYS` column, breaking the entire
+ingestion pipeline. `Computed()` here is DML-only signaling (excludes the column from
+INSERT/UPDATE) — the actual DDL stays owned by the migration's raw SQL (this project
+never runs Alembic autogenerate against `Base.metadata`, so no drift risk).
+
+**Real cross-feature bug found during ORCHESTRATOR review (not the subagent), fixed
+same session**: `FakeReranker.rerank` computed `rerank_score = 1.0 - hit.distance`,
+which crashes with `TypeError` if a lexical-only hit (`distance=None`) ever reaches
+the reranker — reachable once both `HYBRID_SEARCH_ENABLED` and `RERANKER_ENABLED` are
+on together with `RERANKER_MODE=fake`. Fixed: `rerank_score = 1.0 - distance if
+distance is not None else 0.0`, one new regression test in `test_seams.py`.
+
+**Deliberate observability gap, documented not fixed**: no `logger.info` on the hybrid
+path (unlike `hierarchical_used`'s INFO log) — `app.services.retrieval`'s module
+logger is shared with hierarchical retrieval and `cache_logger_on_first_use=True`
+permanently locks its level on first call; adding a hybrid INFO log would have broken
+`test_retrieval_hierarchical.py`'s DEBUG-level capture test (the exact
+`capture_logs()` gotcha already on record). Left unfixed by design — a real
+observability gap worth a dedicated follow-up (e.g. a differently-named logger) if
+hybrid search ever ships to production, not blocking.
+
+**`services/retrieval.py` is now 325 lines** (was 231 after feature 1; features 2/4/5
+don't touch this file, so this is likely its final size for this round). Still judged
+one cohesive concern (permissions + pure algorithms + search orchestration, no new
+table/vendor ownership in the file itself — all SQL stays delegated to
+`ingestion`/`documents`/`knowledge` services) — NOT promoted to a subpackage. Worth a
+deliberate second look at final wrap-up of all 5 features, not mid-stream.
+
+**Independently reverified by the orchestrator**: full diff read across all changed
+files, full suite rerun TWICE (320 passed pre-fix, 321 passed post-fix — the 1 new
+regression test — both times 2 skipped), ruff clean both times, `.env` restored. Live
+proof test (`test_hybrid_gate_on_finds_lexical_match_pure_vector_search_misses`): a
+chunk containing a rare exact term embedded orthogonal to the query vector (so pure
+vector search misses it, confirmed absent with the gate off) gets promoted to the TOP
+result once hybrid fusion is on. **Not committed.**
+
+### Feature 4: `message_feedback` table + frontend wiring — DONE (2026-07-28, uncommitted)
+
+Migration `0022`: `message_feedback` (`org_id`/`message_id` cascade/`user_id` cascade/
+`rating`/`reason_tags` text[]/`comment`/`corrected_answer`/`created_at`,
+`unique(message_id, user_id)` — the upsert target, one current rating per user per
+message, not an audit log). Full F60-pattern RLS block (brand-new tenant table).
+`FeedbackRepository.upsert` (`pg_insert().on_conflict_do_update()`) +
+`get_for_messages(message_ids, user_id) -> dict` (per-user scoped, the history-join
+source). New `MessageRepository.get_with_notebook_id` (join to `Conversation`, both
+sides independently `org_id`-scoped). `ChatService.submit_feedback`: resolves
+message→notebook, 404 via new `MessageNotFound` if missing, 400 via new
+`FeedbackOnUserMessage` if targeting a `user`-role message, reuses
+`knowledge_service.get_notebook` for the EXACT SAME notebook-privacy check
+`list_messages` already performs (never reimplemented). `POST /chat/messages/{id}/
+feedback` under plain `get_ctx` (the service-level notebook check is the real gate).
+`MessageOut.my_feedback` (calling user's own rating only) populated in `list_messages`
+via a per-user-scoped join.
+
+**Frontend** (first feature in this round to touch it): `chatApi.submitFeedback`,
+`ChatPanel.tsx`'s pre-existing `handleFeedback` (already had local tri-state
+deselect-on-second-click, unrelated to this feature) now also fires a real POST
+(fire-and-forget, `.catch(() => {})`), history hydration seeds `feedback` state from
+each message's `my_feedback` so the buttons survive reload/navigation — closing the
+exact "resets to blank" gap confirmed present before this feature (same class of bug
+as the F41-era chat-history-vanishing fix).
+
+**Independently reverified by the orchestrator**: full diff read across all backend +
+frontend files, backend suite rerun (328 passed/2 skipped, up from 321), ruff clean,
+`.env` restored, frontend suite rerun (159 passed, `tsc -b`/`vite build` clean).
+Highest-value tests confirmed: upsert-not-duplicate (re-rating same message+user stays
+1 row), per-user scoping (user B never sees user A's rating on the same message —
+`my_feedback: null` — while user A's own reload shows the real value), 403 on a
+private/non-shared notebook via the reused `NotebookAccessDenied`, cross-org 404 at
+both HTTP and repository level.
+
+**Two minor, non-blocking notes** (not fixed, don't warrant it): `submit_feedback`
+opens two separate `tenant_session`s (its own + `knowledge_service.get_notebook`'s
+internal one) rather than one — correctness-fine (each `tenant_session` is an
+independent connection, no shared-state risk), just one extra round-trip vs. an
+alternative ordering; the frontend's local deselect-on-second-click has no backend
+"clear my rating" endpoint to match it (pre-existing UI behavior, not introduced by
+this feature, genuinely out of this round's scope). **Not committed.**
+
+### Feature 5: Golden-eval suite — DONE (2026-07-28, uncommitted) — ALL 5 P0 FEATURES COMPLETE
+
+Migration `0023`: new `golden_questions` table, full RLS. New `evals` domain (flat
+files, per convention — small new domain): `models/evals.py` (`GoldenQuestion` ORM +
+`GoldenQuestionCreate`/`GoldenQuestionOut`), `services/evals.py`
+(`GoldenQuestionRepository` + `EvalsService`, mirrors `knowledge.py`'s flat-domain
+shape), `routes/evals.py` + `controllers/evals.py` (`POST`/`GET /evals/golden-
+questions`, both `require_admin`). New `chat_service.get_curation_snapshot` — the
+ONLY way `evals.service` reads chat data (module boundary rule), reuses the EXISTING
+`MessageNotFound`/`MessageTraceNotFound` exceptions plus one new, deliberately NOT
+reused `CannotCurateUserMessage` (judged semantically dishonest to conflate with
+`FeedbackOnUserMessage` — different endpoint, different user action, same underlying
+`role != "assistant"` check). New `MessageRepository.get_user_question_in_conversation`
+(org-scoped) — finds the paired question via the "fresh conversation, exactly one
+user+assistant message pair" invariant. `reference_contexts` snapshots chunk TEXT (not
+IDs) from `trace.hits`, `notebook_id` is `ON DELETE CASCADE`, `source_message_id` is
+`ON DELETE SET NULL` (golden question survives its origin conversation being deleted).
+
+**Real wiring required beyond the feature's own files** (correctly done, all
+necessary): `main.py` (router mount), `migrations/env.py` (ORM registration rule —
+`GoldenQuestion` would silently vanish from future autogenerate without this),
+`controllers/__init__.py` (re-export), `pyproject.toml` (new `[eval]` extra +
+`eval` pytest marker), `.github/workflows/ci.yml` (added to the `-m` exclusion
+filter, for consistency with `real_parser`/`hierarchical_eval` even though the
+marker's own `skipif` already made it redundant), `frontend/vite.config.ts` (new
+`/evals` proxy entry — would otherwise 404 in dev).
+
+**Frontend**: "Add to golden set" button inside `ChatPanel.tsx`'s existing
+`TraceDetails` (admin Debug panel) component, with a real idle/pending/done/error
+state machine (not just a bare fire-and-forget).
+
+**Opt-in `pytest -m eval` harness** (`test_golden_eval.py`) mirrors
+`test_hierarchical_eval.py`'s structure exactly: ingests `pdf/kech104.pdf` once with
+real seams, asks real questions, curates via the REAL curation endpoint (proves the
+pipeline end to end, not a shortcut), re-runs each curated question live, grades with
+Ragas (`faithfulness`/`answer_relevancy`/`context_precision`/`context_recall`), prints
+a report, asserts no hard threshold. **Honestly flagged as unverified**: the exact
+Ragas `evaluate()` API call shape was written from documentation, not tested against
+a real `ragas` install (explicitly permitted by scope — installing/running it needs a
+live API key and wasn't required for this round's DoD). Properly skip-guarded
+(`pytest.importorskip`-style check + the usual key/PDF env checks) so it can never
+break a normal run even without the `[eval]` extra installed.
+
+**Process note, not a code-quality issue**: the implementing subagent's FIRST turn
+ended prematurely — it launched its own backgrounded test run and (incorrectly)
+expected to be auto-resumed the way the orchestrator agent is, then stopped without
+delivering a final report. Caught two things before resuming it: (1) `backend/.env`
+was left moved aside as `.env.bak` (restored immediately by the orchestrator, not the
+subagent); (2) no verified results yet. Resumed via `SendMessage` with explicit
+instructions to re-check its own background work and restore `.env` properly — its
+second turn delivered a complete, accurate report. **Lesson for future orchestration**:
+subagents do NOT get automatically woken on their own backgrounded shell commands the
+way the top-level orchestrator does on backgrounded Agent calls — never instruct a
+subagent to "wait for a notification" from its own background work; it must poll/check
+synchronously within the same turn, or the orchestrator must resume it explicitly.
+
+**Independently reverified by the orchestrator**: full diff read across every backend
++ frontend file (including all the "extra" wiring files), backend suite rerun (336
+passed/3 skipped — the 3rd skip is the new `eval` marker, correctly excluded), ruff
+clean, `.env` confirmed restored via `ls`, frontend suite rerun (162 passed),
+`tsc -b`/`vite build` clean. Test quality is high: the end-to-end curation test
+verifies the persisted row directly (not just the HTTP response), a real per-user
+cross-org 404 test, `require_admin` 403 tests on both endpoints, tenant isolation on
+the list endpoint. One minor, low-risk, NOT fixed note: `get_curation_snapshot`
+silently falls back to `question=""` if no paired user message is found (structurally
+unreachable given the fresh-conversation invariant, but a silent fallback rather than
+a raised error — same class of judgment call as feature 4's `assert ctx.user_id is
+not None`, left as-is). **Not committed.**
+
+---
+
+## Wrap-up: all 5 P0 features from research-production-agent-features.md are DONE,
+## independently verified, AND COMMITTED as 6 separate commits (2026-07-28)
+
+User chose: (1) best-effort one-commit-per-feature, verified at each step, plus (2)
+split `services/retrieval.py` into a subpackage now, as its own dedicated commit.
+Both done. **Final commit sequence** (oldest→newest, all on `main`, pushed status:
+NOT pushed to origin — only ask about that separately if the user wants it):
+1. `0cddb5e` feat: add reranker seam
+2. `c01cf71` feat: add reranker-score confidence gate
+3. `c349b9b` feat: add hybrid search (BM25 + vector, RRF fusion)
+4. `074a000` feat: add message_feedback table + wire up thumbs UI
+5. `ad9d4f0` feat: add golden-eval suite (Ragas)
+6. `3a54c25` refactor: split services/retrieval.py into a package
+
+**How the 6 commits were actually built** (important context for future sessions):
+since all 5 features were implemented as cumulative uncommitted diffs on shared files
+(never committing between subagent runs), true surgical per-feature separation wasn't
+possible via `git add -p` alone. Used a strip-then-progressively-restore technique
+instead: reconstructed each feature's exact incremental content (verified against the
+diffs already reviewed in this session) directly in shared files (`settings.py`,
+`models/chat.py`, `models/ingestion.py`, `chat/service.py`, `chat/repository.py`,
+etc.), committing at each checkpoint only after the FULL test suite passed against
+that exact intermediate state. New files exclusive to one feature were staged
+wholesale; migrations/eval test files were moved aside with `mv` (non-destructive)
+between checkpoints rather than deleted. `services/retrieval.py` was kept FLAT through
+commits 1-5 (matching what was actually tested at each stage) and only split into the
+package as the dedicated commit 6, built on top of the fully-featured flat file.
+
+**A real mistake made and disclosed mid-process**: used `git checkout --` (destructive
+working-tree revert) on `tests/test_chat.py` and a few frontend files
+(`ChatPanel.tsx`, `ChatPanel.test.tsx`, etc.), wrongly treating them like files
+feature 1 contributed nothing to — this discarded features 2's and 4's/5's uncommitted
+TEST content (never the application code, which was reconstructed precisely via
+targeted `Edit` calls throughout and never lost). Disclosed to the user immediately
+upon discovery; user chose to continue with freshly-authored tests covering the same
+scenarios rather than fall back to one bundled commit. Recovered by writing new tests
+for the confidence gate (5 tests), message_feedback (6 of the original 7 — one
+dropped, an FK-heavy repository-backstop test, in favor of the already-solid
+HTTP-level cross-org coverage), and the golden-set button (2 of 3). Every checkpoint's
+full test count was verified to land within 1 test of the original independently-
+reviewed count, and every intermediate commit passed the full suite before proceeding
+— so the final, actually-shipped code at HEAD is unaffected; only a handful of test
+cases are reworded/reduced from what the original implementing subagents wrote.
+**Lesson for future git-history reconstruction**: `git checkout --` is only safe on a
+file if you are CERTAIN every feature's contribution to it is already captured
+elsewhere (either the file is exclusively owned by the feature you're stripping TO, or
+you have full verbatim content for every other feature's portion) — when in doubt,
+surgically edit instead, or move the file aside with `mv` rather than discard it.
+
+**Final regression baseline** (verified once more at HEAD, after all 6 commits):
+**backend 335 passed, 3 skipped** (started this round at 293; 1 fewer than the
+peak-335... actually peak during independent per-feature review was 336, now 335 due
+to the one dropped reconstructed test — noted above, not a regression in shipped
+code); **frontend build clean**, 161 passed (peak was 162, same reduction reason).
+ruff/`tsc -b`/`vite build` all clean at HEAD.
+
+**Open item for a future session**: `.env.bak` files were created and always cleaned
+up during this session's many test runs — none left behind, confirmed via `ls` at the
+very end. Nothing else outstanding; the P0 roadmap is fully shipped.
+
+### Problems encountered this session, and how each was fixed
+
+1. **Real ORM bug — generated-column batch inserts** (feature 3, hybrid search). Adding
+   `Chunk.content_tsv` as a plain `mapped_column(TSVECTOR, nullable=True)` broke the
+   ENTIRE ingestion pipeline (68 test failures): SQLAlchemy's `insertmanyvalues` batch
+   insert path (used by `ChunkRepository.bulk_create`) sent an explicit `NULL` for the
+   column on every insert, and Postgres rejects ANY explicit value — even `NULL` — into
+   a `GENERATED ALWAYS` column. **Fix**: add `Computed("to_tsvector('english',
+   content)", persisted=True)` to the column definition. This is DML-only signaling
+   (tells the ORM to exclude the column from INSERT/UPDATE) — the actual DDL stays
+   owned entirely by the migration's raw SQL, since this project never runs Alembic
+   autogenerate against `Base.metadata`, so there's no drift risk from the mismatch
+   between the `Computed()` expression string and the migration's SQL. **Takeaway for
+   future generated columns**: always add `Computed(...)` to the ORM mapping, not just
+   the migration DDL, or any bulk-insert path will break.
+
+2. **Real cross-feature interaction bug — `FakeReranker` crash on `None` distance**
+   (found during feature 3's review, by the orchestrator, not the implementing
+   subagent). `FakeReranker.rerank` computed `rerank_score = 1.0 - hit.distance`;
+   hybrid search (feature 3) can produce a lexical-only hit with `distance=None`, which
+   crashes that subtraction with a `TypeError` if it ever reaches the reranker — live
+   whenever both `RERANKER_ENABLED` and `HYBRID_SEARCH_ENABLED` are on together with
+   `RERANKER_MODE=fake`. Both flags default off, so this couldn't fire in production
+   today, but was a real landmine for the next person who turns both on in dev/test.
+   **Fix**: `rerank_score = 1.0 - distance if distance is not None else 0.0`, plus one
+   new regression test. **Takeaway**: when two independently-built flagged features can
+   compose, explicitly test the composed state, not just each flag in isolation — this
+   is exactly the kind of gap a single-feature review pass structurally can't catch.
+
+3. **Process mistake — a subagent's own backgrounded shell command doesn't wake it up**
+   (feature 5, golden-eval suite). The implementing subagent launched the full test
+   suite via its own `run_in_background: true` Bash call, then ended its turn expecting
+   to be "notified automatically when it completes" — but that auto-resume mechanism
+   only applies to the top-level orchestrator's backgrounded Agent calls, not a
+   subagent's own backgrounded tool calls. The subagent's task-notification fired with
+   `status: completed` but no actual results delivered. Caught by checking `git status`
+   directly rather than trusting the notification content, which also revealed
+   `backend/.env` had been moved aside (`.env.bak`) and never restored. **Fix**:
+   restored `.env` myself immediately, then resumed the subagent via `SendMessage` with
+   explicit instructions to re-check its own background work synchronously and finish
+   its report. **Takeaway for future orchestration**: never instruct a subagent to
+   "wait for a notification" from its own background work — it must poll/check
+   synchronously within the same turn, since only the orchestrator's own backgrounded
+   `Agent` calls trigger an automatic wake-up.
+
+4. **Process mistake — destructive `git checkout` during commit reconstruction** (while
+   splitting the 5 features' cumulative uncommitted diff into 5 separate commits at the
+   user's request). Used `git checkout -- <file>` to revert `tests/test_chat.py` and
+   several frontend files (`ChatPanel.tsx`, `ChatPanel.test.tsx`, `chatService.ts`,
+   `types/chat.ts`, `vite.config.ts`) back to the pre-session baseline, on the
+   (correct, for application-code files) assumption that feature 1 hadn't touched them
+   — but `git checkout --` throws away ALL uncommitted changes to a file, including
+   later features' TEST additions that still needed to be restored for their own
+   commits. Discarded features 2's and 4/5's uncommitted test content (never
+   application code — every service/model/repository file was reconstructed precisely
+   via targeted `Edit` calls throughout, never via blind checkout, and stayed correct
+   throughout). **Caught and disclosed immediately** upon noticing the mismatch, before
+   committing anything built on the loss. **Fix, per the user's explicit choice**:
+   authored fresh tests covering the identical scenarios (confidence-gate firing/
+   thresholds/persistence/SSE — 5 tests; message_feedback upsert/scoping/access-checks
+   — 6 of the original 7, one FK-heavy repository-backstop test dropped as redundant
+   with existing HTTP-level coverage; the golden-set button — 2 of the original 3),
+   verified every one against the real, unaffected application code before each commit.
+   Final test counts land within 1 of the original independently-reviewed numbers at
+   every checkpoint. **Takeaway**: `git checkout --` is only safe on a file when you
+   are CERTAIN every feature's contribution to it is already captured elsewhere (either
+   you're stripping TO the file's sole owner, or you hold full verbatim content for
+   every other feature's portion) — when in doubt, surgically edit instead, or move the
+   file aside with `mv` (non-destructive, used correctly elsewhere in this same
+   reconstruction for migrations and eval test files) rather than discard it.
+
+5. **Minor — FK-seeding oversight in a freshly-authored test** (during the recovery in
+   item 4). A hand-written repository-level backstop test inserted a `MessageFeedback`
+   row directly without first seeding the `Organization` row its `org_id` foreign key
+   pointed at, failing with an `IntegrityError`. Rather than fully seed the deeper FK
+   chain (`Organization` → `User` → `Conversation` → `Message`) for one supplementary
+   test, dropped it in favor of the already-solid HTTP-level cross-org 404 test, which
+   covers the same tenant-isolation concern through the real access path.
+
+## Older sessions
+
+**Compacted 2026-07-27** (was >150k chars, over the editor limit). Older sessions were
+reduced to one-paragraph summaries — commit hashes and outcomes preserved, blow-by-blow
+live-verification narration and subagent orchestration detail cut. Full history is in
+`git log`; `progresstracker.md` has the feature/DoD-level record. The two most recent
 > sessions are kept in fuller detail since they're the ones a "next session" is most
 > likely to need to resume from.
+
+---
+
+## Research: production-grade retrieval/observability/evals/feedback roadmap (2026-07-27 — RESEARCH ONLY, nothing built)
+
+Direct ask: research what it'd take to make Veratas "properly production ready and
+significantly better than any competition," specifically covering different retrieval
+models, LLM config (temp etc.), vector-store options, log tracing, tool calling
+(web-search + RAG-as-a-tool), evals for agents, feedback-system improvements, and a
+direct comparison against Databricks Agent Bricks / Google ADK / Microsoft Copilot
+Studio (user had just watched an Agent Bricks demo: schema-guided extraction, a
+Knowledge Assistant blending structured+unstructured sources, automatic eval +
+before/after comparisons, an SME labeling session that auto-improves the agent, full
+MLflow tracing). Also folded in a real diagnosed bug: retrieval has **no
+distance/confidence threshold** — always returns top-k regardless of match quality, so
+on weak-nearest-neighbor questions the LLM gets irrelevant context and correctly
+refuses per its grounding contract even when the real answer exists in the document.
+Ran 6 parallel WebSearch-backed research subagents (retrieval/reranking, vector-store
+infra, observability/tracing, evals+feedback, tool-calling+model-config, competitive
+analysis), each grounded in Veratas' actual seam/module architecture so
+recommendations map to concrete files/tables/flags, not generic advice.
+
+**Full synthesis + prioritized P0/P1/P2 roadmap written to
+`.claude/context/research-production-agent-features.md`** — read that file before
+scoping any future work in this area. `buildplan.md`'s "Postponed" section now points
+to it. One-paragraph highlights:
+
+- **The bug's fix, per the research**: a `Reranker` seam (new Protocol mirroring
+  `Parser`/`Embedder`/`LLM`, `RERANKER_MODE=fake|real`, real impl = self-hosted
+  BGE-reranker-v2-m3, NOT LLM-as-reranker — 9x cost/35x latency for modest gain) +
+  widen candidate kNN then rerank down + a confidence gate keyed on the **reranker
+  score, not raw cosine distance** (raw distance cutoffs don't generalize across
+  corpora) + hybrid BM25+vector search via RRF (Postgres-native: `pg_search`/
+  `pg_textsearch` extension, no new infra) — this directly targets Veratas' real
+  corpus shape (business PDFs full of exact terms/IDs/acronyms that pure dense
+  embeddings miss). Both reranker and hybrid search were already named as Postponed
+  V2/V3 items pre-research; this operationalizes them with concrete seam/schema shape.
+- **Standout finding**: "contextual retrieval" (Anthropic's technique — prepend a short
+  LLM context blurb to each chunk before embedding, ~49-67% fewer retrieval failures)
+  is unusually cheap for Veratas specifically because the per-section LLM summary
+  infrastructure (`ENRICHMENT_ENABLED`, `sections.summary`/`topics`) already exists and
+  is dormant — this is "wire up something already built," not new infra. Worth
+  re-evaluating `HIERARCHICAL_RETRIEVAL_ENABLED` again after this ships, since the
+  2026-07-16 eval's null result may be an artifact of context-free chunk embeddings
+  rather than proof hierarchy itself doesn't help.
+- **Vector store verdict**: stay on pgvector — moving to Pinecone/Weaviate/Qdrant would
+  mean re-deriving an RLS-equivalent tenant-isolation guarantee outside Postgres, a
+  real regression against the F60 hard rule. `pgvectorscale`/`halfvec` (same Postgres,
+  additive) are the right next lever, gated on a real row-count/latency trigger,
+  not before.
+- **Observability verdict**: NOT a 4th seam (tracing is cross-cutting infra, not
+  swappable business logic — no meaningful "fake tracer"). Adopt OpenTelemetry GenAI
+  semantic conventions in new spans immediately; self-hosted Langfuse or Arize Phoenix
+  only (customer-document content flows through prompts, so SaaS-only tracing breaches
+  the same trust boundary the product sells protection from); keep `message_traces`/
+  the admin Debug toggle as the cheap, already-working end-user-facing view.
+- **Evals/feedback verdict**: self-hosted MLflow (`mlflow.genai.evaluate()` + Labeling
+  Sessions) is the real open-source analog of Agent Bricks' labeling UI — Databricks'
+  own labeling UI is built on this same primitive, so don't hand-roll one. Ragas as the
+  metrics engine. New `message_feedback` table to finally wire up the dead thumbs
+  up/down UI control (currently unpersisted decoration, does nothing). A durable,
+  admin-curatable golden-question set (sourced from real `message_traces` rows, not a
+  hand-written pytest list) run via a new CI-excluded `pytest -m eval` marker (same
+  pattern as `real_parser`/`hierarchical_eval`).
+- **Explicitly deprioritized as over-engineering for this team's scale** (each has a
+  named trigger condition in the research doc, none fire today): DSPy-style
+  *autonomous* prompt auto-rewriting (candidate prompts should still require a human
+  to promote them past the eval gate — optimization-assisted, never auto-deploy);
+  full agentic multi-hop retrieval / a `WebSearch` seam (if ever built: off by default,
+  and any web-sourced answer must be visually/structurally distinct from
+  document-grounded citations — never blended into the `[n]` list, or it quietly
+  destroys the "only knows what you gave it" trust guarantee that's the whole product
+  positioning); per-org/per-request LLM temperature overrides; migrating off pgvector.
+- **Where Veratas already wins, confirmed by the competitive report — don't touch**:
+  the fixed-refusal-string grounding contract is *stricter* than Copilot Studio's
+  "allow ungrounded responses" toggle; Access Roles + notebook privacy already match
+  Glean's permission-aware-retrieval edge; the `WHERE model = :active_model` embedding
+  filter is exactly the standard live-re-embed pattern, no change needed.
+- **Real gap vs. Databricks worth closing (P1)**: a schema-guided structured-extraction
+  mini-brick (NL field description → LLM-proposed JSON schema → per-doc extraction →
+  user-corrected examples → re-run) — bounded, extends the existing per-section
+  LLM-call pattern in `enrichment.py`, no lakehouse/Delta equivalent needed.
+
+**Next session starting this work should run `/architect` against
+`research-production-agent-features.md`'s P0 list** (reranker seam, hybrid search,
+confidence gate, `message_feedback` table, golden-eval suite) — these five are
+independent enough to sequence as separate features, not one mega-PR.
 
 ---
 

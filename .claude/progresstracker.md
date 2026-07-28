@@ -1063,10 +1063,80 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       detail. **Committed `e01c0f9` (code) + `695e78b` (docs), pushed to
       `origin/main`.**
 
-Next action: none from the buildplan — the published UX audit is fully closed (all 15
-findings fixed across three sessions), and
-the embed-widget feature is shipped and hardened. Future work = V2/V3/Enterprise items
-(architecture.md "Postponed") or direct asks. Ops notes: add
+## Maintenance — P0 roadmap (research-production-agent-features.md), 5 features, sequential subagent build (2026-07-28, IN PROGRESS)
+- [x] **Feature 1: Reranker seam** — 4th seam in `app/services/seams/` (protocols/fakes/
+      factory shared, new `real_reranker.py`), `RERANKER_ENABLED` (default off, gate),
+      `RERANKER_MODE` (fake|real), widen-then-rerank in `RetrievalService._retrieve_hits`
+      (`RERANK_CANDIDATE_K`/`RERANK_TOP_K`), new nullable `ChunkHit`/`ContextBlock.
+      rerank_score`. `RealReranker` = httpx client to a self-hosted BGE-reranker-v2-m3
+      via HF TEI (new `docker-compose.yml` `reranker` service). Built by a subagent from
+      the full confirmed `/architect` plan; independently re-verified by the orchestrator
+      (not just the subagent's self-report) — full `git diff` read, full suite rerun
+      (307 passed/2 skipped, up from 293), ruff clean, gate-off byte-identical proven by
+      a dedicated regression test. **Uncommitted** — see memory.md "Feature 1: Reranker
+      seam" for full detail incl. the embed-widget threading deviation and a real
+      circular-import bug found+fixed.
+- [x] **Feature 2: Reranker-score confidence gate** — lives in `chat/service.py`
+      (`_weak_evidence_gate_fires`), no separate enable flag (structurally inert
+      whenever `RERANKER_ENABLED=False`). New `RERANK_MIN_SCORE` (permissive default).
+      Fires only when the top block's `rerank_score` is below threshold; skips the LLM
+      call, persists normally via the unchanged `_persist`, new
+      `ChatResponse.weak_evidence` field. Independently re-verified: 312 passed/2
+      skipped (up from 307), ruff clean, `.env` restored. **Uncommitted** — see
+      memory.md "Feature 2" for full detail.
+- [x] **Feature 3: Hybrid search (BM25 + vector, RRF)** — migration `0021`
+      (`chunks.content_tsv` generated tsvector + GIN, native Postgres, no extension),
+      `ChunkRepository.search_chunks_lexical`, `distance` nullable on
+      `ChunkHit`/`ContextBlock`, pure `fuse_rrf`, `HYBRID_SEARCH_ENABLED`/
+      `HYBRID_CANDIDATE_K`. Composes correctly with the reranker feature's candidate
+      widening. Two real bugs found+fixed same session (a `Computed()` ORM mapping
+      fix for generated-column inserts; a `FakeReranker` crash on `distance=None`
+      found by the orchestrator during review, not the implementing subagent).
+      Independently re-verified: 321 passed/2 skipped (up from 312), ruff clean,
+      `.env` restored, a live proof test showing hybrid promotes a rare-term match
+      pure vector search misses. `services/retrieval.py` now 325 lines — still judged
+      one cohesive concern, not promoted; worth a final look once all 5 features are
+      done. **Uncommitted** — see memory.md "Feature 3" for full detail.
+- [x] **Feature 4: `message_feedback` table + frontend wiring** — migration `0022`
+      (full RLS, new tenant table), `FeedbackRepository` upsert on
+      `(message_id, user_id)`, `ChatService.submit_feedback` reuses the existing
+      notebook-privacy check (`knowledge_service.get_notebook`), `MessageOut.
+      my_feedback` closes the "resets to blank on reload" gap. First feature this
+      round to touch the frontend — `ChatPanel.tsx`'s thumbs buttons are now real
+      (fire-and-forget POST + history-seeded state). Independently re-verified:
+      backend 328 passed/2 skipped (up from 321), ruff clean, `.env` restored;
+      frontend 159 passed, `tsc -b`/`vite build` clean. **Uncommitted** — see
+      memory.md "Feature 4" for full detail.
+- [x] **Feature 5: Golden-eval suite** — migration `0023`, new `evals` domain
+      (models/services/routes/controllers), `chat_service.get_curation_snapshot` as
+      the sole cross-domain read point, admin-gated `POST`/`GET /evals/golden-
+      questions`, "Add to golden set" button in the chat Debug panel, opt-in
+      `pytest -m eval` Ragas harness (unverified against a real ragas install, by
+      design — properly skip-guarded). Required wiring in `main.py`, `migrations/
+      env.py`, `pyproject.toml`, `.github/workflows/ci.yml`, `vite.config.ts`.
+      Independently re-verified: backend 336 passed/3 skipped (up from 328), ruff
+      clean, `.env` restored; frontend 162 passed, `tsc -b`/`vite build` clean.
+      **Uncommitted** — see memory.md "Feature 5" for full detail, including a
+      subagent-orchestration lesson (a subagent's own backgrounded shell command does
+      NOT auto-notify it the way the orchestrator's backgrounded Agent calls do —
+      caught mid-flight via `git status`/`.env` check, fixed, resumed).
+
+## ALL 5 P0 FEATURES COMPLETE AND COMMITTED (2026-07-28) — 6 commits, not pushed
+
+- [x] `services/retrieval.py` split into a subpackage (`permissions.py`/`fusion.py`/
+      `service.py`/`__init__.py`) — commit `3a54c25`, zero logic change, verified via
+      full suite pass before/after.
+
+Next action: **the P0 roadmap from `research-production-agent-features.md` is fully
+built, independently verified, and committed** as 6 commits on `main`
+(`0cddb5e`→`3a54c25`, see memory.md "Wrap-up" for the full list + build technique).
+Final baseline: backend 335 passed/3 skipped (started this round at 293), frontend
+build clean with 161 passed (started at 156), ruff/`tsc -b`/`vite build` clean at
+HEAD. **Not pushed to origin** — ask the user before pushing. A mid-process mistake
+(destructive `git checkout` on a couple of test files, recovered by writing fresh
+equivalent tests) is fully documented in memory.md, disclosed to the user at the
+time, with zero impact on the actually-shipped application code. Ops
+notes: add
 `OPENAI_API_KEY`/`OPENAI_BASE_URL` (+ `*_MODE=real`, `STORAGE_MODE=local`) to
 backend/.env before user-run real-seam dev sessions; `SEAMS_MODE`/`RLS_ENABLED` lines
 in .env are dead and can be deleted; restart stale uvicorn/arq after backend edits.
