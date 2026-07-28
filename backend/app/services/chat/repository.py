@@ -76,6 +76,23 @@ class MessageRepository(BaseRepository[Message]):
         )
         return list(await self._db.scalars(stmt))
 
+    async def get_user_question_in_conversation(self, conversation_id: uuid.UUID) -> Message | None:
+        """The paired user question for an assistant answer looked up via
+        ``get_with_notebook_id`` — every ``/chat/ask``/``/chat/stream`` call creates a
+        FRESH conversation with exactly one user message + one assistant message (see
+        ``ChatService.ask``'s docstring: no conversation reuse), so this is simply "the
+        other message in the same conversation." Org-scoped independently, same
+        precedent as every other repository method here. ``None`` only if the
+        conversation somehow has no user message (shouldn't happen given the invariant
+        above, but never assumed)."""
+        stmt = (
+            self._scoped()
+            .where(Message.conversation_id == conversation_id, Message.role == "user")
+            .order_by(Message.created_at.asc())
+            .limit(1)
+        )
+        return await self._db.scalar(stmt)
+
     async def get_with_notebook_id(self, message_id: uuid.UUID) -> tuple[Message, uuid.UUID] | None:
         """Joins to ``Conversation`` to also return its ``knowledge_base_id`` (the
         notebook the message's conversation belongs to) — mirrors ``list_for_notebook``'s

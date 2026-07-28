@@ -21,6 +21,7 @@ from app.middleware.context import TenantContext
 from app.models.chat import (
     ChatRequest,
     ChatResponse,
+    CurationSnapshot,
     FeedbackCreate,
     FeedbackOut,
     MessageOut,
@@ -66,6 +67,17 @@ class MessageNotFound(RuntimeError):
 class FeedbackOnUserMessage(RuntimeError):
     """Raised when feedback targets a ``role='user'`` message — only assistant answers
     can be rated; a user can't thumbs-up/down their own question. Mapped to a 400."""
+
+
+class CannotCurateUserMessage(RuntimeError):
+    """Raised when a golden-question curation request (``get_curation_snapshot``)
+    targets a ``role='user'`` message. Deliberately NOT reusing ``FeedbackOnUserMessage``
+    even though both map to the same 400 status and both fire on the same role check:
+    the two are semantically distinct failures on distinct endpoints — "you can't
+    rate your own question" (feedback) versus "a question has no answer/trace of its
+    own to snapshot as a golden question" (curation) — and collapsing them would make
+    a future change to one message/endpoint silently affect the other. Mapped to a
+    400."""
 
 
 _CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
@@ -533,6 +545,42 @@ class ChatService:
             final_prompt=trace.final_prompt,
             raw_output=trace.raw_output,
             created_at=trace.created_at,
+        )
+
+    async def get_curation_snapshot(
+        self, ctx: TenantContext, message_id: uuid.UUID
+    ) -> CurationSnapshot:
+        """The ONLY way ``app.services.evals`` reads chat data (module-boundary rule —
+        evals never imports ``chat``'s repository classes or ORM models directly).
+        ``message_id`` must reference a persisted ASSISTANT message (an answer) with a
+        trace; the paired question is the OTHER (``role='user'``) message in the same
+        conversation, found via ``get_user_question_in_conversation`` — every
+        ``/chat/ask``/``/chat/stream`` call creates a fresh conversation with exactly
+        one user + one assistant message (see ``ask``'s docstring: no conversation
+        reuse), so there is exactly one candidate. ``reference_contexts`` is built from
+        the trace's persisted ``hits`` (each shaped like ``ContextBlock``, carrying a
+        ``content`` key) — the retrieved chunk TEXT, not chunk ids, so a golden question
+        stays gradable even after its source chunks are re-ingested or deleted."""
+        async with db_mod.tenant_session(ctx.org_id) as session:
+            found = await MessageRepository(session, ctx).get_with_notebook_id(message_id)
+            if found is None:
+                raise MessageNotFound("Message not found")
+            message, notebook_id = found
+            if message.role != "assistant":
+                raise CannotCurateUserMessage(
+                    "Only assistant messages can be added to the golden set"
+                )
+            trace = await TraceRepository(session, ctx).get_by_message_id(message_id)
+            if trace is None:
+                raise MessageTraceNotFound("Trace not found")
+            question_message = await MessageRepository(
+                session, ctx
+            ).get_user_question_in_conversation(message.conversation_id)
+        return CurationSnapshot(
+            notebook_id=notebook_id,
+            question=question_message.content if question_message is not None else "",
+            reference_answer=message.content,
+            reference_contexts=[hit["content"] for hit in trace.hits],
         )
 
 

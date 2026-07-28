@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../hooks/useAuth";
 import { chatApi } from "../services/chatService";
+import { evalsApi } from "../services/evalsService";
 import type {
   ChatHistoryMessage,
   ChatResponse,
@@ -37,6 +38,13 @@ const traceCache = new Map<string, MessageTrace>();
 function TraceDetails({ messageId }: { messageId: string }) {
   const [trace, setTrace] = useState<MessageTrace | null>(traceCache.get(messageId) ?? null);
   const [error, setError] = useState<string | null>(null);
+  // Golden-eval curation: fire-and-submit, no persisted/cached state needed beyond this
+  // render — re-opening the trace after a successful curation just shows "Add to golden
+  // set" again, which is harmless (curation isn't idempotency-sensitive from the UI's
+  // point of view; a second click just adds a second golden question).
+  const [curationState, setCurationState] = useState<"idle" | "pending" | "done" | "error">(
+    "idle",
+  );
 
   useEffect(() => {
     if (traceCache.has(messageId)) return;
@@ -54,6 +62,14 @@ function TraceDetails({ messageId }: { messageId: string }) {
       cancelled = true;
     };
   }, [messageId]);
+
+  function handleAddToGoldenSet() {
+    setCurationState("pending");
+    evalsApi
+      .addGoldenQuestion(messageId)
+      .then(() => setCurationState("done"))
+      .catch(() => setCurationState("error"));
+  }
 
   if (error) return <p className="text-xs text-red-500 mt-2">{error}</p>;
   if (!trace) return <p className="text-xs text-muted mt-2 animate-pulse">Loading trace…</p>;
@@ -82,6 +98,22 @@ function TraceDetails({ messageId }: { messageId: string }) {
         <pre className="whitespace-pre-wrap font-mono text-muted max-h-40 overflow-y-auto">
           {trace.raw_output}
         </pre>
+      </div>
+      <div>
+        <button
+          type="button"
+          onClick={handleAddToGoldenSet}
+          disabled={curationState === "pending" || curationState === "done"}
+          className="text-xs text-accent hover:underline disabled:no-underline disabled:text-muted disabled:cursor-default"
+        >
+          {curationState === "done"
+            ? "Added ✓"
+            : curationState === "pending"
+              ? "Adding…"
+              : curationState === "error"
+                ? "Failed — try again"
+                : "Add to golden set"}
+        </button>
       </div>
     </div>
   );

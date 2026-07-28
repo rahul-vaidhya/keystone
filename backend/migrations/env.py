@@ -24,6 +24,7 @@ import app.models.auth  # noqa: F401
 import app.models.chat  # noqa: F401
 import app.models.documents  # noqa: F401
 import app.models.embed  # noqa: F401
+import app.models.evals  # noqa: F401
 import app.models.ingestion  # noqa: F401
 import app.models.knowledge  # noqa: F401
 from app.config.db import Base

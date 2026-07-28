@@ -253,3 +253,23 @@ class FeedbackOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class CurationSnapshot(BaseModel):
+    """The ONLY shape ``app.services.evals`` reads chat data through — returned by
+    ``ChatService.get_curation_snapshot`` (module-boundary rule: evals never imports
+    chat's repository classes or ORM models directly). A point-in-time snapshot of one
+    graded ``/chat/ask`` answer, structured for ``evals.service`` to persist as a
+    ``GoldenQuestion`` row: ``question`` is the paired user message in the same
+    (never-reused — see ``ChatService.ask``'s docstring) conversation,
+    ``reference_answer`` is the assistant message's content, and
+    ``reference_contexts`` is the list of retrieved chunk TEXT from the message's
+    persisted trace (``hit["content"]`` for each hit) — not chunk ids, so the golden
+    question stays gradable even after its source chunks are re-ingested or deleted."""
+
+    notebook_id: uuid.UUID
+    question: str
+    reference_answer: str
+    reference_contexts: list[str]
+
+    model_config = {"from_attributes": True}

@@ -13,6 +13,7 @@ export default defineConfig({
       "/chat": { target: "http://127.0.0.1:8010", changeOrigin: true },
       "/access-roles": { target: "http://127.0.0.1:8010", changeOrigin: true },
       "/retrieval": { target: "http://127.0.0.1:8010", changeOrigin: true },
+      "/evals": { target: "http://127.0.0.1:8010", changeOrigin: true },
       // Deliberately NOT "/embed" (bare) — that path is also the SPA's own public
       // /embed page (?org=&widget=&parent=). Vite's proxy does a prefix match on
       // pathname, so scoping these to the two real API subpaths lets a request to

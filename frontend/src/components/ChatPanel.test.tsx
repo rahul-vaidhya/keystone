@@ -8,6 +8,7 @@ import type {
 } from "../types/chat";
 import type { Document } from "../types/documents";
 import { chatApi } from "../services/chatService";
+import { evalsApi } from "../services/evalsService";
 import { useAuth } from "../hooks/useAuth";
 import { ChatPanel } from "./ChatPanel";
 
@@ -17,6 +18,13 @@ vi.mock("../services/chatService", () => ({
     getTrace: vi.fn(),
     listMessages: vi.fn(),
     submitFeedback: vi.fn(),
+  },
+}));
+
+vi.mock("../services/evalsService", () => ({
+  evalsApi: {
+    addGoldenQuestion: vi.fn(),
+    listGoldenQuestions: vi.fn(),
   },
 }));
 
@@ -133,6 +141,7 @@ describe("ChatPanel", () => {
     vi.mocked(chatApi.listMessages).mockResolvedValue([]);
     vi.mocked(chatApi.submitFeedback).mockReset();
     vi.mocked(chatApi.submitFeedback).mockResolvedValue(undefined);
+    vi.mocked(evalsApi.addGoldenQuestion).mockReset();
     mockUser("member");
   });
 
@@ -337,6 +346,60 @@ describe("ChatPanel", () => {
       expect(screen.getByText("This is the answer [1]")).toBeInTheDocument(),
     );
     expect(screen.getByText("Hits (1)")).toBeInTheDocument();
+  });
+
+  it("curates a golden question from the debug panel and shows the result", async () => {
+    mockUser("admin");
+    vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+      callbacks.onDone(makeDoneResponse({ message_id: "msg-1" }));
+      return () => {};
+    });
+    vi.mocked(chatApi.getTrace).mockResolvedValue(makeTrace());
+    vi.mocked(evalsApi.addGoldenQuestion).mockResolvedValue({
+      id: "gq-1",
+      notebook_id: "nb-1",
+      source_message_id: "msg-1",
+      question: "test question",
+      reference_answer: "This is the answer [1]",
+      reference_contexts: ["relevant text"],
+      status: "active",
+      created_by: "u-1",
+      created_at: "2026-01-01T00:00:00Z",
+    });
+
+    render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+    const input = screen.getByPlaceholderText("Ask a question…");
+    fireEvent.change(input, { target: { value: "test" } });
+    fireEvent.submit(input.closest("form")!);
+
+    await waitFor(() => expect(screen.getByText("Debug")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Debug"));
+    await waitFor(() => expect(screen.getByText("Hits (1)")).toBeInTheDocument());
+
+    const addButton = screen.getByRole("button", { name: "Add to golden set" });
+    fireEvent.click(addButton);
+
+    expect(evalsApi.addGoldenQuestion).toHaveBeenCalledWith("msg-1");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Added ✓" })).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Added ✓" })).toBeDisabled();
+  });
+
+  it("hides the golden-set button for a non-admin member (nested inside admin-only Debug panel)", async () => {
+    mockUser("member");
+    vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+      callbacks.onDone(makeDoneResponse());
+      return () => {};
+    });
+
+    render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+    const input = screen.getByPlaceholderText("Ask a question…");
+    fireEvent.change(input, { target: { value: "test" } });
+    fireEvent.submit(input.closest("form")!);
+
+    await waitFor(() => expect(screen.getByText("[1]")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Add to golden set" })).not.toBeInTheDocument();
   });
 
   // Finding A (Medium, UX audit): static starter-question chips on the empty state.

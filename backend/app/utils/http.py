@@ -26,6 +26,7 @@ from app.services.auth import (
     TargetUserNotFound,
 )
 from app.services.chat import (
+    CannotCurateUserMessage,
     FeedbackOnUserMessage,
     GenerationFailed,
     MessageNotFound,
@@ -234,6 +235,17 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"detail": str(exc) or "Only assistant messages can be rated"},
+        )
+
+    @app.exception_handler(CannotCurateUserMessage)
+    async def _cannot_curate_user_message(
+        _request: Request, exc: CannotCurateUserMessage
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "detail": str(exc) or "Only assistant messages can be added to the golden set"
+            },
         )
 
     @app.exception_handler(AuthError)

@@ -37,6 +37,12 @@ real = [
   "openai>=1.40",
   "pypdf>=4.0",
 ]
+# Golden-eval regression suite grading dependency (Ragas) — NOT a seam adapter, just a
+# metrics library for the opt-in `pytest -m eval` suite. Separate group from `real`
+# since it's needed only to actually RUN test_golden_eval.py, never to run the app.
+eval = [
+  "ragas>=0.2",
+]
 dev = [
   "pytest>=8.2",
   "pytest-asyncio>=0.23",
@@ -61,4 +67,5 @@ pythonpath = ["."]
 markers = [
   "real_parser: opt-in F23 integration test against the real OpenRouter parser; needs OPENROUTER_API_KEY + REAL_PDF_PATH, excluded from CI.",
   "hierarchical_eval: opt-in real-seam output-quality eval for V2 hierarchical retrieval; needs OPENROUTER_API_KEY + OPENAI_API_KEY + OPENAI_BASE_URL + pdf/kech104.pdf, excluded from CI.",
+  "eval: opt-in golden-question regression suite graded with Ragas metrics; needs OPENROUTER_API_KEY + OPENAI_API_KEY + OPENAI_BASE_URL + pdf/kech104.pdf + the ragas package (pip install .[eval]); excluded from CI.",
 ]
