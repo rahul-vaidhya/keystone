@@ -1,7 +1,8 @@
 """Retrieval use cases — the MVP ``flat_vector`` path (architecture.md "Retrieval
 pipeline"). Owns no table; reaches other modules only through their ``service``
-(module-boundary rule): ``knowledge.service`` for notebook membership, ``documents.service``
-for the allowed-documents hook, ``ingestion.service`` for the actual kNN search.
+(module-boundary rule): ``knowledge.service`` for notebook membership,
+``permissions.resolve_allowed_documents`` for the allowed-documents hook,
+``ingestion.service`` for the actual kNN search.
 """
 
 from __future__ import annotations
@@ -12,119 +13,14 @@ from app.config.logging import get_logger
 from app.config.settings import settings
 from app.middleware.context import TenantContext
 from app.models.ingestion import ChunkHit
-from app.models.retrieval import ContextBlock, RetrievalSearchRequest, RetrievalSearchResponse
-from app.services.access_roles import (
-    resolve_access_controlling_tags,
-    resolve_folder_effective_tags,
-    resolve_user_granted_tags,
-)
-from app.services.documents import documents_service
+from app.models.retrieval import RetrievalSearchRequest, RetrievalSearchResponse
 from app.services.ingestion import ingestion_service
 from app.services.knowledge import knowledge_service
+from app.services.retrieval.fusion import assemble_context, fuse_rrf
+from app.services.retrieval.permissions import resolve_allowed_documents
 from app.services.seams import Embedder, Reranker
-from app.utils.constants import ADMIN_ROLES
 
 logger = get_logger(__name__)
-
-
-async def resolve_allowed_documents(ctx: TenantContext) -> list[uuid.UUID]:
-    """The single seam where V2 groups/grants permission logic slots in (architecture.md).
-
-    ``owner``/``admin`` always see every org document (unchanged from the original MVP
-    stub). For everyone else: a tag becomes "access-controlling" the moment it's granted
-    to any Access Role (docs/access-roles-dnd-plan.md) — a resource carrying none of the
-    org's access-controlling tags stays open to everyone, exactly as before this feature
-    existed. A resource carrying one DOES gate: visible only to a member holding a role
-    granted at least one of those tags. Folder tags are inherited down the subtree
-    (``_inherited_folder_tags``); a document's own direct tags (``document_tags``) add to
-    whatever it inherits from its folder chain. No caching: this runs fresh on every
-    call, so granting/revoking a tag takes effect on the very next request."""
-    docs = await documents_service.list_documents(ctx)
-    if ctx.role in ADMIN_ROLES:
-        return [d.id for d in docs]
-
-    access_controlling = await resolve_access_controlling_tags(ctx)
-    if not access_controlling:
-        # Nobody has ever granted any tag to any Access Role — nothing is gated yet, so
-        # skip the folder/document-tag fetches entirely.
-        return [d.id for d in docs]
-
-    folders = await documents_service.list_folders(ctx)
-    inherited_folder_tags = resolve_folder_effective_tags(folders)
-    doc_tag_ids = await documents_service.list_document_tag_ids_by_documents(
-        ctx, [d.id for d in docs]
-    )
-    user_granted = await resolve_user_granted_tags(ctx)
-
-    allowed: list[uuid.UUID] = []
-    for doc in docs:
-        folder_tags = inherited_folder_tags.get(doc.folder_id, set()) if doc.folder_id else set()
-        effective_tags = folder_tags | set(doc_tag_ids.get(doc.id, []))
-        gating_tags = effective_tags & access_controlling
-        if not gating_tags or (gating_tags & user_granted):
-            allowed.append(doc.id)
-    return allowed
-
-
-def assemble_context(query: str, hits: list[ChunkHit]) -> RetrievalSearchResponse:
-    """Pure function — numbers hits into ``ContextBlock``s with source refs (document_id,
-    chunk_id, char offsets, distance). This is the SHAPE F40 (chat) will consume; citation
-    mapping itself is F41 — not built here. ``distance`` was already computed by
-    ``EmbeddingRepository.search_chunks`` (F31) and is surfaced here unchanged — F40 needs
-    it for its retrieval-quality logging ("chunk_ids + distances if available"); this is
-    additive only, no new computation."""
-    results = [
-        ContextBlock(
-            index=position,
-            document_id=hit.document_id,
-            chunk_id=hit.chunk_id,
-            char_start=hit.char_start,
-            char_end=hit.char_end,
-            content=hit.content,
-            distance=hit.distance,
-            rerank_score=hit.rerank_score,
-        )
-        for position, hit in enumerate(hits, start=1)
-    ]
-    return RetrievalSearchResponse(query=query, results=results)
-
-
-def fuse_rrf(
-    vector_hits: list[ChunkHit], lexical_hits: list[ChunkHit], *, k: int = 60
-) -> list[ChunkHit]:
-    """Reciprocal Rank Fusion — combines a vector-kNN ranked list and a lexical
-    (native-Postgres-full-text) ranked list into one ranked, deduplicated list (hybrid
-    search, gated by ``HYBRID_SEARCH_ENABLED``). Standard RRF: each hit's fused score is
-    ``sum(1 / (k + rank))`` over every ranked list it appears in, where ``rank`` is its
-    1-indexed position within that list — a chunk present in both lists sums both
-    contributions, so a chunk ranked highly in BOTH lists outranks one ranked highly in
-    only one. Dedup key is ``chunk_id``: when a chunk appears in both lists, the
-    VECTOR-hit ``ChunkHit`` instance is kept (it carries a real ``distance``; the
-    lexical-only instance's ``distance`` is always ``None``), carrying forward whichever
-    instance's ``rerank_score`` is set (in practice neither will be — fusion always runs
-    BEFORE reranking in the pipeline). Pure function: no SQL, no side effects, no
-    truncation — the caller (``_search_hits``) decides the final candidate/result size,
-    same as it always has."""
-    scores: dict[uuid.UUID, float] = {}
-    for ranked_list in (vector_hits, lexical_hits):
-        for rank, hit in enumerate(ranked_list, start=1):
-            scores[hit.chunk_id] = scores.get(hit.chunk_id, 0.0) + 1.0 / (k + rank)
-
-    hit_by_id: dict[uuid.UUID, ChunkHit] = {}
-    for hit in [*vector_hits, *lexical_hits]:
-        current = hit_by_id.get(hit.chunk_id)
-        if current is None:
-            hit_by_id[hit.chunk_id] = hit
-        elif current.distance is None and hit.distance is not None:
-            # A lexical-only instance was recorded first (fusion called with lexical
-            # hits before vector hits) — replace it with the vector instance, carrying
-            # forward whichever instance already had a rerank_score.
-            rerank_score = (
-                current.rerank_score if current.rerank_score is not None else hit.rerank_score
-            )
-            hit_by_id[hit.chunk_id] = hit.model_copy(update={"rerank_score": rerank_score})
-
-    return sorted(hit_by_id.values(), key=lambda hit: scores[hit.chunk_id], reverse=True)
 
 
 class RetrievalService:
