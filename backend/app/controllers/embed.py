@@ -27,7 +27,7 @@ from app.models.embed import (
     WidgetUpdateRequest,
 )
 from app.services.embed import embed_service
-from app.services.seams import LLM, Embedder, get_embedder, get_llm
+from app.services.seams import LLM, Embedder, Reranker, get_embedder, get_llm, get_reranker
 from app.utils.http import get_client_ip
 from app.utils.rate_limit import RateLimiter, get_rate_limiter
 
@@ -74,6 +74,7 @@ async def stream_public_chat(
     request: Request,
     embedder: Annotated[Embedder, Depends(get_embedder)],
     llm: Annotated[LLM, Depends(get_llm)],
+    reranker: Annotated[Reranker, Depends(get_reranker)],
     rate_limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ) -> StreamingResponse:
     """No auth dependency — public endpoint. Mirrors ``controllers.chat.stream_ask``'s
@@ -91,6 +92,7 @@ async def stream_public_chat(
         req,
         embedder=embedder,
         llm=llm,
+        reranker=reranker,
         rate_limiter=rate_limiter,
         client_ip=client_ip,
     )

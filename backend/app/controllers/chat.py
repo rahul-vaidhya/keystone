@@ -19,7 +19,7 @@ from app.middleware.context import TenantContext
 from app.middleware.deps import get_ctx, require_admin
 from app.models.chat import ChatRequest, ChatResponse, MessageOut, MessageTraceOut
 from app.services.chat import chat_service
-from app.services.seams import LLM, Embedder, get_embedder, get_llm
+from app.services.seams import LLM, Embedder, Reranker, get_embedder, get_llm, get_reranker
 
 logger = get_logger(__name__)
 
@@ -29,12 +29,13 @@ async def ask(
     ctx: Annotated[TenantContext, Depends(get_ctx)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
     llm: Annotated[LLM, Depends(get_llm)],
+    reranker: Annotated[Reranker, Depends(get_reranker)],
 ) -> ChatResponse:
     correlation_id = str(uuid.uuid4())
     structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
     try:
         return await chat_service.ask(
-            ctx, req, embedder=embedder, llm=llm, correlation_id=correlation_id
+            ctx, req, embedder=embedder, llm=llm, reranker=reranker, correlation_id=correlation_id
         )
     finally:
         structlog.contextvars.unbind_contextvars("correlation_id")
@@ -45,6 +46,7 @@ async def stream_ask(
     ctx: Annotated[TenantContext, Depends(get_ctx)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
     llm: Annotated[LLM, Depends(get_llm)],
+    reranker: Annotated[Reranker, Depends(get_reranker)],
 ) -> StreamingResponse:
     """F4x SSE endpoint. Streams tokens as they arrive from the LLM, then sends a
     final ``done`` event with the persisted conversation/citations. Uses POST (not GET)
@@ -56,7 +58,12 @@ async def stream_ask(
     async def event_generator():
         try:
             async for event_dict in chat_service.stream_ask(
-                ctx, req, embedder=embedder, llm=llm, correlation_id=correlation_id
+                ctx,
+                req,
+                embedder=embedder,
+                llm=llm,
+                reranker=reranker,
+                correlation_id=correlation_id,
             ):
                 yield f"data: {json.dumps(event_dict)}\n\n"
         except Exception as exc:

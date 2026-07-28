@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from app.config.settings import settings
-from app.services.seams.fakes import FakeEmbedder, FakeLLM, FakeParser
-from app.services.seams.protocols import LLM, Embedder, Parser
+from app.services.seams.fakes import FakeEmbedder, FakeLLM, FakeParser, FakeReranker
+from app.services.seams.protocols import LLM, Embedder, Parser, Reranker
 from app.services.seams.real_llm import RealEmbedder, RealLLM
 from app.services.seams.real_parser import RealParser
+from app.services.seams.real_reranker import RealReranker
 from app.services.seams.types import SeamNotConfigured
 
 _VALID_MODES = ("fake", "real")
@@ -31,3 +32,10 @@ def get_embedder() -> Embedder:
 def get_llm() -> LLM:
     mode = _resolve_mode(settings.LLM_MODE, "LLM_MODE")
     return FakeLLM() if mode == "fake" else RealLLM()
+
+
+def get_reranker() -> Reranker:
+    """Constructed unconditionally, same as the other 3 seams — cheap to build; callers
+    (`RetrievalService`) simply never invoke it when `RERANKER_ENABLED=False`."""
+    mode = _resolve_mode(settings.RERANKER_MODE, "RERANKER_MODE")
+    return FakeReranker() if mode == "fake" else RealReranker()

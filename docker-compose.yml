@@ -28,5 +28,17 @@ services:
       timeout: 3s
       retries: 10
 
+  # Local real-mode reranker (V2, `RealReranker` seam). ONLY needed when running the
+  # backend with RERANKER_MODE=real locally — has no effect on CI/offline tests, which
+  # stay on RERANKER_ENABLED=False by default and never call this. Point
+  # RERANKER_URL=http://localhost:8081 at it once running. Not started by `docker compose
+  # up -d` alone if you only need Postgres+Redis — run
+  # `docker compose up -d reranker` explicitly, or add it to your default profile.
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    command: ["--model-id", "BAAI/bge-reranker-v2-m3"]
+    ports:
+      - "8081:80"
+
 volumes:
   pgdata:

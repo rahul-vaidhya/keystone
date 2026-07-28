@@ -15,7 +15,7 @@ from app.models.auth import Organization
 from app.models.documents import Document
 from app.models.ingestion import Chunk, Embedding, Section
 from app.services.ingestion import ingestion_service
-from app.services.seams import EMBED_DIM
+from app.services.seams import EMBED_DIM, FakeReranker
 
 FAKE_MODEL = f"fake-embed-{EMBED_DIM}"
 
@@ -528,6 +528,8 @@ async def test_hierarchical_used_logs_at_info_with_topics_at_debug(
                 scope=[doc_id],
                 model=FAKE_MODEL,
                 k=8,
+                reranker=FakeReranker(),
+                query="what are the octet rule and ionic bonds",
             )
     finally:
         structlog.configure(wrapper_class=old_wrapper_class)

@@ -11,9 +11,15 @@ import hashlib
 import math
 import random
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.services.seams.protocols import EMBED_DIM
 from app.services.seams.types import Message, OutlineNode, ParsedDoc
+
+if TYPE_CHECKING:
+    # See protocols.py's identical TYPE_CHECKING-guarded import for why this can't be a
+    # real import here (models.ingestion imports EMBED_DIM from this package).
+    from app.models.ingestion import ChunkHit
 
 _FAKE_TEXT = (
     "Introduction\n"
@@ -89,3 +95,18 @@ class FakeLLM:
             answer = f"Based on the provided sources, here is the answer to: {question[:80]} [1]"
         for token in answer.split(" "):
             yield token + " "
+
+
+class FakeReranker:
+    """TRUE identity passthrough — never calls a network/vendor. Preserves `candidates`'
+    existing order exactly as received (cosine-distance order from `search_chunks`),
+    truncates to `top_k`, and stamps `rerank_score = 1.0 - hit.distance` on each returned
+    hit (deterministic, monotonic with distance). This lets a FUTURE confidence-gate
+    feature's tests control the reranker score just by controlling embedding distance via
+    `FakeEmbedder`, without this fake ever needing real reranking logic."""
+
+    async def rerank(self, query: str, candidates: list[ChunkHit], top_k: int) -> list[ChunkHit]:
+        return [
+            hit.model_copy(update={"rerank_score": 1.0 - hit.distance})
+            for hit in candidates[:top_k]
+        ]

@@ -163,6 +163,11 @@ class ChunkHit(BaseModel):
     char_start: int
     char_end: int
     distance: float
+    # [later] V2 reranker — stamped by `Reranker.rerank` (architecture.md "A Reranker
+    # seam is added in V2, not now"), additive only. Always `None` when
+    # `RERANKER_ENABLED=False` (the default); never removes/replaces `distance`, which
+    # stays the raw cosine-distance provenance from the kNN search regardless.
+    rerank_score: float | None = None
 
     model_config = {"from_attributes": True}
 

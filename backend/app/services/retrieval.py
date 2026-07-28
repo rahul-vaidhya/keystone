@@ -21,7 +21,7 @@ from app.services.access_roles import (
 from app.services.documents import documents_service
 from app.services.ingestion import ingestion_service
 from app.services.knowledge import knowledge_service
-from app.services.seams import Embedder
+from app.services.seams import Embedder, Reranker
 from app.utils.constants import ADMIN_ROLES
 
 logger = get_logger(__name__)
@@ -82,6 +82,7 @@ def assemble_context(query: str, hits: list[ChunkHit]) -> RetrievalSearchRespons
             char_end=hit.char_end,
             content=hit.content,
             distance=hit.distance,
+            rerank_score=hit.rerank_score,
         )
         for position, hit in enumerate(hits, start=1)
     ]
@@ -95,12 +96,15 @@ class RetrievalService:
         req: RetrievalSearchRequest,
         *,
         embedder: Embedder,
+        reranker: Reranker,
     ) -> RetrievalSearchResponse:
         """``flat_vector`` MVP retrieval: scope = notebook ∩ allowed, embed the query,
-        search, assemble. ``req.k`` is passed straight through to the SQL ``LIMIT`` — no
-        over-fetch (no reranker exists in F31 to justify fetching more than asked for).
-        When HIERARCHICAL_RETRIEVAL_ENABLED, uses coarse-to-fine search with fallback to
-        flat if enrichment is incomplete."""
+        search, assemble. ``req.k`` is passed straight through to the SQL ``LIMIT`` when
+        reranking is disabled (the default) — no over-fetch. When
+        ``RERANKER_ENABLED``, ``_retrieve_hits`` widens the candidate pool and reranks it
+        back down to ``req.k`` (see its docstring). When ``HIERARCHICAL_RETRIEVAL_ENABLED``,
+        uses coarse-to-fine search with fallback to flat if enrichment is incomplete —
+        orthogonal to reranking, which wraps whichever strategy's output it receives."""
         notebook_docs = await knowledge_service.list_notebook_documents(ctx, req.notebook_id)
         allowed = set(await resolve_allowed_documents(ctx))
         scope = [doc.id for doc in notebook_docs if doc.id in allowed]
@@ -108,7 +112,15 @@ class RetrievalService:
             return assemble_context(req.query, [])
 
         [query_vector] = await embedder.embed([req.query])
-        hits = await self._retrieve_hits(ctx, query_vector, scope, embedder.model, req.k)
+        hits = await self._retrieve_hits(
+            ctx,
+            query_vector,
+            scope,
+            embedder.model,
+            req.k,
+            reranker=reranker,
+            query=req.query,
+        )
         return assemble_context(req.query, hits)
 
     async def _retrieve_hits(
@@ -118,13 +130,47 @@ class RetrievalService:
         scope: list[uuid.UUID],
         model: str,
         k: int,
+        *,
+        reranker: Reranker,
+        query: str,
     ) -> list[ChunkHit]:
-        """Retrieve hits using the active strategy: hierarchical (coarse-to-fine) if
-        enabled, flat otherwise. Hierarchical always has a fallback to flat if the corpus
-        lacks enrichment or returns no results."""
+        """Sources candidate hits (flat or hierarchical, per ``_search_hits``), then — when
+        ``RERANKER_ENABLED`` — wraps the FINAL chunk-level output with one more
+        transformation step: widen the chunk kNN pool to
+        ``candidate_k = max(k, RERANK_CANDIDATE_K)`` (mirrors the existing
+        ``s = max(k, HIERARCHICAL_TOP_SECTIONS)`` widening pattern), then
+        ``reranker.rerank`` reorders + truncates it to ``final_k = min(k, RERANK_TOP_K)``.
+        The reranker is agnostic to whether ``_search_hits`` used flat or hierarchical
+        sourcing — it is one more step on top, never a competing strategy. Gate OFF
+        (default): ``candidate_k == k``, ``reranker`` is never called, byte-identical to
+        before this feature existed."""
+        candidate_k = max(k, settings.RERANK_CANDIDATE_K) if settings.RERANKER_ENABLED else k
+        hits = await self._search_hits(ctx, query_vector, scope, model, candidate_k, k, query=query)
+        if settings.RERANKER_ENABLED:
+            final_k = min(k, settings.RERANK_TOP_K)
+            hits = await reranker.rerank(query, hits, final_k)
+        return hits
+
+    async def _search_hits(
+        self,
+        ctx: TenantContext,
+        query_vector: list[float],
+        scope: list[uuid.UUID],
+        model: str,
+        search_k: int,
+        section_k: int,
+        *,
+        query: str,
+    ) -> list[ChunkHit]:
+        """Retrieve candidate hits using the active strategy: hierarchical (coarse-to-fine)
+        if enabled, flat otherwise. Hierarchical always has a fallback to flat if the
+        corpus lacks enrichment or returns no results. ``search_k`` sizes the chunk-level
+        kNN ``LIMIT`` (the reranker-widened candidate pool when reranking is on, else
+        plain ``k``); ``section_k`` sizes the coarse section-level pass — unwidened by the
+        reranker, matching pre-reranker behavior exactly."""
         if not settings.HIERARCHICAL_RETRIEVAL_ENABLED:
             return await ingestion_service.search_chunks(
-                ctx, query_vector=query_vector, document_ids=scope, model=model, k=k
+                ctx, query_vector=query_vector, document_ids=scope, model=model, k=search_k
             )
 
         # Coarse pass: search section embeddings.
@@ -133,7 +179,7 @@ class RetrievalService:
             query_vector=query_vector,
             document_ids=scope,
             model=model,
-            s=max(k, settings.HIERARCHICAL_TOP_SECTIONS),
+            s=max(section_k, settings.HIERARCHICAL_TOP_SECTIONS),
         )
         if not section_hits:
             # No section embeddings exist (enrichment hasn't run yet) — fall back to flat.
@@ -143,7 +189,7 @@ class RetrievalService:
                 scope_count=len(scope),
             )
             return await ingestion_service.search_chunks(
-                ctx, query_vector=query_vector, document_ids=scope, model=model, k=k
+                ctx, query_vector=query_vector, document_ids=scope, model=model, k=search_k
             )
 
         # Fine pass: search chunks within those sections.
@@ -153,7 +199,7 @@ class RetrievalService:
             query_vector=query_vector,
             document_ids=scope,
             model=model,
-            k=k,
+            k=search_k,
             section_ids=section_ids,
         )
         if not hits:
@@ -164,7 +210,7 @@ class RetrievalService:
                 section_count=len(section_hits),
             )
             return await ingestion_service.search_chunks(
-                ctx, query_vector=query_vector, document_ids=scope, model=model, k=k
+                ctx, query_vector=query_vector, document_ids=scope, model=model, k=search_k
             )
 
         # Hierarchical succeeded.

@@ -38,7 +38,7 @@ from app.models.embed import (
 from app.services.base import BaseRepository
 from app.services.chat import chat_service
 from app.services.knowledge import knowledge_service
-from app.services.seams import LLM, Embedder
+from app.services.seams import LLM, Embedder, Reranker
 from app.utils.rate_limit import RateLimiter
 
 
@@ -246,6 +246,7 @@ class EmbedService:
         *,
         embedder: Embedder,
         llm: LLM,
+        reranker: Reranker,
         rate_limiter: RateLimiter,
         client_ip: str,
     ) -> AsyncIterator[dict]:
@@ -277,6 +278,7 @@ class EmbedService:
             chat_req,
             embedder=embedder,
             llm=llm,
+            reranker=reranker,
             correlation_id=correlation_id,
             widget_id=widget.id,
         )

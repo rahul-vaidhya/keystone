@@ -10,13 +10,14 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.config.settings import settings
 from app.middleware.context import TenantContext
 from app.models.auth import Organization
 from app.models.documents import Document
 from app.models.ingestion import Chunk, ChunkHit, Embedding
 from app.services.ingestion import ingestion_service
-from app.services.retrieval import assemble_context, resolve_allowed_documents
-from app.services.seams import EMBED_DIM
+from app.services.retrieval import assemble_context, resolve_allowed_documents, retrieval_service
+from app.services.seams import EMBED_DIM, FakeReranker
 from app.utils.constants import ROLE_MEMBER
 from main import app
 
@@ -527,3 +528,169 @@ def test_assemble_context_numbers_hits_with_source_refs() -> None:
 def test_assemble_context_empty_hits_returns_empty_results() -> None:
     response = assemble_context("q", [])
     assert response.results == []
+
+
+# --- Reranker (RERANKER_ENABLED gate) --------------------------------------------------
+
+
+class _RecordingReranker:
+    """Test double that records how many candidates it actually received (before any
+    truncation to top_k) — the only reliable way to prove the chunk kNN pool was
+    genuinely WIDENED to RERANK_CANDIDATE_K, since with all-orthogonal fake-embedding
+    distances the post-truncation ORDER alone can't distinguish "widened then truncated"
+    from "never widened"."""
+
+    def __init__(self) -> None:
+        self.received_candidate_count: int | None = None
+
+    async def rerank(self, query: str, candidates: list[ChunkHit], top_k: int) -> list[ChunkHit]:
+        self.received_candidate_count = len(candidates)
+        return [hit.model_copy(update={"rerank_score": 1.0}) for hit in candidates[:top_k]]
+
+
+async def _seed_org_and_document(session_factory) -> tuple[uuid.UUID, uuid.UUID]:
+    org_id = uuid.uuid4()
+    doc_id = uuid.uuid4()
+    async with session_factory() as session, session.begin():
+        session.add(Organization(id=org_id, name="RerankOrg"))
+        await session.flush()
+        session.add(Document(id=doc_id, org_id=org_id, title="Doc"))
+    return org_id, doc_id
+
+
+async def test_reranker_gate_off_regression_matches_pre_feature_behavior(
+    session_factory, tenant_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RERANKER_ENABLED=False (the default): _retrieve_hits is byte-identical to before
+    this feature existed — same count, same order, reranker.rerank is NEVER called (proven
+    by _RecordingReranker never recording a call), and rerank_score is None on every
+    result."""
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", False)
+    org_id, doc_id = await _seed_org_and_document(session_factory)
+    for i in range(3):
+        await _seed_chunk_with_embedding(
+            session_factory,
+            org_id=org_id,
+            document_id=doc_id,
+            ordinal=i,
+            content=f"chunk {i}",
+            seed=i,
+        )
+
+    ctx = TenantContext(org_id=org_id)
+    recorder = _RecordingReranker()
+    hits = await retrieval_service._retrieve_hits(
+        ctx,
+        query_vector=_vector(0),
+        scope=[doc_id],
+        model=FAKE_MODEL,
+        k=2,
+        reranker=recorder,
+        query="a query",
+    )
+    assert len(hits) == 2  # unwidened: req.k passed straight to the SQL LIMIT
+    assert all(hit.rerank_score is None for hit in hits)
+    assert recorder.received_candidate_count is None  # reranker.rerank was never called
+
+
+async def test_reranker_gate_on_widens_candidate_pool_and_truncates_final_k(
+    session_factory, tenant_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RERANKER_ENABLED=True: the chunk kNN pool widens to
+    candidate_k = max(req.k, RERANK_CANDIDATE_K) BEFORE reranking (proven directly by
+    _RecordingReranker.received_candidate_count), and the final result is truncated to
+    final_k = min(req.k, RERANK_TOP_K) AFTER reranking."""
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_CANDIDATE_K", 5)
+    monkeypatch.setattr(settings, "RERANK_TOP_K", 3)
+
+    org_id, doc_id = await _seed_org_and_document(session_factory)
+    # 6 distinct chunks so candidate_k=5 (widened) is observably less than the available
+    # pool, and strictly greater than req.k=2 (would be the unwidened count).
+    for i in range(6):
+        await _seed_chunk_with_embedding(
+            session_factory,
+            org_id=org_id,
+            document_id=doc_id,
+            ordinal=i,
+            content=f"chunk {i}",
+            seed=i,
+        )
+
+    ctx = TenantContext(org_id=org_id)
+    recorder = _RecordingReranker()
+    req_k = 2
+    hits = await retrieval_service._retrieve_hits(
+        ctx,
+        query_vector=_vector(0),
+        scope=[doc_id],
+        model=FAKE_MODEL,
+        k=req_k,
+        reranker=recorder,
+        query="a query",
+    )
+    assert recorder.received_candidate_count == 5  # max(req_k=2, RERANK_CANDIDATE_K=5)
+    assert len(hits) == 2  # min(req_k=2, RERANK_TOP_K=3)
+
+
+async def test_reranker_gate_on_stamps_rerank_score_via_fake_reranker(
+    session_factory, tenant_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RERANKER_ENABLED=True + RERANKER_MODE=fake (the DoD's exact scenario): every
+    returned result carries a non-None rerank_score, sourced through the real
+    FakeReranker (not a test double)."""
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANKER_MODE", "fake")
+
+    org_id, doc_id = await _seed_org_and_document(session_factory)
+    for i in range(3):
+        await _seed_chunk_with_embedding(
+            session_factory,
+            org_id=org_id,
+            document_id=doc_id,
+            ordinal=i,
+            content=f"chunk {i}",
+            seed=i,
+        )
+
+    ctx = TenantContext(org_id=org_id)
+    hits = await retrieval_service._retrieve_hits(
+        ctx,
+        query_vector=_vector(0),
+        scope=[doc_id],
+        model=FAKE_MODEL,
+        k=3,
+        reranker=FakeReranker(),
+        query="a query",
+    )
+    assert hits, "expected at least one hit"
+    assert all(hit.rerank_score is not None for hit in hits)
+
+
+async def test_reranker_gate_off_context_block_rerank_score_is_none_over_http(
+    client: AsyncClient, session_factory
+) -> None:
+    """End-to-end HTTP proof (default settings — gate off): the new `rerank_score` field
+    on ContextBlock is present and None, exercising the real controller Depends(get_reranker)
+    wiring, not just the service layer directly."""
+    tokens = await _signup(client, "rerank-http-off@test.com", "RerankHttpOff")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+
+    doc = await _seed_document(session_factory, org_id, "Doc")
+    await _seed_chunk_with_embedding(
+        session_factory, org_id=org_id, document_id=doc, ordinal=0, content="alpha content"
+    )
+    created = await client.post("/notebooks", headers=headers, json={"name": "NB"})
+    notebook_id = created.json()["id"]
+    await client.post(f"/notebooks/{notebook_id}/documents/{doc}", headers=headers)
+
+    resp = await client.post(
+        "/retrieval/search",
+        headers=headers,
+        json={"notebook_id": notebook_id, "query": "alpha"},
+    )
+    assert resp.status_code == 200
+    results = resp.json()["results"]
+    assert len(results) == 1
+    assert results[0]["rerank_score"] is None

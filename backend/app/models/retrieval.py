@@ -27,6 +27,10 @@ class ContextBlock(BaseModel):
     char_end: int
     content: str
     distance: float
+    # [later] V2 reranker — surfaced from `ChunkHit.rerank_score` unchanged, additive
+    # only. Always `None` when `RERANKER_ENABLED=False` (the default); `distance` is
+    # never touched or removed.
+    rerank_score: float | None = None
 
 
 class RetrievalSearchResponse(BaseModel):

@@ -11,9 +11,12 @@ without any network call.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from app.config import settings
+from app.models.ingestion import ChunkHit
 from app.services.seams import (
     EMBED_DIM,
     LLM,
@@ -21,18 +24,23 @@ from app.services.seams import (
     FakeEmbedder,
     FakeLLM,
     FakeParser,
+    FakeReranker,
     Message,
     ParsedDoc,
     Parser,
     RealEmbedder,
     RealLLM,
     RealParser,
+    RealReranker,
+    Reranker,
     SeamNotConfigured,
+    SeamTransientError,
     _is_negligible_text,
     _parse_markdown_outline,
     get_embedder,
     get_llm,
     get_parser,
+    get_reranker,
 )
 
 # --- FakeEmbedder ---------------------------------------------------------------------
@@ -99,6 +107,48 @@ def test_fake_llm_exposes_model_name() -> None:
     assert FakeLLM().model == "fake-llm"
 
 
+# --- FakeReranker ----------------------------------------------------------------------
+
+
+def _chunk_hit(distance: float) -> ChunkHit:
+    return ChunkHit(
+        chunk_id=uuid.uuid4(),
+        document_id=uuid.uuid4(),
+        content="some chunk content",
+        char_start=0,
+        char_end=19,
+        distance=distance,
+    )
+
+
+async def test_fake_reranker_preserves_order_and_truncates_to_top_k() -> None:
+    """TRUE identity passthrough — candidate order (whatever it arrived in, e.g. cosine-
+    distance order from search_chunks) is preserved verbatim, never re-sorted by score."""
+    candidates = [_chunk_hit(0.9), _chunk_hit(0.1), _chunk_hit(0.5)]
+    result = await FakeReranker().rerank("a query", candidates, top_k=2)
+    assert len(result) == 2
+    assert [hit.chunk_id for hit in result] == [candidates[0].chunk_id, candidates[1].chunk_id]
+
+
+async def test_fake_reranker_stamps_rerank_score_as_one_minus_distance() -> None:
+    candidates = [_chunk_hit(0.3)]
+    (result,) = await FakeReranker().rerank("q", candidates, top_k=8)
+    assert result.rerank_score == pytest.approx(0.7)
+    assert result.distance == 0.3  # distance untouched
+
+
+async def test_fake_reranker_top_k_larger_than_candidates_returns_all() -> None:
+    candidates = [_chunk_hit(0.1), _chunk_hit(0.2)]
+    result = await FakeReranker().rerank("q", candidates, top_k=8)
+    assert len(result) == 2
+
+
+async def test_fake_reranker_never_calls_network() -> None:
+    """No candidates -> no vendor call, no error — same contract as a real 0-candidate
+    scope."""
+    assert await FakeReranker().rerank("q", [], top_k=8) == []
+
+
 def test_real_llm_exposes_configured_model_name(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "LLM_MODEL", "some-model")
     assert RealLLM().model == "some-model"
@@ -128,12 +178,14 @@ def test_fakes_conform_to_protocols() -> None:
     assert isinstance(FakeParser(), Parser)
     assert isinstance(FakeEmbedder(), Embedder)
     assert isinstance(FakeLLM(), LLM)
+    assert isinstance(FakeReranker(), Reranker)
 
 
 def test_real_adapters_conform_to_protocols() -> None:
     assert isinstance(RealParser(), Parser)
     assert isinstance(RealEmbedder(), Embedder)
     assert isinstance(RealLLM(), LLM)
+    assert isinstance(RealReranker(), Reranker)
 
 
 # --- Factory --------------------------------------------------------------------------
@@ -143,30 +195,41 @@ def test_factory_returns_fakes_by_default() -> None:
     assert isinstance(get_parser(), FakeParser)
     assert isinstance(get_embedder(), FakeEmbedder)
     assert isinstance(get_llm(), FakeLLM)
+    assert isinstance(get_reranker(), FakeReranker)
 
 
 def test_factory_returns_real_adapters_independently_per_seam(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Each seam's mode is its own switch (F23) — flipping PARSER_MODE must not affect the
-    # others, validating the whole point of the per-seam refinement.
+    # Each seam's mode is its own switch (F23, extended to the reranker seam) — flipping
+    # PARSER_MODE must not affect the others, validating the whole point of the per-seam
+    # refinement.
     monkeypatch.setattr(settings, "PARSER_MODE", "real")
     assert isinstance(get_parser(), RealParser)
     assert isinstance(get_embedder(), FakeEmbedder)
     assert isinstance(get_llm(), FakeLLM)
+    assert isinstance(get_reranker(), FakeReranker)
 
     monkeypatch.setattr(settings, "PARSER_MODE", "fake")
     monkeypatch.setattr(settings, "EMBEDDER_MODE", "real")
     monkeypatch.setattr(settings, "LLM_MODE", "real")
+    monkeypatch.setattr(settings, "RERANKER_MODE", "real")
     assert isinstance(get_parser(), FakeParser)
     assert isinstance(get_embedder(), RealEmbedder)
     assert isinstance(get_llm(), RealLLM)
+    assert isinstance(get_reranker(), RealReranker)
 
 
 def test_factory_rejects_unknown_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "EMBEDDER_MODE", "bogus")
     with pytest.raises(SeamNotConfigured):
         get_embedder()
+
+
+def test_factory_rejects_unknown_reranker_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "RERANKER_MODE", "bogus")
+    with pytest.raises(SeamNotConfigured):
+        get_reranker()
 
 
 # --- Real adapters fail loudly when unconfigured --------------------------------------
@@ -222,3 +285,75 @@ def test_parse_markdown_outline_is_empty_when_no_headings() -> None:
     # A valid F23 finding, not a bug: flat output passes through as an empty outline,
     # exercising F21's degenerate-outline contract rather than fabricating structure.
     assert _parse_markdown_outline("just plain prose, no markdown headings here.", 1) == []
+
+
+# --- RealReranker -----------------------------------------------------------------------
+
+
+async def test_real_reranker_raises_without_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "RERANKER_URL", None)
+    with pytest.raises(SeamNotConfigured):
+        await RealReranker().rerank("q", [_chunk_hit(0.5)], top_k=8)
+
+
+async def test_real_reranker_no_candidates_returns_empty_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero candidates short-circuits before RERANKER_URL is even checked — no vendor
+    call is possible or needed."""
+    monkeypatch.setattr(settings, "RERANKER_URL", None)
+    assert await RealReranker().rerank("q", [], top_k=8) == []
+
+
+def test_real_reranker_classifies_timeout_connect_and_status_errors_as_transient() -> None:
+    from app.services.seams.real_reranker import _classify_transient
+
+    httpx = pytest.importorskip("httpx")
+
+    class _FakeResponse:
+        def __init__(self, status_code: int) -> None:
+            self.status_code = status_code
+
+    def _status_error(status_code: int) -> httpx.HTTPStatusError:
+        request = httpx.Request("POST", "http://example.test/rerank")
+        return httpx.HTTPStatusError(
+            "boom", request=request, response=httpx.Response(status_code, request=request)
+        )
+
+    assert _classify_transient(httpx.TimeoutException("timed out")) is True
+    assert _classify_transient(httpx.ConnectError("connection refused")) is True
+    assert _classify_transient(_status_error(429)) is True
+    assert _classify_transient(_status_error(503)) is True
+    assert _classify_transient(_status_error(400)) is False
+    assert _classify_transient(ValueError("not a seam error")) is False
+
+
+async def test_real_reranker_wraps_transient_httpx_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transient httpx failure (mocked — no real network call) is re-raised as
+    SeamTransientError, mirroring RealLLM's classification contract."""
+    httpx = pytest.importorskip("httpx")
+    monkeypatch.setattr(settings, "RERANKER_URL", "http://localhost:8081")
+
+    async def _boom(query: str, texts: list[str]) -> list[dict]:
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr("app.services.seams.real_reranker._call_tei_rerank", _boom)
+
+    with pytest.raises(SeamTransientError):
+        await RealReranker().rerank("q", [_chunk_hit(0.5)], top_k=8)
+
+
+async def test_real_reranker_propagates_non_transient_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-transient failure (e.g. a bug, a bad request) is NOT wrapped — it propagates
+    immediately rather than being silently retried."""
+    monkeypatch.setattr(settings, "RERANKER_URL", "http://localhost:8081")
+
+    async def _boom(query: str, texts: list[str]) -> list[dict]:
+        raise ValueError("not a seam error")
+
+    monkeypatch.setattr("app.services.seams.real_reranker._call_tei_rerank", _boom)
+
+    with pytest.raises(ValueError, match="not a seam error"):
+        await RealReranker().rerank("q", [_chunk_hit(0.5)], top_k=8)

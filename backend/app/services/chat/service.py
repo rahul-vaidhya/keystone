@@ -30,7 +30,7 @@ from app.services.chat.repository import ConversationRepository, MessageReposito
 from app.services.ingestion import ingestion_service
 from app.services.knowledge import knowledge_service
 from app.services.retrieval import retrieval_service
-from app.services.seams import LLM, Embedder, SeamTransientError
+from app.services.seams import LLM, Embedder, Reranker, SeamTransientError
 from app.services.seams import Message as SeamMessage
 
 logger = get_logger(__name__)
@@ -208,12 +208,14 @@ class ChatService:
         *,
         embedder: Embedder,
         llm: LLM,
+        reranker: Reranker,
         correlation_id: str,
     ) -> ChatResponse:
         retrieval_response = await retrieval_service.search(
             ctx,
             RetrievalSearchRequest(notebook_id=req.notebook_id, query=req.query, k=req.k),
             embedder=embedder,
+            reranker=reranker,
         )
         logger.info(
             "chat.context_assembled",
@@ -305,6 +307,7 @@ class ChatService:
         *,
         embedder: Embedder,
         llm: LLM,
+        reranker: Reranker,
         correlation_id: str,
         widget_id: uuid.UUID | None = None,
     ) -> AsyncIterator[dict]:
@@ -320,6 +323,7 @@ class ChatService:
             ctx,
             RetrievalSearchRequest(notebook_id=req.notebook_id, query=req.query, k=req.k),
             embedder=embedder,
+            reranker=reranker,
         )
         logger.info(
             "chat.stream_context_assembled",

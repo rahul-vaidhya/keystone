@@ -88,6 +88,26 @@ class Settings(BaseSettings):
     HIERARCHICAL_RETRIEVAL_ENABLED: bool = False
     HIERARCHICAL_TOP_SECTIONS: int = 8
 
+    # --- Reranker / V2 (architecture.md "A Reranker seam is added in V2, not now") ---
+    # RERANKER_ENABLED is a SEPARATE switch from RERANKER_MODE: it gates whether
+    # reranking logic runs AT ALL (same off-by-default pattern as
+    # HIERARCHICAL_RETRIEVAL_ENABLED/ENRICHMENT_ENABLED — shipping this changes nothing
+    # in existing behavior until explicitly turned on). RERANKER_MODE only matters once
+    # RERANKER_ENABLED=true — it picks fake vs real, exactly like PARSER_MODE/
+    # EMBEDDER_MODE/LLM_MODE.
+    RERANKER_ENABLED: bool = False
+    RERANKER_MODE: str = "fake"
+    # RealReranker is an HTTP client for a self-hosted BGE-reranker-v2-m3 instance served
+    # by Hugging Face Text-Embeddings-Inference (see docker-compose.yml's `reranker`
+    # service) — not a vendor SDK, so there is no API key setting here.
+    RERANKER_URL: str | None = None
+    # candidate_k = max(req.k, RERANK_CANDIDATE_K) widens the chunk kNN pool BEFORE
+    # reranking; final_k = min(req.k, RERANK_TOP_K) is the truncated, reordered result
+    # size AFTER reranking. Mirrors the existing hierarchical-retrieval widening pattern
+    # (`s = max(k, HIERARCHICAL_TOP_SECTIONS)` in services/retrieval.py).
+    RERANK_CANDIDATE_K: int = 25
+    RERANK_TOP_K: int = 8
+
     # --- Chat (F40) ---
     # The LLM seam call gets an explicit timeout + retry-with-backoff, but ONLY on
     # transient failures (SeamTransientError from the seam, or our own timeout) — never on
