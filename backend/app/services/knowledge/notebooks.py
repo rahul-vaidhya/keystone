@@ -1,4 +1,4 @@
-"""Notebook use cases.
+"""Notebook CRUD, document association, and per-person sharing use cases.
 
 Document existence/ownership checks go through ``documents.service`` — never
 ``documents.repository`` or ``documents.models`` directly (module-boundary rule:
@@ -11,6 +11,11 @@ Shared users get view+chat access only; every mutating operation (rename, delete
 attach/detach documents, managing shares itself) stays creator-only. The check is
 skipped entirely when ``ctx.user_id is None`` — the anonymous public embed-widget path
 (``services/embed.py``) never carries a real user and must stay unaffected.
+
+``fetch_visible``/``fetch_manageable`` are intentionally NOT underscore-prefixed: the
+Notebook Overview feature's ``overview.py`` (a sibling module in this package) reuses
+them for its own access check — "any notebook member" is exactly ``fetch_visible``'s
+existing contract, so it's shared rather than re-implemented.
 """
 
 from __future__ import annotations
@@ -37,22 +42,7 @@ from app.models.knowledge import (
 )
 from app.services.base import BaseRepository
 from app.services.documents import documents_service
-
-
-# ---- exceptions ----
-class KnowledgeError(Exception):
-    """Base notebooks failure."""
-
-
-class NotebookNotFound(KnowledgeError):
-    pass
-
-
-class NotebookAccessDenied(KnowledgeError):
-    """Raised when an authenticated user (``ctx.user_id`` is set) who is neither the
-    notebook's creator nor a share recipient (for view-level checks — manage-level
-    checks require creator regardless of shares) requests it. Maps to 403, not 404 —
-    unlike ``NotebookNotFound``, this deliberately confirms the notebook exists."""
+from app.services.knowledge.exceptions import NotebookAccessDenied, NotebookNotFound
 
 
 # ---- repository ----
@@ -187,13 +177,16 @@ class NotebookShareRepository(BaseRepository[NotebookShare]):
 # ---- service ----
 
 
-async def _fetch_visible(
+async def fetch_visible(
     session: AsyncSession, ctx: TenantContext, notebook_id: uuid.UUID
 ) -> Notebook:
     """View-level fetch: creator, a share recipient, or an anonymous (widget) ctx may
     read the notebook. Everyone else gets ``NotebookAccessDenied``. ``ctx.user_id is
     None`` (the public embed path) always passes — that path proves consent a
-    different way (an admin deliberately created a public widget for the notebook)."""
+    different way (an admin deliberately created a public widget for the notebook).
+    Also the access check the Notebook Overview feature (``overview.py``) reuses for
+    both generating and fetching an overview — "any notebook member" is exactly this
+    contract."""
     notebook = await NotebookRepository(session, ctx).get_by_id(notebook_id)
     if notebook is None:
         raise NotebookNotFound("Notebook not found")
@@ -204,11 +197,11 @@ async def _fetch_visible(
     raise NotebookAccessDenied("You do not have access to this notebook")
 
 
-async def _fetch_manageable(
+async def fetch_manageable(
     session: AsyncSession, ctx: TenantContext, notebook_id: uuid.UUID
 ) -> Notebook:
     """Manage-level fetch: only the creator (or an anonymous ctx, for symmetry with
-    ``_fetch_visible`` — no anonymous caller actually mutates a notebook today) may
+    ``fetch_visible`` — no anonymous caller actually mutates a notebook today) may
     rename/delete it, attach/detach documents, or manage its shares. A share recipient
     is visible but never manageable — enforces the "view + chat only" contract."""
     notebook = await NotebookRepository(session, ctx).get_by_id(notebook_id)
@@ -219,114 +212,124 @@ async def _fetch_manageable(
     raise NotebookAccessDenied("Only the notebook's creator can do this")
 
 
-class KnowledgeService:
-    async def create_notebook(self, ctx: TenantContext, req: NotebookCreate) -> NotebookOut:
-        async with db_mod.tenant_session(ctx.org_id) as session:
-            notebook = await NotebookRepository(session, ctx).create(
-                name=req.name, description=req.description, created_by=ctx.user_id
-            )
-        return NotebookOut.model_validate(notebook)
-
-    async def list_notebooks(self, ctx: TenantContext) -> list[NotebookOut]:
-        async with db_mod.tenant_session(ctx.org_id) as session:
-            if ctx.user_id is None:
-                notebooks: list[Notebook] = []
-            else:
-                notebooks = await NotebookRepository(session, ctx).list_visible(ctx.user_id)
-        return [NotebookOut.model_validate(n) for n in notebooks]
-
-    async def get_notebook(self, ctx: TenantContext, notebook_id: uuid.UUID) -> NotebookOut:
-        async with db_mod.tenant_session(ctx.org_id) as session:
-            notebook = await _fetch_visible(session, ctx, notebook_id)
-        return NotebookOut.model_validate(notebook)
-
-    async def update_notebook(
-        self, ctx: TenantContext, notebook_id: uuid.UUID, req: NotebookUpdate
-    ) -> NotebookOut:
-        async with db_mod.tenant_session(ctx.org_id) as session:
-            repo = NotebookRepository(session, ctx)
-            notebook = await _fetch_manageable(session, ctx, notebook_id)
-            await repo.update(notebook, name=req.name, description=req.description)
-            out = NotebookOut.model_validate(notebook)
-        return out
-
-    async def delete_notebook(self, ctx: TenantContext, notebook_id: uuid.UUID) -> None:
-        async with db_mod.tenant_session(ctx.org_id) as session:
-            notebook = await _fetch_manageable(session, ctx, notebook_id)
-            await NotebookRepository(session, ctx).delete(notebook)
-
-    async def attach_document(
-        self, ctx: TenantContext, notebook_id: uuid.UUID, document_id: uuid.UUID
-    ) -> None:
-        """Idempotent. Validates the notebook is manageable by ``ctx`` and the document
-        belongs to the same org (via ``documents_service.get_document``, which raises
-        ``DocumentNotFound`` if not — re-raised as-is since both modules' "not found"
-        exceptions map to 404 the same way) before attaching."""
-        async with db_mod.tenant_session(ctx.org_id) as session:
-            await _fetch_manageable(session, ctx, notebook_id)
-            await documents_service.get_document(ctx, document_id)
-            await NotebookDocumentRepository(session, ctx).attach(notebook_id, document_id)
-
-    async def detach_document(
-        self, ctx: TenantContext, notebook_id: uuid.UUID, document_id: uuid.UUID
-    ) -> None:
-        async with db_mod.tenant_session(ctx.org_id) as session:
-            await _fetch_manageable(session, ctx, notebook_id)
-            await NotebookDocumentRepository(session, ctx).detach(notebook_id, document_id)
-
-    async def list_notebook_documents(
-        self, ctx: TenantContext, notebook_id: uuid.UUID
-    ) -> list[DocumentOut]:
-        async with db_mod.tenant_session(ctx.org_id) as session:
-            await _fetch_visible(session, ctx, notebook_id)
-            document_ids = await NotebookDocumentRepository(session, ctx).list_document_ids(
-                notebook_id
-            )
-        return await documents_service.list_by_ids(ctx, document_ids)
-
-    async def share_notebook(
-        self, ctx: TenantContext, notebook_id: uuid.UUID, req: NotebookShareCreate
-    ) -> None:
-        """Creator-only. Validates the target user exists in this org via
-        ``auth_service.get_users_by_ids`` (module-boundary rule — never a direct
-        ``users`` table read from this module); local import mirrors
-        ``documents.service``'s established auth-import precedent (avoids a circular
-        import at module load time)."""
-        from app.services.auth import auth_service
-
-        async with db_mod.tenant_session(ctx.org_id) as session:
-            await _fetch_manageable(session, ctx, notebook_id)
-            emails = await auth_service.get_users_by_ids(ctx, [req.user_id])
-            if req.user_id not in emails:
-                raise NotebookNotFound("User not found")
-            await NotebookShareRepository(session, ctx).create(
-                notebook_id, req.user_id, shared_by=ctx.user_id
-            )
-
-    async def unshare_notebook(
-        self, ctx: TenantContext, notebook_id: uuid.UUID, user_id: uuid.UUID
-    ) -> None:
-        async with db_mod.tenant_session(ctx.org_id) as session:
-            await _fetch_manageable(session, ctx, notebook_id)
-            await NotebookShareRepository(session, ctx).delete(notebook_id, user_id)
-
-    async def list_shares(
-        self, ctx: TenantContext, notebook_id: uuid.UUID
-    ) -> list[NotebookShareOut]:
-        from app.services.auth import auth_service
-
-        async with db_mod.tenant_session(ctx.org_id) as session:
-            await _fetch_manageable(session, ctx, notebook_id)
-            shares = await NotebookShareRepository(session, ctx).list_for_notebook(notebook_id)
-        emails = await auth_service.get_users_by_ids(ctx, [s.user_id for s in shares])
-        return [
-            NotebookShareOut(
-                user_id=s.user_id,
-                email=emails.get(s.user_id, "(removed user)"),
-                created_at=s.created_at,
-            )
-            for s in shares
-        ]
+async def create_notebook(ctx: TenantContext, req: NotebookCreate) -> NotebookOut:
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        notebook = await NotebookRepository(session, ctx).create(
+            name=req.name, description=req.description, created_by=ctx.user_id
+        )
+    return NotebookOut.model_validate(notebook)
 
 
-knowledge_service = KnowledgeService()
+async def list_notebooks(ctx: TenantContext) -> list[NotebookOut]:
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        if ctx.user_id is None:
+            notebooks: list[Notebook] = []
+        else:
+            notebooks = await NotebookRepository(session, ctx).list_visible(ctx.user_id)
+    return [NotebookOut.model_validate(n) for n in notebooks]
+
+
+async def get_notebook(ctx: TenantContext, notebook_id: uuid.UUID) -> NotebookOut:
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        notebook = await fetch_visible(session, ctx, notebook_id)
+    return NotebookOut.model_validate(notebook)
+
+
+async def update_notebook(
+    ctx: TenantContext, notebook_id: uuid.UUID, req: NotebookUpdate
+) -> NotebookOut:
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        repo = NotebookRepository(session, ctx)
+        notebook = await fetch_manageable(session, ctx, notebook_id)
+        await repo.update(notebook, name=req.name, description=req.description)
+        out = NotebookOut.model_validate(notebook)
+    return out
+
+
+async def delete_notebook(ctx: TenantContext, notebook_id: uuid.UUID) -> None:
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        notebook = await fetch_manageable(session, ctx, notebook_id)
+        await NotebookRepository(session, ctx).delete(notebook)
+
+
+async def attach_document(
+    ctx: TenantContext, notebook_id: uuid.UUID, document_id: uuid.UUID
+) -> None:
+    """Idempotent. Validates the notebook is manageable by ``ctx`` and the document
+    belongs to the same org (via ``documents_service.get_document``, which raises
+    ``DocumentNotFound`` if not — re-raised as-is since both modules' "not found"
+    exceptions map to 404 the same way) before attaching. Marks any existing Notebook
+    Overview ``stale`` afterward (deferred import: ``overview.py`` imports THIS module
+    at load time for ``fetch_visible``, so importing it back here at module level would
+    be circular) — fires even on an idempotent no-op re-attach, a harmless false
+    positive rather than added plumbing to detect the true no-op case."""
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        await fetch_manageable(session, ctx, notebook_id)
+        await documents_service.get_document(ctx, document_id)
+        await NotebookDocumentRepository(session, ctx).attach(notebook_id, document_id)
+
+    from app.services.knowledge.overview import mark_stale
+
+    await mark_stale(ctx, notebook_id)
+
+
+async def detach_document(
+    ctx: TenantContext, notebook_id: uuid.UUID, document_id: uuid.UUID
+) -> None:
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        await fetch_manageable(session, ctx, notebook_id)
+        await NotebookDocumentRepository(session, ctx).detach(notebook_id, document_id)
+
+    from app.services.knowledge.overview import mark_stale
+
+    await mark_stale(ctx, notebook_id)
+
+
+async def list_notebook_documents(ctx: TenantContext, notebook_id: uuid.UUID) -> list[DocumentOut]:
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        await fetch_visible(session, ctx, notebook_id)
+        document_ids = await NotebookDocumentRepository(session, ctx).list_document_ids(notebook_id)
+    return await documents_service.list_by_ids(ctx, document_ids)
+
+
+async def share_notebook(
+    ctx: TenantContext, notebook_id: uuid.UUID, req: NotebookShareCreate
+) -> None:
+    """Creator-only. Validates the target user exists in this org via
+    ``auth_service.get_users_by_ids`` (module-boundary rule — never a direct
+    ``users`` table read from this module); local import mirrors
+    ``documents.service``'s established auth-import precedent (avoids a circular
+    import at module load time)."""
+    from app.services.auth import auth_service
+
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        await fetch_manageable(session, ctx, notebook_id)
+        emails = await auth_service.get_users_by_ids(ctx, [req.user_id])
+        if req.user_id not in emails:
+            raise NotebookNotFound("User not found")
+        await NotebookShareRepository(session, ctx).create(
+            notebook_id, req.user_id, shared_by=ctx.user_id
+        )
+
+
+async def unshare_notebook(ctx: TenantContext, notebook_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        await fetch_manageable(session, ctx, notebook_id)
+        await NotebookShareRepository(session, ctx).delete(notebook_id, user_id)
+
+
+async def list_shares(ctx: TenantContext, notebook_id: uuid.UUID) -> list[NotebookShareOut]:
+    from app.services.auth import auth_service
+
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        await fetch_manageable(session, ctx, notebook_id)
+        shares = await NotebookShareRepository(session, ctx).list_for_notebook(notebook_id)
+    emails = await auth_service.get_users_by_ids(ctx, [s.user_id for s in shares])
+    return [
+        NotebookShareOut(
+            user_id=s.user_id,
+            email=emails.get(s.user_id, "(removed user)"),
+            created_at=s.created_at,
+        )
+        for s in shares
+    ]

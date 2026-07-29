@@ -13,11 +13,13 @@ from app.models.documents import DocumentOut
 from app.models.knowledge import (
     NotebookCreate,
     NotebookOut,
+    NotebookOverviewOut,
     NotebookShareCreate,
     NotebookShareOut,
     NotebookUpdate,
 )
 from app.services.knowledge import knowledge_service
+from app.services.seams import LLM, get_llm
 
 
 async def create_notebook(
@@ -92,3 +94,21 @@ async def unshare_notebook(
     ctx: Annotated[TenantContext, Depends(get_ctx)],
 ) -> None:
     await knowledge_service.unshare_notebook(ctx, notebook_id, user_id)
+
+
+async def generate_overview(
+    notebook_id: uuid.UUID,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+    llm: Annotated[LLM, Depends(get_llm)],
+) -> NotebookOverviewOut:
+    """Generate/regenerate the notebook's Overview. Any notebook member may call this —
+    same access level chat already uses for this notebook (the real gate is inside the
+    service, via ``knowledge_service.get_notebook``'s ``fetch_visible``)."""
+    return await knowledge_service.generate_overview(ctx, notebook_id, llm=llm)
+
+
+async def get_overview(
+    notebook_id: uuid.UUID, ctx: Annotated[TenantContext, Depends(get_ctx)]
+) -> NotebookOverviewOut:
+    """Fetch the cached Overview. Same access level as ``generate_overview``."""
+    return await knowledge_service.get_overview(ctx, notebook_id)

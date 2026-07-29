@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { Document } from "../types/documents";
 import type { Notebook } from "../types/knowledge";
+import { ApiError } from "../types/auth";
 import { notebooksApi } from "../services/notebooksService";
 import { documentsApi } from "../services/documentsService";
 import { useAuth } from "../hooks/useAuth";
@@ -21,6 +22,8 @@ vi.mock("../services/notebooksService", () => ({
     listShares: vi.fn(() => Promise.resolve([])),
     share: vi.fn(),
     unshare: vi.fn(),
+    getOverview: vi.fn(() => Promise.reject(new ApiError(404, "not found", null))),
+    generateOverview: vi.fn(),
   },
 }));
 
@@ -97,6 +100,10 @@ describe("NotebookPage", () => {
     vi.mocked(notebooksApi.listShares).mockReset().mockResolvedValue([]);
     vi.mocked(notebooksApi.share).mockReset();
     vi.mocked(notebooksApi.unshare).mockReset();
+    vi.mocked(notebooksApi.getOverview)
+      .mockReset()
+      .mockRejectedValue(new ApiError(404, "not found", null));
+    vi.mocked(notebooksApi.generateOverview).mockReset();
     vi.mocked(documentsApi.listDocuments).mockReset();
     vi.mocked(useAuth).mockReturnValue({
       user: {
@@ -255,5 +262,23 @@ describe("NotebookPage", () => {
     expect(screen.queryByText("Share")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Remove report.pdf from notebook")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Add other.pdf to notebook")).not.toBeInTheDocument();
+  });
+
+  it("defaults to the Chat tab and switches to Overview on click", async () => {
+    vi.mocked(notebooksApi.get).mockResolvedValue(makeNotebook());
+    vi.mocked(notebooksApi.listDocuments).mockResolvedValue([]);
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([]);
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText("Chemistry")).toBeInTheDocument());
+    // Chat's own empty-state placeholder is visible by default.
+    await waitFor(() =>
+      expect(screen.getByText(/This notebook has no documents yet/)).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByText("Overview"));
+
+    await waitFor(() => expect(screen.getByText(/No overview yet/)).toBeInTheDocument());
   });
 });

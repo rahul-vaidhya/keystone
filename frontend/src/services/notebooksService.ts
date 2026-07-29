@@ -1,6 +1,6 @@
 import { apiFetch } from "./http";
 import type { Document } from "../types/documents";
-import type { Notebook, NotebookShare } from "../types/knowledge";
+import type { Notebook, NotebookOverview, NotebookShare } from "../types/knowledge";
 
 export const notebooksApi = {
   list: () => apiFetch<Notebook[]>("/notebooks"),
@@ -41,4 +41,11 @@ export const notebooksApi = {
 
   unshare: (notebookId: string, userId: string) =>
     apiFetch<void>(`/notebooks/${notebookId}/shares/${userId}`, { method: "DELETE" }),
+
+  // P1 Notebook Overview: on-demand, cached "gist of everything" artifact.
+  getOverview: (notebookId: string) =>
+    apiFetch<NotebookOverview>(`/notebooks/${notebookId}/overview`),
+
+  generateOverview: (notebookId: string) =>
+    apiFetch<NotebookOverview>(`/notebooks/${notebookId}/overview`, { method: "POST" }),
 };

@@ -9,6 +9,7 @@ import { ApiError } from "../types/auth";
 import type { Document } from "../types/documents";
 import { StatusBadge } from "../components/StatusBadge";
 import { ChatPanel } from "../components/ChatPanel";
+import { NotebookOverviewPanel } from "../components/NotebookOverviewPanel";
 import { ShareNotebookDialog } from "../components/ShareNotebookDialog";
 
 export function NotebookPage() {
@@ -18,6 +19,7 @@ export function NotebookPage() {
   const dialog = useDialog();
   const { user } = useAuth();
   const [shareOpen, setShareOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<"chat" | "overview">("chat");
 
   const notebookQuery = useQuery({
     queryKey: ["notebooks", notebookId],
@@ -177,8 +179,38 @@ export function NotebookPage() {
         </div>
       </aside>
 
-      {/* Right: chat panel */}
-      <ChatPanel notebookId={notebookId} documents={nbDocsQuery.data ?? []} />
+      {/* Right: chat / overview tabs */}
+      <div className="flex flex-col flex-1 min-h-0">
+        <div className="shrink-0 border-b border-border flex gap-1 px-4">
+          <button
+            type="button"
+            onClick={() => setActiveTab("chat")}
+            className={`text-sm px-3 py-2 border-b-2 transition ${
+              activeTab === "chat"
+                ? "border-accent text-text"
+                : "border-transparent text-muted hover:text-text"
+            }`}
+          >
+            Chat
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("overview")}
+            className={`text-sm px-3 py-2 border-b-2 transition ${
+              activeTab === "overview"
+                ? "border-accent text-text"
+                : "border-transparent text-muted hover:text-text"
+            }`}
+          >
+            Overview
+          </button>
+        </div>
+        {activeTab === "chat" ? (
+          <ChatPanel notebookId={notebookId} documents={nbDocsQuery.data ?? []} />
+        ) : (
+          <NotebookOverviewPanel notebookId={notebookId} documents={nbDocsQuery.data ?? []} />
+        )}
+      </div>
     </div>
   );
 }

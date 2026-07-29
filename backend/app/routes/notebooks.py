@@ -6,7 +6,7 @@ from fastapi import APIRouter
 
 from app import controllers
 from app.models.documents import DocumentOut
-from app.models.knowledge import NotebookOut, NotebookShareOut
+from app.models.knowledge import NotebookOut, NotebookOverviewOut, NotebookShareOut
 
 router = APIRouter(prefix="/notebooks", tags=["notebooks"])
 
@@ -30,4 +30,10 @@ router.get("/{notebook_id}/shares", response_model=list[NotebookShareOut])(
 router.post("/{notebook_id}/shares", status_code=204)(controllers.notebooks.share_notebook)
 router.delete("/{notebook_id}/shares/{user_id}", status_code=204)(
     controllers.notebooks.unshare_notebook
+)
+router.post("/{notebook_id}/overview", response_model=NotebookOverviewOut)(
+    controllers.notebooks.generate_overview
+)
+router.get("/{notebook_id}/overview", response_model=NotebookOverviewOut)(
+    controllers.notebooks.get_overview
 )

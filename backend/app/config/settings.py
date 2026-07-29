@@ -141,6 +141,16 @@ class Settings(BaseSettings):
     BROAD_QUERY_ENABLED: bool = False
     BROAD_QUERY_MAX_DOCUMENTS: int = 20
 
+    # --- Notebook Overview / P1 (memory.md "P1 roadmap") ---
+    # Off by default (same pattern as BROAD_QUERY_ENABLED). Gates ONLY generation
+    # (``KnowledgeService.generate_overview``) — reading an already-cached overview via
+    # GET stays available even if this is later turned off, mirroring how turning off
+    # RERANKER_ENABLED/HYBRID_SEARCH_ENABLED doesn't retroactively erase already-computed
+    # rerank_score/content_tsv values. Reuses BROAD_QUERY_MAX_DOCUMENTS as its
+    # document-count safety cap and the same map-reduce mechanism
+    # (services/retrieval/mapreduce.py) — no separate cap setting needed.
+    NOTEBOOK_OVERVIEW_ENABLED: bool = False
+
     # --- Chat (F40) ---
     # The LLM seam call gets an explicit timeout + retry-with-backoff, but ONLY on
     # transient failures (SeamTransientError from the seam, or our own timeout) — never on

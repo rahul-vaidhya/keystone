@@ -42,7 +42,13 @@ from app.services.documents import (
     TagNotFound,
 )
 from app.services.embed import EmbedError, OriginNotAllowed, WidgetNotFound, WidgetRateLimited
-from app.services.knowledge import KnowledgeError, NotebookAccessDenied, NotebookNotFound
+from app.services.knowledge import (
+    KnowledgeError,
+    NotebookAccessDenied,
+    NotebookNotFound,
+    OverviewNotFound,
+    OverviewUnavailable,
+)
 
 
 def get_client_ip(request: Request) -> str:
@@ -136,6 +142,20 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
             content={"detail": str(exc) or "You do not have access to this notebook"},
+        )
+
+    @app.exception_handler(OverviewNotFound)
+    async def _overview_not_found(_request: Request, exc: OverviewNotFound) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": str(exc) or "No overview has been generated for this notebook yet"},
+        )
+
+    @app.exception_handler(OverviewUnavailable)
+    async def _overview_unavailable(_request: Request, exc: OverviewUnavailable) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": str(exc) or "Cannot generate an overview right now"},
         )
 
     @app.exception_handler(KnowledgeError)
