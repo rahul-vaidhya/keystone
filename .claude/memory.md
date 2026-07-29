@@ -4,6 +4,361 @@
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
 
+## P1 roadmap: broad-query router + map-reduce, contextual retrieval, Notebook Overview — IN PROGRESS (2026-07-29)
+
+**Build order confirmed in the blueprint below: Feature 1 → Feature 3 → Feature 2.**
+Same orchestration pattern as the 2026-07-28 P0 round: one implementer subagent per
+feature, then a SEPARATE fresh verifier subagent (no memory of the implementation)
+independently re-runs the full suite + ruff itself, orchestrator only reads the
+verifier's summary. Repo state re-confirmed against the blueprint before starting
+this round: migration head was `0023` (next is `0024`), `services/chat/service.py`
+was 587 lines (matches the ~588 noted below), `services/retrieval/` already a
+package — nothing stale, proceeded without re-planning.
+
+### Feature 1: Broad-query router + map-reduce — DONE (2026-07-29, uncommitted)
+
+New `app/services/retrieval/mapreduce.py` (4th retrieval strategy, generic —
+`document_ids` + `purpose` string + `llm`, reusable by the not-yet-built Notebook
+Overview feature): `collect_section_summaries`, `is_broad_query_available` (pure
+fallback gate), `run_map_reduce` (map via `asyncio.gather` + reduce), `build_synthesis_blocks`.
+New `app/services/chat/broad_query.py`: `classify_query` (one cheap LLM call via the
+existing seam, BROAD/SPECIFIC), `try_broad_query` (glue — checks flag/fallback/
+classification, runs map-reduce, builds `citation_type="section"` citations).
+`ChatService.ask`/`stream_ask` gain a `if settings.BROAD_QUERY_ENABLED:` gate before
+the existing pipeline — zero extra work when off, proven by a dedicated regression
+test asserting `classify_calls == 0`/`map_calls == 0`. New settings
+`BROAD_QUERY_ENABLED=False`, `BROAD_QUERY_MAX_DOCUMENTS=20`. New Pydantic types
+`SectionSummaryHit`/`SynthesisBlock` in `models/retrieval.py`. `ResolvedCitation`
+gained `citation_type: Literal["chunk","section"]="chunk"` (additive, old chunk path
+untouched — `chunk_id`/`char_start`/`char_end` stay always-populated there, only
+structurally nullable now for the new section path's `section_id`/`heading`).
+New org-scoped `SectionRepository.list_for_documents`,
+`ChunkRepository.list_for_sections` (the latter built+tested per spec but NOT called
+by the broad-query path — section summaries alone are sufficient for the map step,
+confirmed by the implementer). New `ingestion/search.py` `list_section_summaries`
+orchestration wrapper keeps the module-boundary rule intact (chat/retrieval never
+touch ingestion's repository directly).
+
+**Two disclosed, reasonable deviations**: (1) `broad_query.py`/`mapreduce.py` each
+have a small local `[n]`-marker-regex / prompt-formatting duplicate instead of
+importing `chat.service`'s versions — `chat.service` imports `broad_query`, so the
+reverse import would be circular; (2) map/reduce LLM calls have no retry/timeout
+wrapper (unlike `chat.service.call_llm_with_retry`) — a known, disclosed
+simplification worth revisiting before real production LLM traffic. `_persist`'s
+`hits` parameter type was widened (`list[ContextBlock] | list[SynthesisBlock]`, no
+new parameter, no behavior change) to let `message_traces` represent either hit
+shape; `get_trace` uses a `TypeAdapter` union to reconstruct whichever was stored.
+
+**Independently verified by a fresh subagent with no knowledge of the
+implementation** (not just the implementer's self-report): full diff read from
+scratch, full suite re-run from a clean state (`.env` moved aside for a clean fakes-
+only signal, restored after — same precedent as prior P0-round verifications),
+**353 passed, 3 skipped** (up from the 335 baseline, +18 new tests in
+`tests/test_broad_query.py`, zero regressions), `ruff check`/`ruff format --check`
+both clean, no stray `.env.bak*` left behind. Confirmed independently: gate-off path
+byte-identical, both fallback conditions (zero section summaries; document count >
+`BROAD_QUERY_MAX_DOCUMENTS`) genuinely tested with real assertions (not name-only),
+map step is inline `asyncio.gather` with zero new job/queue code, citation defaults
+correct and old chunk-citation tests pass unchanged, both new repository methods
+have a real cross-org-returns-nothing test, no SQL outside repositories, no business
+logic in routes/controllers (zero routes/controllers/frontend files touched), module
+boundaries respected. **Verdict: PASS, nothing found that would block shipping.**
+**Not committed** — per the established P0-round precedent, commits happen at the
+end (or per-feature, per a decision at that time), not mid-round.
+
+### Feature 3: Notebook Overview — DONE (2026-07-29, uncommitted)
+
+Built directly on Feature 1's `mapreduce.py` (confirmed genuinely reusable as
+designed — zero changes needed to its public contract). Confirmed real migration
+head before starting: `0023` → new `migrations/versions/0024_notebook_overviews.py`,
+`notebook_overviews` table (`notebook_id` UNIQUE, `citations` jsonb, `generated_by`
+FK SET NULL, `stale` bool default false), full F60-pattern RLS block (verified
+byte-identical in shape to `0022`/`0023`). New `NOTEBOOK_OVERVIEW_ENABLED=False`
+setting — **gates generation only, not `GET`**: an already-cached overview stays
+readable even if the flag is later turned off (mirrors how `RERANKER_ENABLED=False`
+doesn't erase a stored `rerank_score`), directly tested and independently confirmed.
+
+On-demand only (`POST`/`GET /notebooks/{id}/overview`, any notebook member per the
+existing per-person notebook-sharing rule from migration 0020 — not admin-only).
+Regenerate is a real upsert on `notebook_id`'s unique constraint (same row id across
+regenerations, verified via direct DB query in a test). `attach_document`/
+`detach_document` both hook `mark_stale` (verified both directions, not just one) —
+flips `stale=true`, never deletes/auto-regenerates. Refusal behavior deliberately
+differs from Feature 1's invisible chat fallback: since this is a user-clicked
+button, zero-section-summaries / doc-count-over-`BROAD_QUERY_MAX_DOCUMENTS` (reused,
+no separate cap) raises a new typed `OverviewUnavailable`→409 (new `OverviewNotFound`
+→404 for the GET-before-ever-generated case) rather than silently degrading.
+
+**Real structural finding, correctly handled**: `services/knowledge.py` was already
+332 lines / 3 mixed responsibilities BEFORE this feature (a pre-existing, previously
+accepted judgment call to leave it flat) — adding Overview's LLM-orchestrated
+generation + its own repository tipped it into a 4th genuinely independent
+responsibility, so it was split into `services/knowledge/{__init__,exceptions,
+notebooks,overview}.py` (by-subdomain, mirroring `documents/`'s convention) as part
+of this feature, not padded further. Independently verified as a true zero-logic-
+change move (diffed old flat file against new `notebooks.py` — same logic, methods
+converted to free-function delegation, only real additions are the two `mark_stale`
+hooks).
+
+**Real circular-import bug found and fixed, independently confirmed real**: naively
+importing `retrieval.mapreduce` at module load time inside the new `overview.py`
+creates `knowledge → retrieval → knowledge` (verified: `retrieval/service.py` really
+does `from app.services.knowledge import knowledge_service` at module level) — fixed
+by deferring the mapreduce import inside `generate_overview` itself.
+
+**Deliberate scope choice, not a gap**: Overview uses the notebook's FULL attached-
+document set, NOT `resolve_allowed_documents`/Access-Role tag filtering — a per-
+generating-user-filtered cache would be leaky/inconsistent across different members
+viewing the same cached artifact. Not addressed by the blueprint, read as
+intentional. Also: `types/chat.ts`'s `ResolvedCitation` was deliberately left
+untouched (still missing Feature 1's `citation_type` etc. on the frontend type) —
+that's Feature 1's own frontend wiring, out of this feature's scope; a separate
+`NotebookOverviewCitation` frontend type was added instead of widening a shared type
+as a side effect.
+
+**Independently verified by a fresh subagent with no knowledge of the
+implementation**: full diff read from scratch (backend + frontend + migration),
+backend suite re-run clean (**368 passed, 3 skipped**, up from 353 — `.env` moved
+aside/restored, confirmed via `ls`/`git status`), `ruff check`/`ruff format --check`
+clean, `alembic heads` confirmed a single head (`0024`), frontend **169 passed**
+(up from 162), `tsc -b`/`vite build` clean. All 10 DoD points independently
+re-confirmed true (not just re-stated from the implementer's report), including
+the circular-import fix and the package-split justification. **One trivial,
+non-blocking cosmetic finding**: `models/knowledge.py`'s `NotebookOverviewOut` has a
+harmlessly duplicated `model_config = {"from_attributes": True}` line (no functional
+effect, ruff doesn't flag it) — worth a one-line cleanup before commit, not urgent
+enough to warrant its own fix round this session. **Verdict: PASS. Not committed.**
+
+### Feature 2: Contextual retrieval — DONE (2026-07-29, uncommitted) — ALL 3 P1 FEATURES COMPLETE
+
+Zero-schema-change, exactly per the locked design: hooked into `run_enrichment_stage`
+itself (in `enrichment.py`), not the core F22 embedding stage — re-embeds a
+section's chunks IN PLACE right after that section's summary is computed, since
+chunk embedding happens strictly before enrichment ever runs. New
+`CONTEXTUAL_EMBEDDING_ENABLED=False`. Reuses `ChunkRepository.list_for_sections`
+(the Feature-1-built method that Feature 1 itself ended up not calling — now has a
+real caller). New input = `f"{section.summary}\n\n{chunk.content}"`, same
+`Embedder.embed(...)` seam call the original F22 stage uses, upserted back into the
+EXISTING `owner_type='chunk'` rows via the existing `EmbeddingRepository.
+upsert_chunk_embeddings` unique-constraint upsert — no new rows, no new
+`owner_type`, no new migration. Per-section try/except mirrors the existing
+summary/topics failure discipline exactly (one section's re-embed failure never
+blocks others or fails the document).
+
+**Independently verified by a fresh subagent** (2nd attempt — the FIRST verifier
+attempt stalled mid-run with a `failed` status from a stream watchdog timeout after
+600s of no progress; caught via the documented gotcha "a stalled/failed subagent
+notification doesn't mean zero progress" — checked `git status` directly, found it
+had left `backend/.env` moved aside as `.env.bak_verify` and never restored;
+orchestrator restored it immediately, then dispatched a completely fresh verifier
+with explicit instructions to use a uniquely-named backup and restore-and-verify as
+its literal last action before reporting). The 2nd verifier confirmed all 10 DoD
+points from scratch: zero schema change (only `0024` exists, belongs to Notebook
+Overview, not this feature); flag-off byte-identical via a real vector-VALUE
+comparison (not row-count); flag-on proven via a vector that both differs from the
+original AND exactly matches the embedder's output for the precise expected
+contextualized string; same seam call pattern as F22; upsert lands on existing rows
+(no count increase); non-fatal per-section failure genuinely tested with a
+`_FlakyEmbedder` that fails only one named section while the other's chunks still
+get re-embedded; idempotent re-run tested directly (same vectors both runs);
+org-scoping intact; zero touches to `retrieval.py`/`chat/service.py`/`broad_query.py`
+/`mapreduce.py`/`knowledge*` (the other 2 features' files) confirmed via diff read.
+**Suite: 372 passed, 3 skipped** (up from 368 — 4 new tests, 0 regressions to either
+of the other 2 features this round), ruff clean, `.env` hygiene confirmed as the
+verifier's final action. **Verdict: PASS. Not committed.**
+
+**New standing gotcha, reusable**: a verifier subagent (not just an implementer) can
+also stall mid-task-notification with `status: failed` from the stream watchdog —
+same recovery applies: check `git status`/for stray `.env.bak*` files yourself
+before assuming zero progress, fix any leftover mess (e.g. restore a moved-aside
+`.env`) yourself, then dispatch a completely fresh verifier rather than trying to
+resume a stalled one that never reached a final verdict.
+
+## ALL 3 P1 FEATURES COMPLETE (2026-07-29) — none committed yet
+
+Final backend suite baseline: **372 passed, 3 skipped** (started this round at 335).
+Frontend: **169 passed** (started at 162), `tsc -b`/`vite build` clean throughout.
+`ruff check`/`ruff format --check` clean at every checkpoint. Single migration head
+`0024` (was `0023` at round start — only Feature 3/Notebook Overview added a
+migration; Features 1 and 2 needed none). All 3 features are flag-gated off by
+default (`BROAD_QUERY_ENABLED`, `NOTEBOOK_OVERVIEW_ENABLED`,
+`CONTEXTUAL_EMBEDDING_ENABLED` — all `False`), so nothing changes in production
+behavior until explicitly turned on. **One outstanding trivial cosmetic item**:
+`models/knowledge.py`'s `NotebookOverviewOut` has a harmless duplicated
+`model_config = {"from_attributes": True}` line (Feature 3, noted by its verifier,
+never blocking, worth a one-line cleanup before/at commit time). **Not committed** —
+ask the user whether to commit as one bundled changeset or per-feature (mirroring
+the 2026-07-28 P0 round's eventual per-feature-commit approach) before doing either.
+
+**Next session should**: ask the user how they want these 3 features committed
+(single commit vs. per-feature, per-feature was the P0 round's eventual choice),
+optionally clean up the trivial duplicate-line cosmetic item first, then consider
+whether to push to `origin/main` (ask first, per this project's standing practice
+of never pushing without being asked). No further P1 roadmap work is planned beyond
+these 3 features as of this session.
+
+---
+
+## Original P1 blueprint (confirmed 2026-07-29, /architect session — reference only, see Feature 1 above for build progress)
+
+Direct ask, follow-up to the 2026-07-29 competitive-research chat (see that session's discussion,
+not repeated here): three related features closing the "gist of everything" / broad-query gap
+identified in that research — flat/hybrid/rerank retrieval structurally cannot answer aggregate
+questions ("what's the gist", "what should I be concerned about across 10 sources") no matter how
+`k` is tuned, since that's a query-focused-summarization task, not a lookup task (confirmed both
+by RAG literature and by Veratas' own prior "tell me the gist of everything" refusal). A user-facing
+query-rewrite LLM layer was considered and correctly rejected as insufficient — it improves how well
+one query matches vector space, not the fact that no top-k pass can synthesize across many/all
+chunks. Full `/architect` session run before any code (context files read: `architecture.md` full,
+`projectoverview.md`, `codestandards.md`, `librarydocs.md`, `research-production-agent-features.md`,
+plus the ACTUAL current code — `services/retrieval/{service,fusion,permissions}.py`,
+`services/chat/service.py`, `services/ingestion/{enrichment,repository,search}.py`,
+`models/{chat,ingestion,retrieval}.py`, `config/settings.py` — since the context docs (architecture.md/
+projectoverview.md/codestandards.md/librarydocs.md) are STALE, still describing the pre-F60/pre-P0-
+roadmap state (RLS "deferred to Phase 6", no reranker/hybrid/confidence-gate mentioned) — **a future
+session should refresh these 4 docs against the real current code, out of scope for this round**.
+
+**Real finding surfaced during planning, not just a decision**: chunk embedding happens DURING core
+ingestion (`STRUCTURING → EMBEDDING → READY`), strictly BEFORE enrichment ever runs (enrichment is a
+separate, later, backfill-style stage) — so a naive "prepend section summary before embedding"
+implementation would have nothing to prepend for any freshly-ingested document. Resolved by hooking
+contextual retrieval into `run_enrichment_stage` itself (re-embed a section's chunks in place,
+right after that section's summary is computed) rather than touching the core embedding stage —
+zero schema change, zero core-pipeline risk, but means contextual retrieval only takes effect once
+enrichment has run for a document (same fallback-shaped limitation as broad-query below).
+
+**Also surfaced**: `services/chat/service.py` is already 588 lines with several responsibilities,
+past the package-layout convention's ~200-line trigger, apparently never rechecked since F42's
+split (which only pulled out the 3 repository classes). Not fixed this round (out of scope) — but
+new broad-query code goes into a NEW `services/chat/broad_query.py`, not into the already-large
+`service.py`. **Worth a dedicated split-check pass at the end of the build round**, same discipline
+`services/retrieval.py` got after the 2026-07-28 P0 round.
+
+### Locked decisions (all via AskUserQuestion, all the recommended option — confirm still holds if
+### resuming after a long gap, but treat as settled unless the user says otherwise)
+
+- **Routing**: automatic, invisible, one cheap LLM classifier call per query (reuses the single
+  `LLM` seam — no new model config, matches the research doc's explicit P2 rejection of
+  per-task model routing as premature). No manual UI toggle.
+- **Missing-enrichment fallback**: broad-query silently falls back to today's flat/hybrid/rerank
+  pipeline when a notebook has zero section summaries, or exceeds a document-count safety cap —
+  same fallback SHAPE `HIERARCHICAL_RETRIEVAL_ENABLED` already uses (log INFO, degrade, never
+  block/error).
+- **Contextual retrieval blurb source**: reuse the chunk's own section's enrichment summary — ZERO
+  new LLM calls at ingest (rejected: true Anthropic per-chunk-tailored blurb, deferred as a future
+  upgrade if this coarser version proves insufficient).
+- **Notebook Overview scope**: ship ONLY "Overview" this round (FAQ/key-topics explicitly deferred),
+  on-demand button (not auto-generated), cached + marked `stale` on notebook document-set change.
+- **Execution model**: inline in the request, `asyncio.gather`-parallelized map calls — explicitly
+  NOT a new arq/background-job/polling system. Revisit only if real notebooks exceed what fits
+  comfortably in one request.
+- **Citation shape**: additive to the EXISTING `ResolvedCitation` (not a new parallel type) — new
+  `citation_type: Literal["chunk","section"] = "chunk"` (default preserves every existing citation
+  byte-identical), `chunk_id`/`char_start`/`char_end` become nullable but stay ALWAYS populated on
+  the unchanged chunk path; new nullable `section_id`/`heading` populate only on the section path.
+
+### Planned shape (full detail in the confirmed blueprint — this is the index, not a replacement)
+
+- **New flags** (all default `False`, independent per the established one-flag-per-capability
+  convention): `BROAD_QUERY_ENABLED`, `BROAD_QUERY_MAX_DOCUMENTS=20`,
+  `CONTEXTUAL_EMBEDDING_ENABLED`, `NOTEBOOK_OVERVIEW_ENABLED`.
+- **New files**: `services/retrieval/mapreduce.py` (shared gather/map/reduce mechanics — a 4th
+  retrieval strategy alongside flat/hierarchical/hybrid, callable by both chat's broad-query path
+  AND the Overview artifact); `services/chat/broad_query.py` (query classifier + glue turning a
+  map-reduce result into a persisted `ChatResponse`).
+  New Pydantic types: `SectionSummaryHit`, `SynthesisBlock` (both in `models/retrieval.py`).
+- **New repository methods**: `SectionRepository.list_for_documents` (multi-doc sibling of the
+  existing `list_for_document`), `ChunkRepository.list_for_sections`.
+- **Extended files**: `services/chat/service.py` (`ask`/`stream_ask` gain a classify-then-route
+  step before the existing retrieval call — falls through unchanged when the flag is off or the
+  classifier says "specific"), `services/ingestion/enrichment.py` (`run_enrichment_stage` gains
+  the contextual re-embed step, same non-fatal try/except discipline as the rest of the stage),
+  `models/chat.py` (`ResolvedCitation`/`ChatResponse`/`MessageTraceOut.hits` — all additive),
+  `services/knowledge.py` (new `generate_overview`/`get_overview`, `stale` hook into existing
+  attach/detach methods — **check line count first, split into `services/knowledge/` only if it's
+  crossed the package-layout trigger after this addition**).
+- **New migration** (exactly ONE needed — features 1 and 2 need zero schema change):
+  `notebook_overviews` (id, org_id, notebook_id FK→knowledge_bases UNIQUE, content, citations
+  jsonb, generated_at, generated_by, source_document_count, stale bool default false) — full
+  F60-pattern RLS block, next migration number after whatever's at HEAD when building starts
+  (was `0023` as of the 2026-07-28 P0 round — **verify current head before writing the migration,
+  don't assume it's still 0023**).
+- **New endpoints**: `POST`/`GET /notebooks/{id}/overview` (any notebook member, not admin-only —
+  same access level as chat itself).
+- **Frontend**: `ChatPanel.tsx` broad-answer indicator, `CitationPanel.tsx` branches on
+  `citation_type`, new "Overview" section in `NotebookPage.tsx` with Generate/Regenerate + stale
+  banner.
+- **Build order**: Feature 1 (router+map-reduce) → Feature 3 (Overview, depends on 1's shared
+  `mapreduce.py`) → Feature 2 (contextual retrieval, fully independent, any order relative to 1/3).
+- **Explicitly NOT in scope this round**: FAQ/key-topics artifacts, true per-chunk contextual
+  blurbs, background-job execution, a manual broad-query toggle, refreshing the stale context docs
+  (architecture.md etc.) — each named above as a deliberate deferral, not an oversight.
+
+**Next session should**: dispatch one subagent per feature, sequentially (1 → 3 → 2, per the build
+order above), same pattern as the 2026-07-28 P0 round — implement → orchestrator independently
+re-reviews the diff + reruns tests/ruff itself (never trusts the subagent's self-report) →
+`/remember save` → next feature. Nothing has been built yet as of this entry.
+
+## P0 roadmap: live browser verification of the 4 user-observable features (2026-07-29, DONE, no code changes)
+
+Direct ask: verify 4 of the 5 P0 features (confidence gate, hybrid search, message_feedback,
+golden-eval) end-to-end via claude-in-chrome against the real running app, not just the
+test suite — user explicitly scoped out the bare reranker seam (no UI of its own). Full
+real pipeline stood up from cold: Docker Desktop + `docker compose up -d postgres redis`
+(pre-existing `pgdata` volume reused, dev data intact), `alembic upgrade head` (dev DB was
+at 0020, now at 0023 — 0021 hybrid/0022 feedback/0023 golden all applied clean), fresh
+`uvicorn`+`arq` from `backend/.venv`, fresh `vite` dev server. Temporarily set
+`RERANKER_ENABLED=True`/`HYBRID_SEARCH_ENABLED=True`/`RERANK_MIN_SCORE=0.3` in
+`backend/.env` for the verification window only (`RERANKER_MODE` stayed `fake` — no TEI
+container needed), **reverted to baseline and both processes restarted clean afterward** —
+confirmed via `git`-style before/after diff of the file, `.env` now identical to session
+start.
+
+Signed up a fresh account (`p0verify@example.com` / org "P0 Verify Org", left in the dev
+DB as harmless test data, same as the half-dozen other `*verify*`/`*debug*` test orgs
+already there from prior sessions), uploaded `pdf/kech104.pdf` fresh (real parser/embedder,
+reached READY), created "P0 Verification Notebook".
+
+**Hybrid search**: found "Fajans" appears exactly once in the parsed document text (rare
+exact term), asked "What rules did Fajans discuss about ionic bonds?" — correct grounded
+answer citing `[1]`, 8 hits returned (matches `RERANK_TOP_K`, confirming the reranker
+widen-then-truncate path executed live end-to-end without error). Noted honestly: this
+particular chunk is also topically close to the query, so this run alone doesn't prove
+hybrid's lexical channel was *decisive* over vector-only — that algorithmic proof already
+exists in the regression suite (`test_hybrid_gate_on_finds_lexical_match_pure_vector_search_misses`,
+per the 2026-07-28 build session); this browser pass proves the live pipeline runs clean
+under the real app, not the algorithm from first principles.
+
+**Confidence gate**: asked "What is the capital of France?" — got the exact
+`_WEAK_EVIDENCE_MESSAGE` ("The available sources don't contain a strong match for this
+question."), NOT the LLM's own refusal string ("I don't have that in the provided
+sources.") — the two are deliberately distinct strings and this confirms they stayed
+distinct live. Debug trace showed distances 0.868–0.901 (uniformly weak, as expected) and
+— the strongest proof available — the trace's persisted `raw_output` **is** the gate's
+fixed message verbatim, meaning the LLM seam was never invoked for this turn.
+
+**message_feedback**: clicked 👍 on the Fajans answer, confirmed the row landed in
+`message_feedback` (`rating=up`) via direct DB query, then reloaded the notebook page and
+re-fetched `GET /chat/notebooks/{id}/messages` from within the page's own JS context
+(bearer token lives in `sessionStorage['veratas_access_token']`, not `localStorage`) —
+response showed `my_feedback: "up"` on the rated message and `null` on the other, proving
+real hydration through the actual API round-trip, not just DB state.
+
+**golden-eval**: clicked "Add to golden set" on the Fajans answer's debug panel, got
+"Added ✓", confirmed via DB query the row landed in `golden_questions` with the right
+`question`/`reference_answer`/8 `reference_contexts`.
+
+**Verdict: all 4 features work correctly in the live running app.** No bugs found, no
+code changes made this session — purely a verification pass. Docker/Postgres/Redis,
+`uvicorn`, `arq`, and `vite` were all left running after this session (reasonable default
+for continued dev work); the test org/notebook/document were left in the dev DB (harmless,
+consistent with how prior sessions' test orgs were already left in place).
+
+**Reusable gotcha, newly confirmed**: `sessionStorage['veratas_access_token']` (not
+`localStorage`) is where this frontend's JWT lives — needed for any future
+console/`javascript_tool`-driven authenticated `fetch` against the real API from within
+the page.
+
 ## P0 roadmap (2026-07-28, IN PROGRESS): 5 features from research-production-agent-features.md
 
 Full `/architect` session (all 5 planned + confirmed before any code) then sequential

@@ -1126,6 +1126,44 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
 - [x] `services/retrieval.py` split into a subpackage (`permissions.py`/`fusion.py`/
       `service.py`/`__init__.py`) — commit `3a54c25`, zero logic change, verified via
       full suite pass before/after.
+- [x] Live browser verification of the 4 user-observable P0 features (2026-07-29,
+      no code changes) — confidence gate, hybrid search, message_feedback, golden-eval
+      all confirmed working end-to-end via claude-in-chrome against the real running
+      app (real Postgres/Redis, real parser/embedder/LLM, migrations 0021–0023
+      applied to the dev DB). See memory.md for full detail per feature.
+
+## Maintenance — P1 roadmap (broad-query router + map-reduce, contextual retrieval, Notebook Overview), 2026-07-29, IN PROGRESS
+- [x] **Feature 1: Broad-query router + map-reduce** — new `services/retrieval/
+      mapreduce.py` (4th retrieval strategy, generic, reusable by Notebook Overview)
+      + `services/chat/broad_query.py` (classifier + glue). `BROAD_QUERY_ENABLED`
+      (default off) gate in `ChatService.ask`/`stream_ask`, byte-identical when off
+      (regression-tested). Additive `ResolvedCitation.citation_type` (chunk/section).
+      Independently verified by a fresh subagent: 353 passed/3 skipped (up from 335),
+      ruff clean, zero hard-rule violations. **Uncommitted.** See memory.md "P1
+      roadmap" for full detail.
+- [x] **Feature 3: Notebook Overview** — new `notebook_overviews` table (migration
+      `0024`, full RLS), on-demand generate/cache via `mapreduce.py` reuse,
+      `stale` flag on document attach/detach, `NOTEBOOK_OVERVIEW_ENABLED` gates
+      generation only (not GET). `services/knowledge.py` split into a subpackage
+      (crossed the package-layout trigger as a result of this feature). Independently
+      verified: backend 368 passed/3 skipped (up from 353), frontend 169 passed (up
+      from 162), single migration head, ruff/tsc/build clean. **Uncommitted.** One
+      trivial cosmetic finding (harmless duplicate line in `models/knowledge.py`),
+      not urgent. See memory.md "P1 roadmap" for full detail.
+- [x] **Feature 2: Contextual retrieval** — zero-schema-change, hooked into
+      `run_enrichment_stage` (re-embeds a section's chunks in place right after its
+      summary is computed, reusing the existing `owner_type='chunk'` upsert).
+      `CONTEXTUAL_EMBEDDING_ENABLED` (default off). Independently verified (2nd
+      verifier attempt — the 1st stalled mid-run and left `.env` moved aside,
+      recovered by the orchestrator before redispatching): 372 passed/3 skipped (up
+      from 368), ruff clean, no regression to Features 1/3. **Uncommitted.** See
+      memory.md "P1 roadmap" for full detail.
+
+**ALL 3 P1 FEATURES COMPLETE (2026-07-29), none committed.** Final baseline: backend
+372 passed/3 skipped (started round at 335), frontend 169 passed (started at 162),
+single migration head `0024`, ruff/tsc/build clean throughout. All 3 flags default
+`False` — zero production behavior change until explicitly enabled. Next session:
+ask the user how to commit (single vs. per-feature) and whether to push.
 
 Next action: **the P0 roadmap from `research-production-agent-features.md` is fully
 built, independently verified, and committed** as 6 commits on `main`
