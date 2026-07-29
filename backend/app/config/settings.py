@@ -151,6 +151,19 @@ class Settings(BaseSettings):
     # (services/retrieval/mapreduce.py) — no separate cap setting needed.
     NOTEBOOK_OVERVIEW_ENABLED: bool = False
 
+    # --- Contextual embedding / P1 (memory.md "P1 roadmap") ---
+    # Off by default (same pattern as every other V2/P1 flag) — shipping this changes
+    # nothing until explicitly turned on. When enabled, `run_enrichment_stage` (V2
+    # enrichment) re-embeds a section's chunks IN PLACE (same `owner_type='chunk'` rows,
+    # same `unique(owner_type, owner_id, model)` upsert the original F22 embedding stage
+    # uses) with the section's own summary prepended to each chunk's raw text — Anthropic's
+    # "contextual retrieval" technique, but reusing the EXISTING V2 enrichment summary as
+    # the context blurb instead of a new per-chunk LLM call (zero new LLM calls beyond what
+    # enrichment already makes). Only takes effect once enrichment has run for a document;
+    # a document with no enrichment yet simply keeps its original context-free chunk
+    # embeddings, same fallback shape as every other V2 capability in this codebase.
+    CONTEXTUAL_EMBEDDING_ENABLED: bool = False
+
     # --- Chat (F40) ---
     # The LLM seam call gets an explicit timeout + retry-with-backoff, but ONLY on
     # transient failures (SeamTransientError from the seam, or our own timeout) — never on

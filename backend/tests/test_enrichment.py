@@ -10,9 +10,9 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.config.settings import settings
-from app.models.ingestion import Embedding, Section
+from app.models.ingestion import Chunk, Embedding, Section
 from app.services.queue import get_job_queue
-from app.services.seams import Message, get_embedder, get_llm
+from app.services.seams import FakeEmbedder, Message, get_embedder, get_llm
 from app.services.storage import get_object_store
 from main import app
 from tests.conftest import FakeJobQueue
@@ -382,3 +382,216 @@ async def test_enrich_chunk_embeddings_untouched(client: AsyncClient, session_fa
         )
 
     assert after == before
+
+
+# --- P1 contextual retrieval (memory.md "P1 roadmap") ---
+
+
+class _FlakyEmbedder:
+    """Wraps ``FakeEmbedder`` but raises when asked to embed a CONTEXTUALIZED chunk text
+    (``summary + "\\n\\n" + chunk.content``) whose summary starts with ``fail_marker`` —
+    never fails on a bare summary-only batch (the earlier section-embedding call), only
+    the later per-section contextual chunk re-embed call. Used to prove one section's
+    contextual re-embed failure doesn't break enrichment for other sections or the whole
+    document."""
+
+    def __init__(self, fail_marker: str) -> None:
+        self._inner = FakeEmbedder()
+        self._fail_marker = fail_marker
+
+    @property
+    def model(self) -> str:
+        return self._inner.model
+
+    @property
+    def dim(self) -> int:
+        return self._inner.dim
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        for text in texts:
+            if text.startswith(self._fail_marker) and "\n\n" in text:
+                raise RuntimeError("simulated contextual re-embed failure")
+        return await self._inner.embed(texts)
+
+
+async def _chunk_embeddings_by_id(
+    session_factory, document_id: str
+) -> dict[uuid.UUID, list[float]]:
+    """Fetches every ``owner_type='chunk'`` embedding vector for a document, keyed by
+    chunk id."""
+    async with session_factory() as session:
+        embeddings = list(
+            await session.scalars(
+                select(Embedding).where(
+                    Embedding.document_id == uuid.UUID(document_id),
+                    Embedding.owner_type == "chunk",
+                )
+            )
+        )
+        return {emb.owner_id: list(emb.embedding) for emb in embeddings}
+
+
+async def _chunks_by_id(session_factory, document_id: str) -> dict[uuid.UUID, Chunk]:
+    async with session_factory() as session:
+        chunks = list(
+            await session.scalars(select(Chunk).where(Chunk.document_id == uuid.UUID(document_id)))
+        )
+        return {c.id: c for c in chunks}
+
+
+async def test_contextual_embedding_disabled_by_default_chunk_vectors_unchanged(
+    client: AsyncClient, session_factory
+) -> None:
+    """CONTEXTUAL_EMBEDDING_ENABLED defaults False — enrichment must leave every chunk's
+    embedding vector byte-identical to its pre-enrichment, context-free value. This is a
+    real regression test (compares actual vector VALUES), not merely a count check like
+    ``test_enrich_chunk_embeddings_untouched``."""
+    tokens = await _signup(client, "ctxemb-off@test.com", "CtxEmbOff")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    doc = await _upload_parse_structure_embed(client, headers)
+
+    before = await _chunk_embeddings_by_id(session_factory, doc["id"])
+    assert len(before) > 0
+
+    assert settings.CONTEXTUAL_EMBEDDING_ENABLED is False  # confirm the default
+    app.dependency_overrides[get_llm] = lambda: _EnrichLLM()
+
+    resp = await client.post(f"/ingestion/documents/{doc['id']}/enrich", headers=headers)
+    assert resp.status_code == 200
+
+    after = await _chunk_embeddings_by_id(session_factory, doc["id"])
+    assert after.keys() == before.keys()
+    for chunk_id, vector in before.items():
+        assert after[chunk_id] == vector
+
+
+async def test_contextual_embedding_enabled_reembeds_with_section_summary(
+    client: AsyncClient, session_factory
+) -> None:
+    """With the flag on, every chunk's embedding is replaced IN PLACE with a vector
+    derived from ``section.summary + "\\n\\n" + chunk.content`` — proven two ways: (1)
+    the vector differs from the original context-free embedding, and (2) the new vector
+    exactly matches what ``FakeEmbedder`` produces for the known contextualized text
+    (not just ANY different vector — the actual contextualized text was used)."""
+    tokens = await _signup(client, "ctxemb-on@test.com", "CtxEmbOn")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    doc = await _upload_parse_structure_embed(client, headers)
+
+    before = await _chunk_embeddings_by_id(session_factory, doc["id"])
+    chunks_before = await _chunks_by_id(session_factory, doc["id"])
+
+    original = settings.CONTEXTUAL_EMBEDDING_ENABLED
+    try:
+        settings.CONTEXTUAL_EMBEDDING_ENABLED = True
+        app.dependency_overrides[get_llm] = lambda: _EnrichLLM()
+
+        resp = await client.post(f"/ingestion/documents/{doc['id']}/enrich", headers=headers)
+        assert resp.status_code == 200
+
+        async with session_factory() as session:
+            sections = list(
+                await session.scalars(
+                    select(Section).where(Section.document_id == uuid.UUID(doc["id"]))
+                )
+            )
+        summary_by_section_id = {s.id: s.summary for s in sections}
+
+        after = await _chunk_embeddings_by_id(session_factory, doc["id"])
+        assert after.keys() == before.keys()
+
+        fake = FakeEmbedder()
+        any_reembedded = False
+        for chunk_id, vector in after.items():
+            chunk = chunks_before[chunk_id]
+            if chunk.section_id is None or summary_by_section_id.get(chunk.section_id) is None:
+                continue
+            summary = summary_by_section_id[chunk.section_id]
+            (expected,) = await fake.embed([f"{summary}\n\n{chunk.content}"])
+            assert vector == expected
+            assert vector != before[chunk_id]
+            any_reembedded = True
+
+        assert any_reembedded, "expected at least one chunk to be contextually re-embedded"
+    finally:
+        settings.CONTEXTUAL_EMBEDDING_ENABLED = original
+
+
+async def test_contextual_embedding_one_section_failure_does_not_break_others(
+    client: AsyncClient, session_factory
+) -> None:
+    """A per-section contextual re-embed failure (simulated for the "Background" section)
+    must not prevent the "Introduction" section's chunks from being contextually
+    re-embedded, and must not fail the document/enrichment call as a whole."""
+    tokens = await _signup(client, "ctxemb-partial@test.com", "CtxEmbPartial")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    doc = await _upload_parse_structure_embed(client, headers)
+
+    before = await _chunk_embeddings_by_id(session_factory, doc["id"])
+    chunks_before = await _chunks_by_id(session_factory, doc["id"])
+
+    original = settings.CONTEXTUAL_EMBEDDING_ENABLED
+    try:
+        settings.CONTEXTUAL_EMBEDDING_ENABLED = True
+        app.dependency_overrides[get_llm] = lambda: _EnrichLLM()
+        app.dependency_overrides[get_embedder] = lambda: _FlakyEmbedder("Summary of Background")
+
+        resp = await client.post(f"/ingestion/documents/{doc['id']}/enrich", headers=headers)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "READY"  # document unaffected by the failure
+
+        async with session_factory() as session:
+            sections = list(
+                await session.scalars(
+                    select(Section).where(Section.document_id == uuid.UUID(doc["id"]))
+                )
+            )
+        # Both sections still got their summary/topics (that part is unaffected by the
+        # contextual re-embed failure — it runs strictly after summary computation).
+        assert all(s.summary is not None for s in sections)
+        section_by_heading = {s.heading: s for s in sections}
+        intro_section = section_by_heading["Introduction"]
+        bg_section = section_by_heading["Background"]
+
+        after = await _chunk_embeddings_by_id(session_factory, doc["id"])
+
+        intro_reembedded = False
+        for chunk_id, chunk in chunks_before.items():
+            if chunk.section_id == intro_section.id:
+                assert after[chunk_id] != before[chunk_id]
+                intro_reembedded = True
+            elif chunk.section_id == bg_section.id:
+                # Background's contextual re-embed failed — its chunk embeddings stay
+                # exactly as they were before this enrichment run.
+                assert after[chunk_id] == before[chunk_id]
+
+        assert intro_reembedded, "expected Introduction's chunks to be contextually re-embedded"
+    finally:
+        settings.CONTEXTUAL_EMBEDDING_ENABLED = original
+        app.dependency_overrides.pop(get_embedder, None)
+
+
+async def test_contextual_embedding_idempotent_rerun(client: AsyncClient, session_factory) -> None:
+    """Re-running enrichment with the flag on twice upserts the same chunk embedding rows
+    in place — same row count, same final vectors, no duplication or corruption."""
+    tokens = await _signup(client, "ctxemb-idem@test.com", "CtxEmbIdem")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    doc = await _upload_parse_structure_embed(client, headers)
+
+    original = settings.CONTEXTUAL_EMBEDDING_ENABLED
+    try:
+        settings.CONTEXTUAL_EMBEDDING_ENABLED = True
+        app.dependency_overrides[get_llm] = lambda: _EnrichLLM()
+
+        resp1 = await client.post(f"/ingestion/documents/{doc['id']}/enrich", headers=headers)
+        assert resp1.status_code == 200
+        first = await _chunk_embeddings_by_id(session_factory, doc["id"])
+
+        resp2 = await client.post(f"/ingestion/documents/{doc['id']}/enrich", headers=headers)
+        assert resp2.status_code == 200
+        second = await _chunk_embeddings_by_id(session_factory, doc["id"])
+
+        assert second.keys() == first.keys()  # same row count, same chunk ids — no dupes
+        for chunk_id, vector in first.items():
+            assert second[chunk_id] == vector  # same content re-embedded -> same vector
+    finally:
+        settings.CONTEXTUAL_EMBEDDING_ENABLED = original

@@ -16,7 +16,11 @@ from app.config.settings import settings
 from app.middleware.context import TenantContext
 from app.models.documents import DocumentOut, DocumentStatus
 from app.services.documents import documents_service
-from app.services.ingestion.repository import EmbeddingRepository, SectionRepository
+from app.services.ingestion.repository import (
+    ChunkRepository,
+    EmbeddingRepository,
+    SectionRepository,
+)
 from app.services.seams import LLM, Embedder, Message
 
 logger = get_logger(__name__)
@@ -186,6 +190,63 @@ async def run_enrichment_stage(
             await EmbeddingRepository(session, ctx).upsert_embeddings(
                 document_id, "section", embedding_rows
             )
+
+        # P1 "contextual retrieval" (memory.md "P1 roadmap"): re-embed each enriched
+        # section's chunks IN PLACE, prepending the section's own summary (just computed
+        # above) to each chunk's raw text before re-embedding — reuses the EXISTING
+        # owner_type='chunk' rows/upsert constraint, zero new LLM calls, zero schema
+        # change. Deliberately per-section with its own try/except (same non-fatal
+        # discipline as the summary/topics extraction loop above): a failure to re-embed
+        # one section's chunks must never break enrichment for other sections or fail the
+        # whole document. Only takes effect once a section's summary has been computed
+        # (i.e. this round of enrichment, or a prior one) — a document with
+        # CONTEXTUAL_EMBEDDING_ENABLED off, or not yet enriched at all, keeps its original
+        # context-free chunk embeddings untouched.
+        if settings.CONTEXTUAL_EMBEDDING_ENABLED:
+            for row in successful_rows:
+                try:
+                    async with db_mod.tenant_session(ctx.org_id) as session:
+                        section_chunks = await ChunkRepository(session, ctx).list_for_sections(
+                            [row["id"]]
+                        )
+                    if not section_chunks:
+                        continue
+
+                    contextualized_texts = [
+                        f"{row['summary']}\n\n{chunk.content}" for chunk in section_chunks
+                    ]
+                    vectors = await embedder.embed(contextualized_texts)
+
+                    chunk_embedding_rows = [
+                        {
+                            "owner_id": chunk.id,
+                            "model": embedder.model,
+                            "dim": embedder.dim,
+                            "embedding": vector,
+                        }
+                        for chunk, vector in zip(section_chunks, vectors, strict=True)
+                    ]
+                    async with db_mod.tenant_session(ctx.org_id) as session:
+                        await EmbeddingRepository(session, ctx).upsert_chunk_embeddings(
+                            document_id, chunk_embedding_rows
+                        )
+
+                    logger.info(
+                        "ingestion.contextual_embedding_section_reembedded",
+                        section_id=str(row["id"]),
+                        document_id=str(document_id),
+                        org_id=str(ctx.org_id),
+                        chunk_count=len(section_chunks),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "ingestion.contextual_embedding_section_failed",
+                        section_id=str(row["id"]),
+                        document_id=str(document_id),
+                        org_id=str(ctx.org_id),
+                        error=str(exc),
+                    )
+                    continue
 
         logger.info(
             "ingestion.enrichment_succeeded",
