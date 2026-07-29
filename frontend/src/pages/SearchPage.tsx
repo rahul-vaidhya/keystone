@@ -54,6 +54,11 @@ export function SearchPage() {
       // only field, resolved server-side from the chunk's section) — never fabricate it.
       page_start: null,
       page_end: null,
+      // /retrieval/search is a direct kNN chunk lookup, never the P1 map-reduce path —
+      // always a real chunk citation.
+      citation_type: "chunk",
+      section_id: null,
+      heading: null,
     });
   }
 

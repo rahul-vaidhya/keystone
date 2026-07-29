@@ -11,7 +11,12 @@ export function CitationPanel({
   onClose: () => void;
 }) {
   const doc = documents.find((d) => d.id === citation.document_id);
-  const hasPageInfo = citation.page_start !== null;
+  const isSection = citation.citation_type === "section";
+  // Page info is chunk-path only (always null on the section path — a synthesized
+  // section-level answer has no single page to point at), so isSection alone would
+  // already gate this off, but check page_start too so a chunk citation with no
+  // recovered page info still falls through cleanly.
+  const hasPageInfo = !isSection && citation.page_start !== null;
   const pageLabel =
     citation.page_end === null || citation.page_end === citation.page_start
       ? `Page ${citation.page_start}`
@@ -38,9 +43,15 @@ export function CitationPanel({
           </p>
         )}
         {hasPageInfo && <p className="text-xs text-muted">{pageLabel}</p>}
-        <p className="font-mono text-xs text-muted">
-          chars {citation.char_start}–{citation.char_end}
-        </p>
+        {isSection ? (
+          citation.heading && (
+            <p className="text-xs text-muted">Section: {citation.heading}</p>
+          )
+        ) : (
+          <p className="font-mono text-xs text-muted">
+            chars {citation.char_start}–{citation.char_end}
+          </p>
+        )}
         <blockquote className="border-l-2 border-accent pl-3 text-sm text-text whitespace-pre-wrap leading-relaxed">
           {citation.content}
         </blockquote>

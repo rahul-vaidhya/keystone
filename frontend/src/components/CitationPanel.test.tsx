@@ -14,6 +14,9 @@ function makeCitation(overrides: Partial<ResolvedCitation> = {}): ResolvedCitati
     content: "relevant text",
     page_start: null,
     page_end: null,
+    citation_type: "chunk",
+    section_id: null,
+    heading: null,
     ...overrides,
   };
 }
@@ -90,5 +93,46 @@ describe("CitationPanel", () => {
     expect(screen.queryByText(/^Page/)).toBeNull();
     // The char-offset fallback line is still there, unchanged.
     expect(screen.getByText("chars 0–13")).toBeTruthy();
+  });
+
+  it("renders a section citation without char offsets, showing the heading instead", () => {
+    render(
+      <CitationPanel
+        citation={makeCitation({
+          citation_type: "section",
+          chunk_id: null,
+          char_start: null,
+          char_end: null,
+          section_id: "sec-1",
+          heading: "Onboarding",
+          content: "section summary extract",
+        })}
+        documents={documents}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Section: Onboarding")).toBeTruthy();
+    expect(screen.queryByText(/^chars/)).toBeNull();
+    expect(screen.queryByText(/^Page/)).toBeNull();
+    expect(screen.getByText("section summary extract")).toBeTruthy();
+  });
+
+  it("renders a section citation with no heading and no char-offset/heading line at all", () => {
+    render(
+      <CitationPanel
+        citation={makeCitation({
+          citation_type: "section",
+          chunk_id: null,
+          char_start: null,
+          char_end: null,
+          section_id: "sec-1",
+          heading: null,
+        })}
+        documents={documents}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/^chars/)).toBeNull();
+    expect(screen.queryByText(/^Section:/)).toBeNull();
   });
 });

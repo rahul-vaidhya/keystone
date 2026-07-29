@@ -115,6 +115,9 @@ function makeCitation(overrides: Partial<ResolvedCitation> = {}): ResolvedCitati
     content: "relevant text",
     page_start: null,
     page_end: null,
+    citation_type: "chunk",
+    section_id: null,
+    heading: null,
     ...overrides,
   };
 }
@@ -129,6 +132,7 @@ function makeDoneResponse(overrides: Partial<ChatResponse> = {}): ChatResponse {
     answer: "This is the answer [1]",
     citations: [makeCitation()],
     model: "fake-llm",
+    weak_evidence: false,
     ...overrides,
   };
 }
@@ -291,6 +295,44 @@ describe("ChatPanel", () => {
       expect(screen.getByText("relevant text here")).toBeInTheDocument(),
     );
     expect(screen.getByText("Source [1]")).toBeInTheDocument();
+  });
+
+  // Reranker-score confidence gate (P1): weak_evidence indicator.
+  describe("weak evidence indicator", () => {
+    it("shows the 'Weak evidence' badge when the response carries weak_evidence: true", async () => {
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(
+          makeDoneResponse({
+            answer: "The available sources don't contain a strong match for this question.",
+            citations: [],
+            weak_evidence: true,
+          }),
+        );
+        return () => {};
+      });
+
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      const input = screen.getByPlaceholderText("Ask a question…");
+      fireEvent.change(input, { target: { value: "test" } });
+      fireEvent.submit(input.closest("form")!);
+
+      await waitFor(() => expect(screen.getByText("Weak evidence")).toBeInTheDocument());
+    });
+
+    it("does not show the 'Weak evidence' badge on a normal grounded answer", async () => {
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(makeDoneResponse({ weak_evidence: false }));
+        return () => {};
+      });
+
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      const input = screen.getByPlaceholderText("Ask a question…");
+      fireEvent.change(input, { target: { value: "test" } });
+      fireEvent.submit(input.closest("form")!);
+
+      await waitFor(() => expect(screen.getByText("[1]")).toBeInTheDocument());
+      expect(screen.queryByText("Weak evidence")).not.toBeInTheDocument();
+    });
   });
 
   it("shows an error message when onError fires", async () => {

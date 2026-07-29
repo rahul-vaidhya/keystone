@@ -16,6 +16,10 @@ type ChatMessage = {
   content: string;
   citations?: ResolvedCitation[];
   messageId?: string;
+  // Reranker-score confidence gate (P1): true only on a just-streamed answer whose
+  // ChatResponse carried weak_evidence — history hydration has no equivalent signal
+  // (MessageOut doesn't persist it), so a reloaded weak-evidence answer shows no badge.
+  weakEvidence?: boolean;
 };
 
 // Finding A (Medium, UX audit): static, generic starter questions shown the instant a
@@ -79,12 +83,20 @@ function TraceDetails({ messageId }: { messageId: string }) {
       <div>
         <p className="font-medium text-muted mb-1">Hits ({trace.hits.length})</p>
         <ul className="space-y-1">
-          {trace.hits.map((hit) => (
-            <li key={hit.chunk_id} className="font-mono text-muted">
-              [{hit.index}] doc {hit.document_id.slice(0, 8)}… · distance{" "}
-              {hit.distance.toFixed(3)}
-            </li>
-          ))}
+          {trace.hits.map((hit) =>
+            "chunk_id" in hit ? (
+              <li key={hit.chunk_id} className="font-mono text-muted">
+                [{hit.index}] doc {hit.document_id.slice(0, 8)}…
+                {hit.distance !== null && <> · distance {hit.distance.toFixed(3)}</>}
+              </li>
+            ) : (
+              <li key={hit.index} className="font-mono text-muted">
+                [{hit.index}]{" "}
+                {hit.headings.filter(Boolean).join(", ") ||
+                  `${hit.section_ids.length} section(s)`}
+              </li>
+            ),
+          )}
         </ul>
       </div>
       <div>
@@ -280,6 +292,7 @@ export function ChatPanel({
               content: response.answer,
               citations: response.citations,
               messageId: response.message_id,
+              weakEvidence: response.weak_evidence,
             };
             return next;
           });
@@ -370,6 +383,14 @@ export function ChatPanel({
                 key={i}
                 className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}
               >
+                {isFinalAssistant && msg.weakEvidence && (
+                  // Reranker-score confidence gate indicator — StatusBadge's warning-pill
+                  // convention (text-warning border-warning, text-xs, rounded-sm), since
+                  // this is a degraded-confidence signal, not a hard error.
+                  <span className="inline-flex items-center text-xs border rounded-sm px-2 py-0.5 text-warning border-warning mb-1">
+                    Weak evidence
+                  </span>
+                )}
                 <div
                   className={`max-w-[80%] rounded-lg px-4 py-3 text-sm ${
                     msg.role === "user"
