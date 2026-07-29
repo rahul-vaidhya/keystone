@@ -51,10 +51,15 @@ from app.services.seams import LLM, Message
 _NOT_RELEVANT = "NOT_RELEVANT"
 
 _MAP_SYSTEM_PROMPT = (
-    "You extract information relevant to a question from one section of a document, "
-    "given only that section's summary. Respond with a short (1-3 sentence) extract of "
-    "whatever in the summary is relevant. If nothing in the summary is relevant, "
-    f"respond with exactly one word and nothing else: {_NOT_RELEVANT}."
+    "You extract information relevant to a stated purpose from one section of a "
+    "document, given only that section's summary. The purpose may be a specific "
+    "question (extract whatever answers it), or a general instruction such as "
+    "'produce an overview of what these documents cover' (in that case, treat the "
+    "section's summary itself as relevant, since any section's content belongs in an "
+    "overview of the whole document). Respond with a short (1-3 sentence) extract of "
+    "whatever in the summary serves the purpose. Only if the section is truly "
+    "unrelated to the purpose's subject matter, respond with exactly one word and "
+    f"nothing else: {_NOT_RELEVANT}."
 )
 
 _REDUCE_SYSTEM_PROMPT = (
@@ -118,6 +123,19 @@ async def _map_section(section: SectionSummaryHit, purpose: str, *, llm: LLM) ->
     return "".join(tokens).strip()
 
 
+def _is_not_relevant(extract: str) -> bool:
+    """Whether a map-step extract is the ``NOT_RELEVANT`` sentinel. Compares after
+    stripping surrounding whitespace AND trailing sentence punctuation — a real LLM
+    reliably follows "respond with exactly one word" for the WORD itself but not
+    uncommonly appends a trailing period/exclamation mark anyway (e.g.
+    ``"NOT_RELEVANT."``), which a strict ``==`` comparison misses. Live verification
+    (2026-07-29 P1 browser pass) caught this: an unstripped comparison let 22/39
+    "NOT_RELEVANT." extracts through as if they were real content, flooding the reduce
+    prompt with noise and causing it to output its own refusal sentence instead of a
+    real synthesis."""
+    return extract.strip().upper().rstrip(" .!\"'") == _NOT_RELEVANT
+
+
 async def _run_map_step(
     sections: list[SectionSummaryHit], purpose: str, *, llm: LLM
 ) -> list[tuple[SectionSummaryHit, str]]:
@@ -131,7 +149,7 @@ async def _run_map_step(
     return [
         (section, extract)
         for section, extract in zip(sections, extracts, strict=True)
-        if extract and extract.strip().upper() != _NOT_RELEVANT
+        if extract and not _is_not_relevant(extract)
     ]
 
 

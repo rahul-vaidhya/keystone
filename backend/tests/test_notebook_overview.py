@@ -57,7 +57,7 @@ class _OverviewLLM:
     async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
         system = messages[0].content
         user = messages[1].content
-        if "extract information relevant to a question from one section" in system:
+        if "extract information relevant to a stated purpose from one section" in system:
             self.map_calls += 1
             heading_line = next(
                 (line for line in user.splitlines() if line.startswith("Section heading:")),

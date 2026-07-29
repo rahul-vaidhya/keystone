@@ -71,7 +71,7 @@ class _BroadRoutingLLM:
         if "BROAD or SPECIFIC" in system:
             self.classify_calls += 1
             text = self._classify_verdict
-        elif "extract information relevant to a question from one section" in system:
+        elif "extract information relevant to a stated purpose from one section" in system:
             self.map_calls += 1
             heading_line = next(
                 (line for line in user.splitlines() if line.startswith("Section heading:")),
