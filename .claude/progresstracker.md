@@ -1139,7 +1139,7 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       (default off) gate in `ChatService.ask`/`stream_ask`, byte-identical when off
       (regression-tested). Additive `ResolvedCitation.citation_type` (chunk/section).
       Independently verified by a fresh subagent: 353 passed/3 skipped (up from 335),
-      ruff clean, zero hard-rule violations. **Uncommitted.** See memory.md "P1
+      ruff clean, zero hard-rule violations. **Committed `35137e4`.** See memory.md "P1
       roadmap" for full detail.
 - [x] **Feature 3: Notebook Overview** — new `notebook_overviews` table (migration
       `0024`, full RLS), on-demand generate/cache via `mapreduce.py` reuse,
@@ -1147,8 +1147,8 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       generation only (not GET). `services/knowledge.py` split into a subpackage
       (crossed the package-layout trigger as a result of this feature). Independently
       verified: backend 368 passed/3 skipped (up from 353), frontend 169 passed (up
-      from 162), single migration head, ruff/tsc/build clean. **Uncommitted.** One
-      trivial cosmetic finding (harmless duplicate line in `models/knowledge.py`),
+      from 162), single migration head, ruff/tsc/build clean. **Committed `d593ece`.**
+      One trivial cosmetic finding (harmless duplicate line in `models/knowledge.py`),
       not urgent. See memory.md "P1 roadmap" for full detail.
 - [x] **Feature 2: Contextual retrieval** — zero-schema-change, hooked into
       `run_enrichment_stage` (re-embeds a section's chunks in place right after its
@@ -1156,14 +1156,35 @@ enrichment; revisit parsing granularity first if quality ever lags. See memory.m
       `CONTEXTUAL_EMBEDDING_ENABLED` (default off). Independently verified (2nd
       verifier attempt — the 1st stalled mid-run and left `.env` moved aside,
       recovered by the orchestrator before redispatching): 372 passed/3 skipped (up
-      from 368), ruff clean, no regression to Features 1/3. **Uncommitted.** See
-      memory.md "P1 roadmap" for full detail.
+      from 368), ruff clean, no regression to Features 1/3. **Committed `40b3b58`.**
+      See memory.md "P1 roadmap" for full detail.
 
-**ALL 3 P1 FEATURES COMPLETE (2026-07-29), none committed.** Final baseline: backend
-372 passed/3 skipped (started round at 335), frontend 169 passed (started at 162),
-single migration head `0024`, ruff/tsc/build clean throughout. All 3 flags default
-`False` — zero production behavior change until explicitly enabled. Next session:
-ask the user how to commit (single vs. per-feature) and whether to push.
+**ALL 3 P1 FEATURES COMPLETE AND COMMITTED (2026-07-29)** (`35137e4`/`d593ece`/
+`40b3b58`, plus a docs commit `44dcb89`; a prior "none committed" note here was stale —
+`git log` is authoritative, see memory.md's correction). Final baseline: backend 372
+passed/3 skipped (started round at 335), frontend 169 passed (started at 162), single
+migration head `0024`, ruff/tsc/build clean throughout. All 3 flags default `False` —
+zero production behavior change until explicitly enabled. Pushed to `origin/main`.
+
+## Maintenance — P1 hardening pass: citation wiring fix + 2 live-testing bug fixes (2026-07-29, committed `49e9a20` + `d17af09`, not pushed)
+- [x] Direct ask: harden the P1 features via a subagent-per-item backlog (implementer +
+      independent fresh verifier each time), main chat as orchestrator only. Item 1:
+      frontend never wired up the backend's `citation_type`/`weak_evidence` fields —
+      fixed (`ResolvedCitation` widened, `CitationPanel.tsx`/`ChatPanel.tsx` branch
+      correctly, admin `TraceHit` also fixed for the section-trace shape found by the
+      verifier). Frontend: 173 passed (up from 169), tsc/build clean. Item 2: first-ever
+      live browser test of broad-query routing, Notebook Overview, and contextual
+      retrieval — found Notebook Overview was ACTUALLY BROKEN live (returned the flat
+      refusal string; a map-prompt wording bug in `mapreduce.py`), fixed and re-verified
+      live; also fixed a smaller relevance-filter bug in the same file. Backend: 372
+      passed/3 skipped (unchanged — behavior fix, no new tests). Independent verification
+      caught one inaccurate implementer claim (a "pre-existing failures" claim that
+      turned out false, though harmlessly — no real regression). Items 3 (reranker live
+      smoke test — attempted, aborted on a Docker WSL2 memory/OOM issue unrelated to the
+      code), 4 (real Ragas run), 5 (stale docs refresh) **deferred at user's request** —
+      user will test those themselves. Session closed with the full dev stack
+      deliberately shut down (all stray uvicorn/arq duplicates killed, Docker containers
+      stopped) per direct instruction. See memory.md "P1 hardening pass" for full detail.
 
 Next action: **the P0 roadmap from `research-production-agent-features.md` is fully
 built, independently verified, and committed** as 6 commits on `main`

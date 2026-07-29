@@ -4,6 +4,140 @@
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
 
+## P1 hardening pass: citation wiring fix + live-testing bug fixes, 2 commits (2026-07-29, same day as the P1 build session below)
+
+**Correction to the P1 roadmap section immediately below**: despite its "IN PROGRESS"/
+"Uncommitted" language, `git log` confirmed at the start of THIS session that all 3 P1
+features (broad-query router, Notebook Overview, contextual retrieval) were already
+committed (`35137e4`/`d593ece`/`40b3b58`) and pushed to `origin/main` — the "Uncommitted"
+notes throughout that section are stale (same class of staleness this file has hit
+before; always trust `git log` over a commit-status claim written in this file).
+
+**Context**: direct ask — "properly hardened and human-like tested" before considering
+this prod-ready, done feature-by-feature via subagent pairs (implementer, then a fresh
+independent verifier with no memory of the implementation) so the orchestrating chat's
+own context stays clean, mirroring the exact pattern already established in the P0/P1
+build rounds. A 5-item backlog was scoped with the user via `AskUserQuestion`: (1) fix
+the known frontend `citation_type` gap, (2) live-browser-test the 3 P1 features for the
+first time ever, (3) live smoke-test the reranker seam against a real TEI instance, (4)
+actually run the Ragas golden-eval harness, (5) refresh the stale context docs. Mid-
+session the user redirected: stop after items 1-2, they'll test 3-5 themselves later,
+close down the whole dev environment, and commit what's done as separate step-by-step
+commits (not one bundle) — captured below.
+
+### Item 1: frontend citation_type + weak_evidence wiring — DONE, committed `49e9a20`
+
+`frontend/src/types/chat.ts`'s `ResolvedCitation` never got updated when the backend
+added the P1 broad-query `citation_type` discriminator (`chunk`/`section`) — it still
+declared `chunk_id`/`char_start`/`char_end` as always-present, so a section citation
+would have rendered `CitationPanel.tsx`'s "chars null–null" once `BROAD_QUERY_ENABLED`
+ever went live. `ChatResponse.weak_evidence` (confidence-gate feature, P0) also had zero
+frontend representation. Fixed: widened the type to match the backend field-for-field,
+`CitationPanel.tsx` branches on `citation_type` (chunk path byte-identical, section path
+shows "Section: {heading}" with no char-offset/page line), `ChatPanel.tsx` shows a
+`StatusBadge`-style warning pill for `weak_evidence`. `NotebookOverviewCitation`
+(`types/knowledge.ts`) was a hand-duplicated identical type predating this fix — collapsed
+to a type alias once genuinely identical, zero logic change.
+
+**A fresh independent verifier caught one more real gap** the implementer's own scope
+missed: the admin-only Debug panel's `TraceHit` type also assumed chunk-only fields, and
+would have rendered wrong (or thrown) on a broad-query-answered message's trace
+(`MessageTraceOut.hits` can be a `SynthesisBlock` list on that path). Fixed directly
+(small enough not to need another subagent round-trip): `TraceHit` is now a
+`ChunkTraceHit | SectionTraceHit` union, discriminated at render time by `"chunk_id" in
+hit`; also fixed a second latent bug found in the same spot — `ChunkTraceHit.distance`
+was typed as always-`number`, but hybrid search's lexical-only hits can have
+`distance: null`, so `hit.distance.toFixed(3)` would have thrown once hybrid search was
+ever on and a trace was opened. Frontend suite: **173 passed** (up from 169), `tsc -b`/
+`vite build` clean, independently re-verified from scratch (PASS) before the manual
+follow-on fix, and manually re-confirmed clean (173/tsc/build) after it.
+
+### Item 2: live browser test of the 3 P1 features — DONE, 2 real bugs found+fixed, committed `d17af09`
+
+First-ever live-browser pass on broad-query routing, Notebook Overview, and contextual
+retrieval (all previously only unit/integration-tested with fakes) — same real-stack
+methodology as the 2026-07-29 P0 live-verification session (Docker Postgres/Redis, real
+OpenRouter seams, fresh `p1verify@example.com`/"P1 Verify Org", `pdf/kech104.pdf`).
+Discovered and killed a genuinely stray bare-`C:\Python312\python.exe` uvicorn+arq pair
+left over from an earlier session — the documented stray-process gotcha, confirmed real
+again.
+
+**Notebook Overview was actually broken live**: clicking "Generate Overview" returned the
+literal flat refusal string instead of a summary. Root cause: `mapreduce.py`'s shared map
+step's system prompt framed relevance only around "a question," but Overview's `purpose`
+string is an instructional sentence, not a question — the LLM judged nearly every section
+(0/39, then 1/39 across two live re-runs) irrelevant, starving the reduce step. Fixed by
+reframing the map prompt to explicitly accept an instructional purpose alongside a
+question — re-verified live afterward with a real, well-organized, 8-point cited overview
+generating correctly. Also confirmed live: the upsert lands on the same
+`notebook_overviews` row across regenerations (not a duplicate), and `attach_document`/
+`detach_document` both correctly flip `stale=true` with the UI's orange banner appearing.
+
+**Broad-query router got a smaller, separate fix**: the map step's `NOT_RELEVANT` filter
+used exact string equality, but the real LLM reliably appends trailing punctuation
+(`"NOT_RELEVANT."`), so roughly half of irrelevant extracts were silently leaking into the
+reduce prompt as noise — didn't break the feature outright but degraded answer quality.
+Fixed with a punctuation-tolerant `_is_not_relevant()` helper. Live-reverified: a broad
+question now gets a real synthesized answer with correctly-rendered section citations
+(proving item 1's frontend fix works end-to-end), a narrow question still gets the
+unchanged flat chunk-cited path.
+
+**Contextual retrieval: confirmed genuinely working, no bugs found.** Live cosine-
+similarity proof (calling the real embedder seam directly): the stored `owner_type='chunk'`
+embedding matched a fresh embed of `"{section.summary}\n\n{chunk.content}"` at cosine
+**1.000000**, vs only 0.875 against the raw chunk alone — proves the real re-embed
+happened with the section summary genuinely prepended, not a no-op. 110 chunks / 110
+chunk embeddings, no duplicates from the in-place upsert.
+
+**Independent verification caught one inaccurate-but-harmless claim, worth remembering as
+a process lesson**: the implementer reported "3 pre-existing `test_broad_query.py`
+failures, unrelated to this change, reproduced via `git stash`." The fresh verifier
+independently re-ran the suite against the original unmodified code via its own `git
+stash` and got **372 passed, 3 skipped, 0 failures** — identical to post-fix, no failures
+at all, pre-existing or otherwise. The claim was simply wrong (not a cover for a real
+regression — there wasn't one), but it's exactly the kind of unverified assertion the
+independent-verifier pattern exists to catch rather than take at face value. **Lesson**:
+even a well-evidenced implementer report can contain a specific factual claim that
+doesn't hold up — the fresh-verifier-reruns-everything-itself discipline is doing real
+work, not just theater. Full suite otherwise unchanged: **372 passed, 3 skipped**, ruff
+clean both before and after.
+
+### Items 3-5: deferred at user's request, NOT done this session
+
+User stopped the backlog after items 1-2 and said they'll test items 3 (reranker live
+smoke test), 4 (real Ragas eval run), and 5 (stale docs refresh) themselves later — these
+are still open, see the original backlog description in this file's prior entry if
+resuming. **One relevant data point for whoever resumes item 3**: a live attempt was
+started this session and got as far as `docker compose up -d reranker` — the TEI
+container downloaded its ~2.2GB `BAAI/bge-reranker-v2-m3` model weights successfully
+(~6 min) but was OOM-killed (exit 137) twice in a row shortly after reaching "Warming up
+model." Likely cause: Docker Desktop's WSL2 VM memory allocation (~7.6GB total on this
+machine) is too tight for this model's CPU warmup — worth increasing the WSL2 memory
+limit (`.wslconfig`) before retrying, independent of anything in `real_reranker.py`
+itself, which was never actually exercised (never got past container warmup). The
+container was left `docker compose stop`ped (not removed) so the downloaded model layer
+is preserved for next time. No code was touched during this aborted attempt.
+
+**Commits, deliberately step-by-step per direct instruction (not one bundle)**:
+1. `49e9a20` — frontend citation_type/weak_evidence/TraceHit wiring (item 1 + the
+   verifier-caught follow-on fix).
+2. `d17af09` — broad-query map-step relevance filter + prompt wording (item 2's 2 bug
+   fixes).
+
+Both on `main`, **not pushed** — ask before pushing, per this project's standing practice
+(see the many prior "not pushed, ask first" notes throughout this file).
+
+**Session closed out fully at user's request**: all dev processes killed (multiple stray
+uvicorn/arq duplicates found and killed, not just the expected pair — ports 8010/5173
+confirmed clear), `docker compose stop` on all 3 containers (postgres/redis/reranker,
+all confirmed `Stopped`). **This deviates from this project's usual "leave running for
+continued dev work" precedent** — that precedent assumes the next session continues
+building immediately; here the user explicitly asked to close everything down since
+they're taking over testing themselves, so there was no reason to leave the stack live.
+A future session resuming this project should expect to re-run
+`docker compose up -d postgres redis` + fresh `uvicorn`/`arq`/`vite` from scratch, same
+as any other cold start.
+
 ## P1 roadmap: broad-query router + map-reduce, contextual retrieval, Notebook Overview — IN PROGRESS (2026-07-29)
 
 **Build order confirmed in the blueprint below: Feature 1 → Feature 3 → Feature 2.**
