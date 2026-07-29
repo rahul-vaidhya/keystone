@@ -128,6 +128,19 @@ class Settings(BaseSettings):
     # is max(k, RERANK_CANDIDATE_K, HYBRID_CANDIDATE_K) (see services/retrieval.py).
     HYBRID_CANDIDATE_K: int = 25
 
+    # --- Broad-query map-reduce / P1 (memory.md "P1 roadmap") ---
+    # Off by default (same pattern as HIERARCHICAL_RETRIEVAL_ENABLED/RERANKER_ENABLED/
+    # HYBRID_SEARCH_ENABLED) — shipping this changes nothing in existing chat behavior
+    # until explicitly turned on. When enabled, a cheap LLM classifier call
+    # (services/chat/broad_query.py) routes "broad"/aggregate questions (e.g. "what's
+    # the gist of this notebook") to a map-reduce pass over V2 enrichment section
+    # summaries (services/retrieval/mapreduce.py) instead of top-k chunk search;
+    # "specific" questions, and any notebook lacking enrichment or exceeding
+    # BROAD_QUERY_MAX_DOCUMENTS, fall through to the existing flat/hybrid/rerank
+    # pipeline unchanged.
+    BROAD_QUERY_ENABLED: bool = False
+    BROAD_QUERY_MAX_DOCUMENTS: int = 20
+
     # --- Chat (F40) ---
     # The LLM seam call gets an explicit timeout + retry-with-backoff, but ONLY on
     # transient failures (SeamTransientError from the seam, or our own timeout) — never on

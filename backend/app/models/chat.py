@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.config.db import Base
-from app.models.retrieval import ContextBlock
+from app.models.retrieval import ContextBlock, SynthesisBlock
 
 
 class Conversation(Base):
@@ -161,23 +161,45 @@ class ChatRequest(BaseModel):
 
 
 class ResolvedCitation(BaseModel):
-    """One ``[n]`` marker from the model's answer, resolved to its source span — rebuilt
-    from a fresh ``ingestion.service.get_chunks`` read of the chunk row (the
-    source-of-truth table), not from the ``ContextBlock`` retrieval already had in hand.
+    """One ``[n]`` marker from the model's answer, resolved to its source span. Two
+    citation paths share this ONE shape (additive — the P1 broad-query router, see
+    ``citation_type`` below, never a new parallel type):
+
+    * ``citation_type="chunk"`` (default, the original F41 shape, byte-identical):
+      rebuilt from a fresh ``ingestion.service.get_chunks`` read of the chunk row (the
+      source-of-truth table), not from the ``ContextBlock`` retrieval already had in
+      hand. ``chunk_id``/``char_start``/``char_end`` are ALWAYS populated on this path —
+      they are only structurally nullable (typed ``| None``) to let the section path
+      below omit them, never actually ``None`` here.
+    * ``citation_type="section"`` (P1 broad-query map-reduce, ``app.services.chat.
+      broad_query``): the answer was synthesized from section summaries, not individual
+      chunks, so there is no single char span to cite — ``chunk_id``/``char_start``/
+      ``char_end`` are ``None`` and ``section_id``/``heading`` are populated instead.
+
     ``marker`` is the literal number the model cited (e.g. ``2`` for ``[2]``).
-    ``page_start``/``page_end`` are the owning section's page range, shown alongside (not
-    instead of) the char offsets so a non-technical reader has a recognizable reference —
-    both are ``None`` when the source chunk has no section or the section has no page
-    info, never fabricated."""
+    ``page_start``/``page_end`` are the owning section's page range on the chunk path,
+    shown alongside (not instead of) the char offsets so a non-technical reader has a
+    recognizable reference — both are ``None`` when the source chunk has no section or
+    the section has no page info, never fabricated; always ``None`` on the section
+    path (a synthesized section-level answer has no single page to point at)."""
 
     marker: int
     document_id: uuid.UUID
-    chunk_id: uuid.UUID
-    char_start: int
-    char_end: int
+    # Nullable only to allow the section path to omit them (see class docstring) — the
+    # unchanged chunk path always populates all three with a real value.
+    chunk_id: uuid.UUID | None = None
+    char_start: int | None = None
+    char_end: int | None = None
     content: str
     page_start: int | None = None
     page_end: int | None = None
+    # Additive (P1): "chunk" (default, preserves every existing citation byte-identical)
+    # or "section" (P1 broad-query map-reduce).
+    citation_type: Literal["chunk", "section"] = "chunk"
+    # Populated ONLY on the section path (P1 broad-query map-reduce) — always None on
+    # the unchanged chunk path.
+    section_id: uuid.UUID | None = None
+    heading: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -199,11 +221,17 @@ class ChatResponse(BaseModel):
 
 class MessageTraceOut(BaseModel):
     """F42 admin debug bundle response — the persisted trace for one message, verbatim
-    (never recomputed)."""
+    (never recomputed). ``hits`` is additive (P1): a ``ContextBlock`` list for the
+    unchanged chunk/flat/hybrid/rerank path (every existing trace, byte-identical), or a
+    ``SynthesisBlock`` list for the P1 broad-query map-reduce path — never a mix within
+    one message, since one message is answered by exactly one strategy. Pydantic
+    disambiguates the two on load (``ChatService.get_trace``) since their required
+    fields don't overlap (``chunk_id``/``char_start``/``char_end`` vs.
+    ``section_ids``/``headings``/``document_ids``)."""
 
     id: uuid.UUID
     message_id: uuid.UUID
-    hits: list[ContextBlock]
+    hits: list[ContextBlock] | list[SynthesisBlock]
     final_prompt: str
     raw_output: str
     created_at: datetime

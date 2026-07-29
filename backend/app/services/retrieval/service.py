@@ -24,6 +24,20 @@ logger = get_logger(__name__)
 
 
 class RetrievalService:
+    async def resolve_notebook_scope(
+        self, ctx: TenantContext, notebook_id: uuid.UUID
+    ) -> list[uuid.UUID]:
+        """Notebook ∩ allowed-documents scope resolution — the exact computation
+        ``search`` needs before choosing a retrieval strategy, extracted so the P1
+        broad-query map-reduce path (``app.services.chat.broad_query``, a 4th retrieval
+        strategy alongside flat/hierarchical/hybrid) can resolve the SAME scoped
+        document-id list without duplicating the ``knowledge_service``/``permissions``
+        wiring. Zero behavior change to ``search`` itself — this is the same two lines
+        it always ran, just named and reusable."""
+        notebook_docs = await knowledge_service.list_notebook_documents(ctx, notebook_id)
+        allowed = set(await resolve_allowed_documents(ctx))
+        return [doc.id for doc in notebook_docs if doc.id in allowed]
+
     async def search(
         self,
         ctx: TenantContext,
@@ -39,9 +53,7 @@ class RetrievalService:
         back down to ``req.k`` (see its docstring). When ``HIERARCHICAL_RETRIEVAL_ENABLED``,
         uses coarse-to-fine search with fallback to flat if enrichment is incomplete —
         orthogonal to reranking, which wraps whichever strategy's output it receives."""
-        notebook_docs = await knowledge_service.list_notebook_documents(ctx, req.notebook_id)
-        allowed = set(await resolve_allowed_documents(ctx))
-        scope = [doc.id for doc in notebook_docs if doc.id in allowed]
+        scope = await self.resolve_notebook_scope(ctx, req.notebook_id)
         if not scope:
             return assemble_context(req.query, [])
 

@@ -9,7 +9,12 @@ import uuid
 from app.config import db as db_mod
 from app.middleware.context import TenantContext
 from app.models.ingestion import ChunkHit, ChunkRecord, SectionHit
-from app.services.ingestion.repository import ChunkRepository, EmbeddingRepository
+from app.models.retrieval import SectionSummaryHit
+from app.services.ingestion.repository import (
+    ChunkRepository,
+    EmbeddingRepository,
+    SectionRepository,
+)
 
 
 async def search_chunks(
@@ -59,6 +64,31 @@ async def search_sections(
         return await EmbeddingRepository(session, ctx).search_sections(
             query_vector, document_ids, model, s
         )
+
+
+async def list_section_summaries(
+    ctx: TenantContext, document_ids: list[uuid.UUID]
+) -> list[SectionSummaryHit]:
+    """P1 broad-query map-reduce's input (``app.services.retrieval.mapreduce``): every
+    section across ``document_ids`` carrying a non-null V2 enrichment summary
+    (``sections.summary``) — all SQL lives in ``SectionRepository.list_for_documents``;
+    this is pure orchestration (mirrors ``search_sections`` above). Sections without a
+    summary (enrichment hasn't run, or failed, for that section) are silently excluded —
+    an empty result signals "no enrichment for this scope yet", the broad-query
+    fallback trigger the caller (``is_broad_query_available``) checks for."""
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        sections = await SectionRepository(session, ctx).list_for_documents(document_ids)
+    return [
+        SectionSummaryHit(
+            section_id=section.id,
+            document_id=section.document_id,
+            heading=section.heading,
+            summary=section.summary,
+            topics=section.topics,
+        )
+        for section in sections
+        if section.summary
+    ]
 
 
 async def get_chunks(ctx: TenantContext, chunk_ids: list[uuid.UUID]) -> list[ChunkRecord]:

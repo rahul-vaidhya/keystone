@@ -41,6 +41,22 @@ class SectionRepository(BaseRepository[Section]):
         )
         return list(await self._db.scalars(stmt))
 
+    async def list_for_documents(self, document_ids: list[uuid.UUID]) -> list[Section]:
+        """Multi-document sibling of ``list_for_document`` — the P1 broad-query
+        map-reduce strategy's input (``app.services.retrieval.mapreduce`` via
+        ``ingestion.service.list_section_summaries``): every section across ALL of a
+        notebook's scoped documents, in document order then char_start within each
+        document. Org-scoped independently (hard rule: every query scoped by org_id),
+        same precedent as every other repository method here."""
+        if not document_ids:
+            return []
+        stmt = (
+            select(Section)
+            .where(Section.org_id == self._ctx.org_id, Section.document_id.in_(document_ids))
+            .order_by(Section.document_id, Section.char_start)
+        )
+        return list(await self._db.scalars(stmt))
+
     async def update_enrichment(self, rows: list[dict]) -> None:
         """Updates summary and topics for successful enriched sections. Each row is a dict
         with ``id`` (section uuid), ``summary`` (str), and ``topics`` (list[str])."""
@@ -73,6 +89,23 @@ class ChunkRepository(BaseRepository[Chunk]):
             select(Chunk)
             .where(Chunk.org_id == self._ctx.org_id, Chunk.document_id == document_id)
             .order_by(Chunk.ordinal)
+        )
+        return list(await self._db.scalars(stmt))
+
+    async def list_for_sections(self, section_ids: list[uuid.UUID]) -> list[Chunk]:
+        """Every chunk belonging to any of the given sections, org-scoped. Built for
+        completeness/future use by a broad-query-style feature that needs underlying
+        chunk TEXT beyond a section's V2 enrichment summary — NOT called by the P1
+        broad-query map-reduce path itself (``app.services.retrieval.mapreduce``), which
+        operates on ``sections.summary`` alone (see that module's docstring for why the
+        summary is sufficient: it IS the compressed representation enrichment already
+        built for exactly this kind of cross-section reasoning)."""
+        if not section_ids:
+            return []
+        stmt = (
+            select(Chunk)
+            .where(Chunk.org_id == self._ctx.org_id, Chunk.section_id.in_(section_ids))
+            .order_by(Chunk.document_id, Chunk.ordinal)
         )
         return list(await self._db.scalars(stmt))
 

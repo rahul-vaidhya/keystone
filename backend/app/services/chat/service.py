@@ -14,6 +14,8 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 
+from pydantic import TypeAdapter
+
 from app.config import db as db_mod
 from app.config.logging import get_logger
 from app.config.settings import settings
@@ -28,7 +30,8 @@ from app.models.chat import (
     MessageTraceOut,
     ResolvedCitation,
 )
-from app.models.retrieval import ContextBlock, RetrievalSearchRequest
+from app.models.retrieval import ContextBlock, RetrievalSearchRequest, SynthesisBlock
+from app.services.chat.broad_query import try_broad_query
 from app.services.chat.repository import (
     ConversationRepository,
     FeedbackRepository,
@@ -42,6 +45,10 @@ from app.services.seams import LLM, Embedder, Reranker, SeamTransientError
 from app.services.seams import Message as SeamMessage
 
 logger = get_logger(__name__)
+
+_HIT_ADAPTER: TypeAdapter[list[ContextBlock] | list[SynthesisBlock]] = TypeAdapter(
+    list[ContextBlock] | list[SynthesisBlock]
+)
 
 
 # ---- exceptions ----
@@ -258,6 +265,39 @@ class ChatService:
         reranker: Reranker,
         correlation_id: str,
     ) -> ChatResponse:
+        # P1 broad-query router (memory.md "P1 roadmap"): when the flag is off (the
+        # default), this block is skipped entirely — zero extra DB/LLM calls, the code
+        # below is byte-identical to before this feature existed.
+        if settings.BROAD_QUERY_ENABLED:
+            scope = await retrieval_service.resolve_notebook_scope(ctx, req.notebook_id)
+            broad = await try_broad_query(ctx, scope, req.query, llm=llm)
+            if broad is not None:
+                logger.info(
+                    "chat.broad_query_used",
+                    correlation_id=correlation_id,
+                    notebook_id=str(req.notebook_id),
+                    num_blocks=len(broad.hits),
+                )
+                conversation_id, message_id = await self._persist(
+                    ctx,
+                    req=req,
+                    answer=broad.answer,
+                    citations=broad.citations,
+                    hits=broad.hits,
+                    final_prompt=broad.final_prompt,
+                )
+                return ChatResponse(
+                    correlation_id=correlation_id,
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                    notebook_id=req.notebook_id,
+                    query=req.query,
+                    answer=broad.answer,
+                    citations=broad.citations,
+                    model=llm.model,
+                    weak_evidence=False,
+                )
+
         retrieval_response = await retrieval_service.search(
             ctx,
             RetrievalSearchRequest(notebook_id=req.notebook_id, query=req.query, k=req.k),
@@ -341,7 +381,7 @@ class ChatService:
         req: ChatRequest,
         answer: str,
         citations: list[ResolvedCitation],
-        hits: list[ContextBlock],
+        hits: list[ContextBlock] | list[SynthesisBlock],
         final_prompt: str,
         widget_id: uuid.UUID | None = None,
     ) -> tuple[uuid.UUID, uuid.UUID]:
@@ -354,7 +394,14 @@ class ChatService:
         ``widget_id`` (default ``None``) marks a conversation as widget-originated — only
         ever passed by ``stream_ask`` when called from the embed widget's public
         endpoint; the authenticated ``ask``/``stream_ask`` paths never pass it, so this
-        stays ``None`` and the existing chat behavior is byte-identical."""
+        stays ``None`` and the existing chat behavior is byte-identical.
+
+        ``hits`` is additive (P1 broad-query router): ``list[ContextBlock]`` on the
+        unchanged flat/hierarchical/hybrid/rerank path (every call site before this
+        feature existed, byte-identical), or ``list[SynthesisBlock]`` on the P1
+        broad-query map-reduce path — either way this method just ``model_dump``s each
+        hit generically, exactly as it always has, so this widened type hint is the only
+        change needed here (no new parameter, no behavior change on the existing path)."""
         async with db_mod.tenant_session(ctx.org_id) as session:
             conversation = await ConversationRepository(session, ctx).create(
                 knowledge_base_id=req.notebook_id, user_id=ctx.user_id, widget_id=widget_id
@@ -398,6 +445,45 @@ class ChatService:
         controller (``app/services/embed.py``); the authenticated ``/chat/stream`` route
         never passes it, so its default path stays byte-identical to before this kwarg
         existed."""
+        # P1 broad-query router (memory.md "P1 roadmap"): same gate as `ask` above —
+        # off by default, zero extra DB/LLM calls when so. On a broad-query hit, zero
+        # `token` events are emitted (map-reduce doesn't stream incrementally in this
+        # first version) and exactly one `done` event carries the synthesized answer —
+        # the same "zero tokens, one done event" shape the weak-evidence gate already
+        # uses below.
+        if settings.BROAD_QUERY_ENABLED:
+            scope = await retrieval_service.resolve_notebook_scope(ctx, req.notebook_id)
+            broad = await try_broad_query(ctx, scope, req.query, llm=llm)
+            if broad is not None:
+                logger.info(
+                    "chat.stream_broad_query_used",
+                    correlation_id=correlation_id,
+                    notebook_id=str(req.notebook_id),
+                    num_blocks=len(broad.hits),
+                )
+                conversation_id, message_id = await self._persist(
+                    ctx,
+                    req=req,
+                    answer=broad.answer,
+                    citations=broad.citations,
+                    hits=broad.hits,
+                    final_prompt=broad.final_prompt,
+                    widget_id=widget_id,
+                )
+                yield {
+                    "type": "done",
+                    "correlation_id": correlation_id,
+                    "conversation_id": str(conversation_id),
+                    "message_id": str(message_id),
+                    "notebook_id": str(req.notebook_id),
+                    "query": req.query,
+                    "answer": broad.answer,
+                    "citations": [c.model_dump(mode="json") for c in broad.citations],
+                    "model": llm.model,
+                    "weak_evidence": False,
+                }
+                return
+
         retrieval_response = await retrieval_service.search(
             ctx,
             RetrievalSearchRequest(notebook_id=req.notebook_id, query=req.query, k=req.k),
@@ -533,7 +619,10 @@ class ChatService:
 
     async def get_trace(self, ctx: TenantContext, message_id: uuid.UUID) -> MessageTraceOut:
         """F42: read-only, admin-gated at the controller (``require_admin``). Returns the
-        trace verbatim from storage — never recomputed."""
+        trace verbatim from storage — never recomputed. ``hits`` validates as EITHER
+        ``ContextBlock`` (the unchanged chunk/flat/hierarchical/hybrid/rerank path) or
+        ``SynthesisBlock`` (P1 broad-query map-reduce) via ``_HIT_ADAPTER`` — Pydantic
+        disambiguates the two since their required fields don't overlap."""
         async with db_mod.tenant_session(ctx.org_id) as session:
             trace = await TraceRepository(session, ctx).get_by_message_id(message_id)
         if trace is None:
@@ -541,7 +630,7 @@ class ChatService:
         return MessageTraceOut(
             id=trace.id,
             message_id=trace.message_id,
-            hits=[ContextBlock.model_validate(h) for h in trace.hits],
+            hits=_HIT_ADAPTER.validate_python(trace.hits),
             final_prompt=trace.final_prompt,
             raw_output=trace.raw_output,
             created_at=trace.created_at,

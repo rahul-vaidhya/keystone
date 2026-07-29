@@ -21,6 +21,7 @@ from app.config.logging import get_logger
 from app.middleware.context import TenantContext
 from app.models.documents import DocumentOut, DocumentStatus
 from app.models.ingestion import ChunkHit, ChunkRecord, EnrichmentBackfillResult, SectionHit
+from app.models.retrieval import SectionSummaryHit
 from app.services.documents import documents_service
 from app.services.ingestion import embedding as _embedding
 from app.services.ingestion import enrichment as _enrichment
@@ -146,6 +147,11 @@ class IngestionService:
 
     async def get_chunks(self, ctx: TenantContext, chunk_ids: list[uuid.UUID]) -> list[ChunkRecord]:
         return await _search.get_chunks(ctx, chunk_ids)
+
+    async def list_section_summaries(
+        self, ctx: TenantContext, document_ids: list[uuid.UUID]
+    ) -> list[SectionSummaryHit]:
+        return await _search.list_section_summaries(ctx, document_ids)
 
     async def run_enrichment_backfill(
         self,

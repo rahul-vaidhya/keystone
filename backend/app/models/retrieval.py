@@ -40,3 +40,40 @@ class ContextBlock(BaseModel):
 class RetrievalSearchResponse(BaseModel):
     query: str
     results: list[ContextBlock]
+
+
+class SectionSummaryHit(BaseModel):
+    """One section's V2 enrichment summary (``sections.summary``/``sections.topics``) —
+    the broad-query map-reduce strategy's (``app.services.retrieval.mapreduce``) map-step
+    input unit, produced by ``ingestion_service.list_section_summaries``. Only sections
+    carrying a non-null summary are ever represented here — a section enrichment hasn't
+    reached yet is silently excluded upstream, never represented as an empty-summary hit
+    (same "never fabricate" discipline as every other hit shape in this codebase)."""
+
+    section_id: uuid.UUID
+    document_id: uuid.UUID
+    heading: str | None
+    summary: str
+    # V2 enrichment metadata, carried through for parity with `SectionHit.topics`
+    # (app.models.ingestion) — not currently read by the map/reduce prompts themselves.
+    topics: list[str] | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class SynthesisBlock(BaseModel):
+    """One fragment of a broad-query synthesized answer — the reduce step's output unit
+    (``app.services.retrieval.mapreduce``), mirroring how ``ContextBlock`` carries
+    chunk-level provenance for the flat path, but at SECTION granularity. ``index``
+    numbers it the same way ``ContextBlock.index`` does, so the reduce LLM's own ``[n]``
+    citation markers resolve back to these blocks 1:1. ``section_ids``/``headings``/
+    ``document_ids`` are lists (not singular fields) so a future batched-map-step variant
+    (several sections synthesized into one block) has somewhere to carry multiple
+    provenance entries; the current per-section map step always populates exactly one
+    entry in each list per block."""
+
+    index: int
+    content: str
+    section_ids: list[uuid.UUID]
+    headings: list[str | None]
+    document_ids: list[uuid.UUID]
