@@ -4,6 +4,138 @@
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
 
+## P1 hardening items 3-4 completed: reranker live smoke test + 2 real bugs fixed, 2 commits (2026-07-30)
+
+**Context**: continuation of the 2026-07-29 P1 hardening session, whose backlog items 3-5
+(reranker live smoke test, real Ragas eval run, stale-docs refresh) were deliberately
+deferred at the user's request ("I'll test those myself"). This session: the user first
+asked for verification of what they'd done on those 3 items — found all 3 genuinely
+untouched (no new commits, Docker not even running, context docs still stale) — then
+asked to actually run the servers and live-test everything via claude-in-chrome.
+
+**Reranker OOM root-caused and fixed**: WSL2 was capped at ~7.6GB (roughly half the
+15.8GB host RAM, the old default) — too tight for the BGE-reranker-v2-m3 TEI container's
+CPU warmup, which had OOM-killed (exit 137) twice in the prior session. Bumped
+`C:\Users\Akshat\.wslconfig` to `memory=10GB` (confirmed with the user first — this is a
+system-wide change requiring `wsl --shutdown`, affecting anything else running in WSL,
+not just this project) + restarted Docker Desktop. **This is a permanent host-level
+change, not reverted.** With the higher ceiling, the container now boots successfully —
+takes **~11.5 minutes of genuine CPU-only warmup** (not a crash loop), confirmed via
+`docker logs` reaching `Ready`. A direct `curl POST /rerank` proved `RealReranker`'s
+request/response contract (`raw_scores:false` → sigmoid `[0,1]` scores,
+`[{"index","score"}]` array) matches the live TEI response exactly — closes the "never
+exercised against a live TEI instance" gap noted in the P0-round memory entry, and
+confirms `RERANK_MIN_SCORE` should be calibrated in `[0,1]`, not raw logits.
+
+**Full live-testing pass, real seams throughout**: brought up Postgres/Redis/reranker
+(Docker), uvicorn, arq, Vite from cold; enabled every P0/P1 flag
+(`RERANKER_ENABLED`/`HYBRID_SEARCH_ENABLED`/`BROAD_QUERY_ENABLED`/
+`NOTEBOOK_OVERVIEW_ENABLED`/`CONTEXTUAL_EMBEDDING_ENABLED`/`ENRICHMENT_ENABLED`)
+temporarily in `backend/.env`; fresh org/notebook, real `pdf/kech104.pdf` ingest +
+enrichment. All 6 features independently proven live, not just re-asserted: **reranker**
+genuinely reordered results (top-cited hit had a worse vector distance than a
+lower-ranked one); **hybrid search** — direct comparison of vector-only vs lexical-only
+search on the same query showed **zero overlap**, proving the lexical channel surfaces
+real distinct candidates; **confidence gate** fired correctly using a REAL (not fake-mode)
+rerank score of 0.0000329, `raw_output` matched the fixed gate message verbatim;
+**broad-query router** produced a real 11-citation synthesized answer, frontend correctly
+rendered "Section: {heading}" with no char-offset line; **Notebook Overview** generated a
+real cited 8-point summary; **contextual retrieval** — cosine(stored, fresh contextualized
+embed) = 0.99999997 vs only 0.9098 for raw content alone.
+
+**Real bug #1 found and fixed (the significant one)**: `RERANK_CANDIDATE_K`'s default
+25-candidate pool routinely exceeds the reranker's hardcoded 30s httpx timeout on CPU-only
+hardware (TEI internally caps `max_batch_requests=4`, forcing ~7 sequential batches) — and
+`_retrieve_hits` had **zero fallback** around `reranker.rerank()`, so any transient
+failure killed the entire chat turn with an opaque "Stream failed." Reproduced directly
+(bypassing the browser) via a Python repro script calling `chat_service.stream_ask`
+directly — full traceback showed `httpx.ReadTimeout` → `SeamTransientError` propagating
+uncaught. **Fixed** (commit `86ed560`): `_retrieve_hits` now catches `SeamTransientError`
+and degrades to the unreranked candidates truncated to `final_k` (same fallback SHAPE as
+hierarchical retrieval's flat-fallback); non-transient exceptions still propagate; TEI
+client timeout bumped 30s→60s. **A second, subtler bug surfaced while adding the fallback's
+own INFO log**: using the existing shared `app.services.retrieval.service` module logger
+triggered the EXACT `cache_logger_on_first_use` test-pollution gotcha memory.md had
+already documented for hybrid search's own INFO log (deliberately never added, for this
+reason) — caught via a real full-suite failure
+(`test_hierarchical_used_logs_at_info_with_topics_at_debug`), root-caused (test collection
+order means my new INFO-only log call was the first-ever use of that shared logger,
+permanently caching it at INFO before the hierarchical test's later DEBUG wrapper_class
+swap could take effect), and fixed properly with a distinct logger name
+(`retrieval.service.reranker_fallback`) rather than worked around. **This is the actual
+fix for that long-standing documented gap**, not just another instance of it.
+
+**Real bug #2 found and fixed**: `chat.stream_failed`/`embed.stream_failed` logged
+`error=str(exc)` — for `SeamTransientError` wrapping a message-less `httpx.ReadTimeout`
+(confirmed live, exactly the bug #1 failure) this is an empty string, making the
+persisted log line undiagnosable. **Fixed** (commit `447b9bb`): both now also log
+`error_type=type(exc).__name__`.
+
+**4 new regression tests**, all independently verified passing in the full suite (not
+just individually): `test_reranker_transient_failure_falls_back_to_unreranked_hits`,
+`test_reranker_transient_failure_logs_fallback_at_info`,
+`test_reranker_non_transient_failure_still_propagates` (all `test_retrieval.py`),
+`test_stream_failure_log_includes_error_type_even_when_str_is_empty` (`test_chat.py`,
+uses a `SeamTransientError()` with no message to force the empty-`str()` case). Final
+baseline: **376 passed, 3 deselected** (up from 372), ruff/format clean. `.env` moved
+aside for every offline-suite run per the established precedent, restored exactly each
+time (diffed to confirm) — one near-miss this session: forgot to restore before a
+sanity-check run, got 51 spurious `.env`-contamination failures, correctly diagnosed as
+the known gotcha (not a real regression) rather than chased as one.
+
+**Ragas golden-eval harness: confirmed genuinely broken, not fixed**. `pip install
+.[eval]` pulls `ragas==0.4.3` (the pin is `>=0.2`), which fails at `import ragas` itself
+with `ModuleNotFoundError: No module named 'langchain_community.chat_models.vertexai'` —
+an upstream incompatibility between ragas and the resolved `langchain-community==0.4.2`
+(the vertexai integration was removed in a langchain_community reorg). **Confirmed this
+is not a version-pinning fix on our side**: also tried `ragas==0.2.15` (matching the
+harness docstring's literal documented target, "the documented ragas>=0.2 evaluate()
+Dataset-based API") — identical import error. The harness's OWN env-var/skip-guard logic
+is correct (confirmed by exporting real `OPENROUTER_API_KEY`/`OPENAI_API_KEY`/
+`OPENAI_BASE_URL` into the shell and getting past that gate to the `_RAGAS_INSTALLED`
+check) — the blocker is purely ragas's own import chain, unfixable without deeper
+dependency archaeology (pin an older `langchain-community`, or a separate
+`langchain-google-vertexai` shim). All ragas/langchain/langgraph packages fully
+uninstalled afterward; `openai`/`click` restored to their exact pre-session pinned
+versions (2.44.0/8.4.1) — verified via a clean-suite re-run matching the exact
+pre-session baseline before touching anything.
+
+**Full cleanup performed, verified**: `.env` restored byte-for-byte to pre-session state
+(diffed). uvicorn/arq killed, Vite killed, Postgres/Redis/reranker containers stopped (not
+removed — reranker's downloaded model weights preserved for next time). Stray log/backup
+files removed, `git status` clean throughout.
+
+**Gotcha reconfirmed, with a twist**: Python 3.12's Windows venv launcher
+(`venvlauncher.exe`, what `.venv\Scripts\python.exe` actually is since 3.11+) genuinely
+DOES spawn a child process from the base interpreter (`C:\Python312\python.exe`) with
+identical argv on every launch — this is NORMAL, not a stray leftover session. Confirmed
+by checking `ParentProcessId`/`CreationDate` (same-second spawn, real parent-child
+relationship) across three different launch methods (bash nohup, PowerShell
+Start-Process). The child inherits the venv's env/site-packages correctly via
+`__PYVENV_LAUNCHER__`. **Do not mistake this pattern for the documented 2026-07-27
+stray-process gotcha** — that one was genuinely a leftover session with different env
+vars; this one is a single logical process that happens to show as two OS PIDs. The real
+test for "is my server actually running my code" is the port LISTEN owner
+(`netstat -ano` / `Get-NetTCPConnection`), not just "does a python.exe with matching argv
+exist."
+
+**New gotcha**: PowerShell process-killing commands with a broad regex filter (e.g.
+`Where-Object { $_.CommandLine -match "uvicorn|arq worker" }`) can self-match their OWN
+`-Command` string (which literally contains the search text), causing the command to
+kill its own wrapper process mid-execution (silent `Exit code 255`, no output). Use a
+precise filter (`$_.Name -eq "python.exe" -and $_.CommandLine -match "<exact module
+invocation>"`) or verify via `netstat`/`Get-NetTCPConnection` port ownership instead of
+trusting the process-list kill's own success signal.
+
+**Commits, both pushed-pending (ask before pushing, per standing practice)**:
+1. `86ed560` — fix: reranker transient failures no longer fail the whole chat turn
+2. `447b9bb` — fix: log exception type alongside stream-failure error message
+
+**Still open / deferred**: stale context docs refresh (item 5 from the original 2026-07-29
+backlog — `architecture.md` line 198/444 still describes the reranker as unbuilt V2,
+despite shipping 2026-07-28) — not touched this session, still needs doing. Ragas eval
+harness needs a real dependency-compatibility fix (see above) before it can ever run.
+
 ## P1 hardening pass: citation wiring fix + live-testing bug fixes, 2 commits (2026-07-29, same day as the P1 build session below)
 
 **Correction to the P1 roadmap section immediately below**: despite its "IN PROGRESS"/

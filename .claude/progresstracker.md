@@ -1186,6 +1186,25 @@ zero production behavior change until explicitly enabled. Pushed to `origin/main
       deliberately shut down (all stray uvicorn/arq duplicates killed, Docker containers
       stopped) per direct instruction. See memory.md "P1 hardening pass" for full detail.
 
+## Maintenance — Reranker live smoke test + 2 real bugs fixed (2026-07-30, committed `86ed560` + `447b9bb`, not pushed)
+- [x] Closed item 3 from the 2026-07-29 backlog above: fixed the WSL2 memory ceiling
+      (`.wslconfig` memory=10GB, permanent host-level change) that was OOM-killing the
+      TEI reranker container; confirmed it now boots after ~11.5 min of genuine CPU
+      warmup. Full live-testing pass with real seams verified all 6 P0/P1 features
+      (reranker, hybrid search, confidence gate, broad-query, Notebook Overview,
+      contextual retrieval) working end-to-end via claude-in-chrome + direct API/DB
+      proofs. Found and fixed 2 real bugs surfaced by the live pass: (1) reranker
+      transient failures (timeouts under the default `RERANK_CANDIDATE_K=25` candidate
+      pool on CPU-only hardware) had no fallback and killed the whole chat turn — now
+      degrades to unreranked hits, same fallback shape as hierarchical retrieval's
+      flat-fallback; (2) `chat.stream_failed`/`embed.stream_failed` logged an empty
+      `error=""` for message-less exceptions — now also logs `error_type`. 4 new
+      regression tests. Backend: 376 passed/3 deselected (up from 372), ruff/format
+      clean. Ragas eval harness (item 4) confirmed genuinely broken by an upstream
+      ragas↔langchain_community incompatibility, not fixable from this project's side
+      without further dependency work — not fixed this session. Item 5 (stale docs
+      refresh) still not done. See memory.md for full detail.
+
 Next action: **the P0 roadmap from `research-production-agent-features.md` is fully
 built, independently verified, and committed** as 6 commits on `main`
 (`0cddb5e`→`3a54c25`, see memory.md "Wrap-up" for the full list + build technique).
