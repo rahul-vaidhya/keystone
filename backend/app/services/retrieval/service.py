@@ -18,9 +18,18 @@ from app.services.ingestion import ingestion_service
 from app.services.knowledge import knowledge_service
 from app.services.retrieval.fusion import assemble_context, fuse_rrf
 from app.services.retrieval.permissions import resolve_allowed_documents
-from app.services.seams import Embedder, Reranker
+from app.services.seams import Embedder, Reranker, SeamTransientError
 
 logger = get_logger(__name__)
+# A separate logger, not the shared module `logger` above: structlog's
+# cache_logger_on_first_use=True bakes in whatever level was active the first time a
+# given logger name is actually used, and `logger` is shared with hierarchical
+# retrieval's tests, which rely on a temporary DEBUG wrapper_class swap around their
+# OWN first use of it — an INFO call through the shared logger from anywhere else,
+# running first, would permanently cache it at INFO and silently break that DEBUG
+# capture (this is the exact gap memory.md's hybrid-search feature deliberately left
+# unaddressed rather than risk). A distinct name sidesteps the shared cache entirely.
+_reranker_logger = get_logger(f"{__name__}.reranker_fallback")
 
 
 class RetrievalService:
@@ -89,12 +98,22 @@ class RetrievalService:
         The reranker is agnostic to whether ``_search_hits`` used flat or hierarchical
         sourcing — it is one more step on top, never a competing strategy. Gate OFF
         (default): ``candidate_k == k``, ``reranker`` is never called, byte-identical to
-        before this feature existed."""
+        before this feature existed.
+
+        A transient reranker failure (timeout, connection error, 5xx — anything
+        ``RealReranker`` classifies and wraps as ``SeamTransientError``) degrades to the
+        unreranked candidates truncated to ``final_k`` rather than failing the whole chat
+        turn — same fallback shape as ``_search_hits``'s hierarchical-to-flat degradation.
+        Non-transient exceptions (a real bug, a misconfigured URL) still propagate."""
         candidate_k = max(k, settings.RERANK_CANDIDATE_K) if settings.RERANKER_ENABLED else k
         hits = await self._search_hits(ctx, query_vector, scope, model, candidate_k, k, query=query)
         if settings.RERANKER_ENABLED:
             final_k = min(k, settings.RERANK_TOP_K)
-            hits = await reranker.rerank(query, hits, final_k)
+            try:
+                hits = await reranker.rerank(query, hits, final_k)
+            except SeamTransientError:
+                _reranker_logger.info("retrieval.reranker_fallback", candidate_count=len(hits))
+                hits = hits[:final_k]
         return hits
 
     async def _search_hits(

@@ -51,7 +51,7 @@ async def _call_tei_rerank(query: str, texts: list[str]) -> list[dict]:
     sorts explicitly rather than trusting the vendor's ordering."""
     import httpx
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             f"{settings.RERANKER_URL}/rerank",
             json={"query": query, "texts": texts, "raw_scores": False},

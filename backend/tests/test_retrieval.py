@@ -8,6 +8,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+import structlog
 from httpx import ASGITransport, AsyncClient
 
 from app.config.settings import settings
@@ -22,7 +23,7 @@ from app.services.retrieval import (
     resolve_allowed_documents,
     retrieval_service,
 )
-from app.services.seams import EMBED_DIM, FakeReranker
+from app.services.seams import EMBED_DIM, FakeReranker, SeamTransientError
 from app.utils.constants import ROLE_MEMBER
 from main import app
 
@@ -699,6 +700,109 @@ async def test_reranker_gate_off_context_block_rerank_score_is_none_over_http(
     results = resp.json()["results"]
     assert len(results) == 1
     assert results[0]["rerank_score"] is None
+
+
+class _FailingReranker:
+    """Test double that always raises ``SeamTransientError``, simulating a timed-out or
+    unreachable reranker HTTP call — proves ``_retrieve_hits`` degrades to the unreranked
+    candidates instead of failing the whole request."""
+
+    async def rerank(self, query: str, candidates: list[ChunkHit], top_k: int) -> list[ChunkHit]:
+        raise SeamTransientError("simulated reranker timeout")
+
+
+async def test_reranker_transient_failure_falls_back_to_unreranked_hits(
+    session_factory, tenant_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient reranker failure (timeout, connection error, 5xx — anything the real
+    seam wraps as SeamTransientError) must not fail the chat turn: _retrieve_hits catches
+    it and falls back to the pre-rerank candidates, truncated to final_k, with every
+    rerank_score staying None (never fabricated)."""
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_CANDIDATE_K", 5)
+    monkeypatch.setattr(settings, "RERANK_TOP_K", 3)
+
+    org_id, doc_id = await _seed_org_and_document(session_factory)
+    for i in range(5):
+        await _seed_chunk_with_embedding(
+            session_factory,
+            org_id=org_id,
+            document_id=doc_id,
+            ordinal=i,
+            content=f"chunk {i}",
+            seed=i,
+        )
+
+    ctx = TenantContext(org_id=org_id)
+    hits = await retrieval_service._retrieve_hits(
+        ctx,
+        query_vector=_vector(0),
+        scope=[doc_id],
+        model=FAKE_MODEL,
+        k=2,
+        reranker=_FailingReranker(),
+        query="a query",
+    )
+    assert len(hits) == 2  # final_k = min(req_k=2, RERANK_TOP_K=3)
+    assert all(hit.rerank_score is None for hit in hits)
+
+
+async def test_reranker_transient_failure_logs_fallback_at_info(
+    session_factory, tenant_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fallback path logs at INFO (same visibility precedent as
+    retrieval.hierarchical_fallback_no_sections/no_chunks) so a production reranker outage
+    is observable, not silent."""
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", True)
+
+    org_id, doc_id = await _seed_org_and_document(session_factory)
+    await _seed_chunk_with_embedding(
+        session_factory, org_id=org_id, document_id=doc_id, ordinal=0, content="chunk 0"
+    )
+
+    ctx = TenantContext(org_id=org_id)
+    with structlog.testing.capture_logs() as cap_logs:
+        await retrieval_service._retrieve_hits(
+            ctx,
+            query_vector=_vector(0),
+            scope=[doc_id],
+            model=FAKE_MODEL,
+            k=1,
+            reranker=_FailingReranker(),
+            query="a query",
+        )
+    assert any(e["event"] == "retrieval.reranker_fallback" for e in cap_logs)
+
+
+async def test_reranker_non_transient_failure_still_propagates(
+    session_factory, tenant_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-transient reranker exception (a real bug, not a classified timeout/5xx) must
+    NOT be silently swallowed by the fallback — only SeamTransientError degrades."""
+
+    class _BuggyReranker:
+        async def rerank(
+            self, query: str, candidates: list[ChunkHit], top_k: int
+        ) -> list[ChunkHit]:
+            raise ValueError("not a seam-classified failure")
+
+    monkeypatch.setattr(settings, "RERANKER_ENABLED", True)
+    org_id, doc_id = await _seed_org_and_document(session_factory)
+    await _seed_chunk_with_embedding(
+        session_factory, org_id=org_id, document_id=doc_id, ordinal=0, content="chunk 0"
+    )
+
+    ctx = TenantContext(org_id=org_id)
+    with pytest.raises(ValueError, match="not a seam-classified failure"):
+        await retrieval_service._retrieve_hits(
+            ctx,
+            query_vector=_vector(0),
+            scope=[doc_id],
+            model=FAKE_MODEL,
+            k=1,
+            reranker=_BuggyReranker(),
+            query="a query",
+        )
 
 
 # --- Hybrid search (HYBRID_SEARCH_ENABLED gate) ---------------------------------------
