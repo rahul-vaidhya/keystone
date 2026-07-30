@@ -131,10 +131,46 @@ trusting the process-list kill's own success signal.
 1. `86ed560` — fix: reranker transient failures no longer fail the whole chat turn
 2. `447b9bb` — fix: log exception type alongside stream-failure error message
 
-**Still open / deferred**: stale context docs refresh (item 5 from the original 2026-07-29
-backlog — `architecture.md` line 198/444 still describes the reranker as unbuilt V2,
-despite shipping 2026-07-28) — not touched this session, still needs doing. Ragas eval
-harness needs a real dependency-compatibility fix (see above) before it can ever run.
+**Update, same day**: item 5 (stale context docs refresh) is now DONE too — see the next entry
+below. All 5 items from the original 2026-07-29 backlog are now closed except the Ragas
+dependency fix, which needs real upstream work (see above) before it can ever run.
+
+## Stale context docs refresh — item 5 from the 2026-07-29 backlog, closed (2026-07-30, committed `eb1607c`)
+
+Refreshed `architecture.md`/`codestandards.md`/`librarydocs.md`/`projectoverview.md` (plus
+`orchestrator.md`'s always-loaded summary, which repeated the same stale claims) against the
+actual current shipped state, read fully and cross-checked against real code (`ls` on
+`app/{routes,controllers,services,models}`, `alembic heads`, `grep` on `settings.py`'s flag
+list, all 25 migration filenames) rather than trusted from memory alone. **Real findings, not
+just prose updates**: (1) RLS was already correctly described as F60-enforced in
+`architecture.md`'s "Tenancy plumbing" section (that part had been updated before, contradicting
+memory's blanket "all 4 docs stale on RLS" claim) but `codestandards.md`/`librarydocs.md`/
+`projectoverview.md` still said "deferred to Phase 6, gated by `RLS_ENABLED`" — fixed in all
+three, plus `librarydocs.md`'s inline `tenant_session`/RLS-policy code examples were still the
+pre-F60 conditional shape; (2) the reranker was still described everywhere as an unbuilt "V2,
+not now" seam (shipped 2026-07-28) — updated "3 seams" → "4 seams" throughout, including 2
+places in `orchestrator.md` itself; (3) `folders.path` was still documented as an authoritative
+materialized path — F25 (2026-07-12) made it a non-authoritative display cache, rebuilt
+synchronously from `parent_id`+`name`; (4) `librarydocs.md`'s object-storage deletion section
+described a periodic "orphan sweep" as if it existed and self-healed — it was never built (still
+a named gap in this file's own "Open questions" section); (5) zero mention anywhere of hybrid
+search, the confidence gate, broad-query routing, Notebook Overview, contextual retrieval,
+notebook sharing/privacy, or the 7 tables shipped since the original MVP sketch
+(`access_roles`/`user_access_roles`/`access_role_tags`/`folder_tags`, `invite_tokens`,
+`widgets`, `notebook_shares`, `message_feedback`, `golden_questions`, `notebook_overviews`) —
+added a compact "shipped since MVP" schema addendum to `architecture.md` rather than rewriting
+every inline `CREATE TABLE` sketch (lower risk of transcription errors), and rewrote the
+retrieval-pipeline pseudocode to reflect the real current strategy composition (broad-query →
+hierarchical/flat + hybrid RRF → rerank-with-fallback → confidence gate). `projectoverview.md`
+also had its "Target audience... everyone in the org can see everything" framing corrected —
+no longer true since Access Roles/notebook-sharing shipped. **Also found, NOT fixed** (out of
+scope for a docs-only pass, noted for a future session): `backend/app/{repositories,schemas,
+exceptions}/` are empty leftover directories from the 2026-07-02 single-MVC refactor (only stale
+`__pycache__` content, confirmed via `find`) — real repo cruft, not a doc-accuracy issue, safe
+to delete whenever someone gets to it. Docs-only change, no code touched, nothing to test/verify
+beyond re-reading for internal consistency (which was done — a full grep sweep for "3 seam"/
+"Phase 6"/"deferred to Phase" across all 5 files came back clean after the edits). Committed as
+`eb1607c`, not yet pushed.
 
 ## P1 hardening pass: citation wiring fix + live-testing bug fixes, 2 commits (2026-07-29, same day as the P1 build session below)
 

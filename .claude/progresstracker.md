@@ -1202,8 +1202,27 @@ zero production behavior change until explicitly enabled. Pushed to `origin/main
       regression tests. Backend: 376 passed/3 deselected (up from 372), ruff/format
       clean. Ragas eval harness (item 4) confirmed genuinely broken by an upstream
       ragas↔langchain_community incompatibility, not fixable from this project's side
-      without further dependency work — not fixed this session. Item 5 (stale docs
-      refresh) still not done. See memory.md for full detail.
+      without further dependency work — not fixed this session. See memory.md for full detail.
+
+## Maintenance — Stale context docs refresh (2026-07-30, committed `eb1607c`, not pushed)
+- [x] Closed item 5 from the 2026-07-29 backlog: refreshed `architecture.md`/
+      `codestandards.md`/`librarydocs.md`/`projectoverview.md` + `orchestrator.md`'s
+      always-loaded summary against the real current shipped state (cross-checked
+      against actual code, not just memory). Fixed stale RLS-deferred-to-Phase-6
+      claims (3 of the 4 files — `architecture.md`'s own tenancy section was already
+      correct), "3 seams"/reranker-as-unbuilt-V2 language throughout, a wrong
+      `folders.path`-is-authoritative claim (F25 made it a display cache), a
+      never-built "orphan sweep" described as if it existed, and added coverage for
+      everything shipped since the original MVP sketch (hybrid search, confidence
+      gate, broad-query router, Notebook Overview, contextual retrieval, notebook
+      sharing, Access Roles, 7 new tables). Also found (not fixed, docs-only pass):
+      `backend/app/{repositories,schemas,exceptions}/` are empty leftover dirs from
+      the 2026-07-02 refactor, real cruft worth deleting sometime. See memory.md for
+      full detail.
+
+**All 5 items from the 2026-07-29 P1 hardening backlog are now closed** except the Ragas
+dependency fix (needs real upstream work — pinning an older `langchain-community` or a
+separate vertexai shim — before `pytest -m eval` can ever run).
 
 Next action: **the P0 roadmap from `research-production-agent-features.md` is fully
 built, independently verified, and committed** as 6 commits on `main`
