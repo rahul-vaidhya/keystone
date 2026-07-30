@@ -4,6 +4,80 @@
 > session, updated by the **Remember** skill at the end of every session.
 > Keep it short and high-signal. Delete stale entries.
 
+## Repo cruft cleanup + real CI fix: a genuine bug CI had been silently flagging since 2026-07-29, committed `b6ebacc` (2026-07-30, same day as the docs-refresh session above)
+
+**Cleanup**: deleted `backend/app/{repositories,schemas,exceptions}/` — the empty leftover
+directories from the 2026-07-02 single-MVC refactor flagged (not fixed) during the context-docs
+refresh earlier this session. Confirmed safe first: `find` showed only stale `__pycache__`
+content, no real files; `grep` found zero imports referencing any of the three paths anywhere in
+the codebase. Never git-tracked (empty dirs aren't tracked, and the `__pycache__` content was
+gitignored) — deleting them produced zero `git status` diff. Verified via a full app import
+(`import main`) + the offline suite (`376 passed, 3 deselected`, matching baseline exactly)
+after deletion.
+
+**Dev-server run check**: started Postgres/Redis (skipped the reranker — not needed, ~11.5 min
+warmup), uvicorn, arq, Vite from cold (via PowerShell `Start-Process`, avoiding the git-bash
+self-spawning quirk noted earlier this session). Backend `/health` 200, arq registered its 4 job
+functions cleanly, Vite ready in 613ms. Live-verified in the browser: the session from earlier
+in the day was still authenticated, full prior chat history (Fajans/weak-evidence/broad-query
+answers) rendered correctly — confirms DB data survived the directory cleanup and the whole
+stack round-trips correctly end to end. Shut down cleanly after (uvicorn/arq/Vite killed via
+precise PID targeting — see the new gotcha below; Postgres/Redis/reranker stopped; log files
+removed).
+
+**The real CI fix, the main event**: user reported "quite a few commits have failed" — local
+`git log`/reflog showed zero failed commits (every local commit succeeded), so this had to be
+GitHub Actions CI, which needed direct investigation. `gh` CLI wasn't installed locally and
+unauthenticated `curl` against the GitHub API 404'd (repo is private) — installed `gh` via
+`winget install --id GitHub.cli` successfully, but authenticating it needs an interactive login
+the user would have to run themselves; **user redirected to just check
+`github.com/nwopes/notebook_lm_clone/commits/main/` directly via claude-in-chrome instead**,
+which was much faster and needed no auth (already logged in via the browser session).
+
+Found via the commits page's inline check-status UI (click the "X 1/2" indicator → "Details" →
+expand the failing step → read the log): **every commit since `40b3b58` ("feat: add contextual
+retrieval", 2026-07-29) has been failing `CI / test (push)`** — `44dcb89` was the first to fail,
+and `06f678a`/`63c07d2`/`8715d41` (this session's own docs-only commits) all inherited the exact
+same pre-existing failure, unrelated to anything any of those commits actually touched. Root
+cause: `tests/test_enrichment.py::test_contextual_embedding_enabled_reembeds_with_section_summary`
+asserted exact float equality (`assert vector == expected`) between a chunk embedding read back
+from pgvector (stored as single-precision `float4`) and a value computed fresh in Python
+(`float64`, via `FakeEmbedder`) — these differ at the ~7th-8th decimal digit on every real
+Postgres round-trip, so the assertion could never pass against a real `pgvector` instance
+regardless of how many times it re-ran. This is presumably why no prior local session caught it:
+every local offline-suite run in this project's history moves `.env` aside first (a documented,
+followed precedent), but that alone doesn't explain a systematic float-precision mismatch —
+worth flagging that this exact test should have failed locally too, and either got lucky on
+specific FakeEmbedder-seeded values in past local Testcontainers runs, or was never actually
+run to completion locally after being added (both P1-round "372 passed" claims in this file
+predate a full clean run with `.env` moved aside AND freshly reading the CI log — an open
+question for a future session if this class of bug recurs). **Fixed**: switched to
+`pytest.approx(expected, abs=1e-6)`. Verified: `test_enrichment.py` 12/12, full suite 376/376,
+ruff clean, **and confirmed green on GitHub Actions itself** (`b6ebacc` → `2/2` checks passed,
+watched live via claude-in-chrome polling the commits page after push) — the first time in this
+project's history CI's actual pass/fail state was checked this way rather than trusted from a
+local run alone.
+
+**Also found via the same commits-page scan, NOT investigated further**: a separate, older
+cluster of `1/2`-failing commits from 2026-07-16 through 2026-07-21 (`f2f1dd5`, `44b05db`,
+`8193f41`, `e5ead2d`, `5b983fd`) — predates and is unrelated to the contextual-retrieval bug;
+already superseded by since-then commits showing clean `2/2` (e.g. `b2cdf2e`, `7ee4a0e`), so not
+currently blocking anything. Worth a look only if someone specifically cares about that era's CI
+history.
+
+**New reusable gotcha**: killing dev-server processes by `CommandLine`-regex match in PowerShell
+is dangerous — a broad pattern like `Where-Object { $_.CommandLine -match "uvicorn|arq worker" }`
+can match the PowerShell tool's OWN `-Command` invocation string (which literally contains that
+search text as part of the command being run), silently killing the wrapper process itself
+mid-execution (`Exit code 255`, no output, easy to misread as "nothing matched"). Fixed pattern:
+filter on `$_.Name -eq "python.exe" -and $_.CommandLine -match "<exact module invocation>"`, or
+just resolve PIDs via `netstat -ano`/`Get-NetTCPConnection` port ownership first and kill by PID
+directly — never trust a broad process-list kill's own reported success.
+
+**Commit**: `b6ebacc` — fix: use tolerance-based comparison for pgvector-roundtripped embeddings
+in tests. Pushed immediately (this was a live-broken-CI fix, not held for review-before-push
+like most of this session's other commits).
+
 ## P1 hardening items 3-4 completed: reranker live smoke test + 2 real bugs fixed, 2 commits (2026-07-30)
 
 **Context**: continuation of the 2026-07-29 P1 hardening session, whose backlog items 3-5

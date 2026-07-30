@@ -1224,6 +1224,26 @@ zero production behavior change until explicitly enabled. Pushed to `origin/main
 dependency fix (needs real upstream work — pinning an older `langchain-community` or a
 separate vertexai shim — before `pytest -m eval` can ever run).
 
+## Maintenance — Repo cruft cleanup + real CI fix (2026-07-30, committed `b6ebacc`, pushed)
+- [x] Deleted `backend/app/{repositories,schemas,exceptions}/` (the empty leftover dirs
+      flagged during the docs refresh above) — confirmed zero real files, zero imports,
+      never git-tracked; verified via app import + offline suite (376/3 deselected,
+      unchanged). Live-verified the full dev stack still runs cleanly after (Postgres/
+      Redis/uvicorn/arq/Vite from cold, browser round-trip against prior session data).
+      **Found and fixed a real, previously-undetected CI bug**: user reported failing
+      GitHub Actions commits; checked `github.com/.../commits/main/` directly (no `gh`
+      auth needed) and found every commit since `40b3b58` ("feat: add contextual
+      retrieval", 2026-07-29) had been failing `CI / test (push)` —
+      `test_enrichment.py::test_contextual_embedding_enabled_reembeds_with_section_summary`
+      asserted exact float equality between a pgvector-roundtripped embedding
+      (single-precision `float4`) and a freshly-computed Python float64 value, which can
+      never be exactly equal on a real Postgres round-trip. Fixed with `pytest.approx`.
+      Verified green on GitHub Actions itself (`b6ebacc` → 2/2 checks passed), not just
+      locally — the first time this project's CI status was checked directly rather than
+      assumed from a local run. See memory.md for full detail, including a separate
+      older (2026-07-16 to 07-21) failing-commit cluster found but not investigated
+      (superseded by later clean commits, not currently blocking).
+
 Next action: **the P0 roadmap from `research-production-agent-features.md` is fully
 built, independently verified, and committed** as 6 commits on `main`
 (`0cddb5e`→`3a54c25`, see memory.md "Wrap-up" for the full list + build technique).
