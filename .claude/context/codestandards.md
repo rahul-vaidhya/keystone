@@ -57,8 +57,9 @@ async def upload(req, db):
   always on**, independent of any flag.
 - Open DB work through the shared **`tenant_session(org_id)`** helper (request path AND arq workers).
 - RLS is a backstop, **not** a license to skip the application filter. Enforced RLS (the restricted
-  `app_user` role + `FORCE ROW LEVEL SECURITY`) is **deferred to Phase 6**, gated by `RLS_ENABLED`
-  (default OFF in dev/test). See architecture.md "Tenancy plumbing."
+  `app_user` role + `FORCE ROW LEVEL SECURITY`) has been **live and unconditional since F60**
+  (migration `0015`) ‚Äî it does not depend on any flag (`RLS_ENABLED` is vestigial). See
+  architecture.md "Tenancy plumbing."
 
 ```python
 # RIGHT
@@ -69,7 +70,8 @@ async def list_all(self): return await self._db.scalars(select(Document))   # ‚ù
 ```
 
 ## External calls
-- Only through `Parser` / `Embedder` / `LLM` seams. Never import a vendor SDK inside a `service`.
+- Only through `Parser` / `Embedder` / `LLM` / `Reranker` seams. Never import a vendor SDK inside a
+  `service`.
 - Inject the seam (constructor or FastAPI dependency) so tests pass a fake.
 
 ## Ingestion correctness
@@ -87,10 +89,11 @@ async def list_all(self): return await self._db.scalars(select(Document))   # ‚ù
 ## Tests (land with the code)
 - **Unit:** pure logic (chunker, citation mapper, `assemble_context`) with fakes ‚Äî milliseconds.
 - **Integration:** services + repositories against a **real** ephemeral Postgres+pgvector
-  (Testcontainers). Fake the 3 seams. Always include a tenant-isolation assertion.
+  (Testcontainers). Fake all 4 seams. Always include a tenant-isolation assertion.
 - **Do not mock the database.** Fake only what is slow or nondeterministic (the seams).
 
 ## Don'ts
 - No business logic in controllers; no SQL outside repositories; no cross-domain repository access.
-- No vendor SDK in services. No unscoped queries. No silent failures. No new seam beyond the 3
-  (Reranker arrives in V2). No premature dedicated vector DB / KG / agentic retrieval.
+- No vendor SDK in services. No unscoped queries. No silent failures. No new seam beyond the 4
+  (`Parser`/`Embedder`/`LLM`/`Reranker` ‚Äî the `Reranker` seam shipped 2026-07-28). No premature
+  dedicated vector DB / KG / agentic retrieval.

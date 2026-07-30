@@ -19,15 +19,14 @@ web-search the current official docs (versions move). Focus here is "the way we 
   `services/<domain>/`) take the session.
 - Migrations via Alembic; **never** edit a shipped migration — add a new one.
 - **One session helper for everything — `tenant_session(org_id)` (in `app/config/db.py`) — used by
-  BOTH the request path and arq workers** (see architecture.md "Tenancy plumbing"):
+  BOTH the request path and arq workers** (see architecture.md "Tenancy plumbing"). It is the ONLY
+  sanctioned way to open a session — a guard test in `tests/test_rls.py` fails the build on any
+  bare `sessionmaker()` outside `config/db.py`:
   ```python
   @asynccontextmanager
   async def tenant_session(org_id):
       async with sessionmaker() as s, s.begin():
-          if settings.RLS_ENABLED:                       # default FALSE in dev/test (MVP)
-              await s.execute(
-                  text("SELECT set_config('app.org_id', :org, true)"), {"org": str(org_id)}
-              )
+          await set_org_guc(s, org_id)      # ALWAYS — enforcement never depends on a flag
           yield s
   ```
   - Use **`set_config('app.org_id', :org, true)`**, never `SET LOCAL app.org_id = :org`: Postgres
@@ -35,22 +34,28 @@ web-search the current official docs (versions move). Focus here is "the way we 
     will not parse. `set_config(..., is_local => true)` is the transaction-scoped function equivalent
     and takes a bound value. Being transaction-scoped, it never leaks `org_id` into the next pooled
     checkout (plain `set_config(..., false)` / plain `SET` would).
-  - Repository classes (inside `services/<domain>/`) **always** apply `WHERE org_id = :org` regardless
-    of `RLS_ENABLED`. RLS is the backstop, the app filter is the guarantee.
-- **RLS — DESIGNED NOW, ENABLED IN PHASE 6 (Security Hardening). Do not turn on in MVP.** The
-  migration is written but the teeth are gated by `RLS_ENABLED`:
+  - Repository classes (inside `services/<domain>/`) **always** apply `WHERE org_id = :org` on top of
+    RLS — belt and suspenders, never either/or.
+- **RLS — ENFORCED, UNCONDITIONALLY, SINCE F60 (migration `0015`)**. Every tenant table carries
+  `ENABLE`/`FORCE ROW LEVEL SECURITY` + a `tenant_isolation` policy, live in every environment,
+  never gated by a flag (`RLS_ENABLED` is vestigial — kept only because migration `0002` imports it):
   ```sql
-  -- created in a migration; takes effect only once the app connects as the restricted app_user role
   ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
-  ALTER TABLE documents FORCE ROW LEVEL SECURITY;        -- Phase 6: applies even to table owner-ish roles
+  ALTER TABLE documents FORCE ROW LEVEL SECURITY;        -- applies even to table owner-ish roles
   CREATE POLICY tenant_isolation ON documents
-    USING (org_id = current_setting('app.org_id', true)::uuid);   -- missing_ok → unset GUC = NULL = no rows
+    USING (org_id = NULLIF(current_setting('app.org_id', true), '')::uuid);
+    -- the NULLIF is load-bearing: a committed transaction-local GUC resets to '' (not NULL) on a
+    -- pooled connection, and a bare ''::uuid cast raises instead of matching nothing.
   ```
-  - `organizations` has no `org_id`; its policy keys on `id = current_setting('app.org_id', true)::uuid`.
-  - **Role split (Phase 6):** Alembic + tests run as a privileged **`migrator`** (owns tables, bypasses
-    RLS); the running app connects as a restricted non-owner **`app_user`** that RLS actually constrains.
-    In MVP everything runs as `migrator`, so RLS is inert even where the policy exists — which is why the
-    MVP isolation test asserts the **app-level** filter, and the real teeth-having test arrives in Phase 6.
+  - `organizations` has no `org_id`; its policy keys on `id = NULLIF(current_setting('app.org_id', true), '')::uuid`.
+  - **Role split (live since F60):** the app (API + arq worker) connects as the restricted **`app_user`**
+    role (`NOLOGIN` in the migration — LOGIN/password provisioning is per-environment), genuinely
+    subject to RLS; Alembic runs as the privileged table-owning **`migrator`** role (`BYPASSRLS`) via
+    `MIGRATIONS_DATABASE_URL`. `tests/test_rls.py` connects as `app_user` specifically — a teeth-having
+    isolation test, not just an app-level-filter assertion.
+  - **Pre-tenant auth bootstrap** (signup/login, before any org is known): `auth_session(email)` sets a
+    second transaction-local GUC (`app.auth_email`) and two permissive SELECT-only `auth_email_lookup`
+    policies scope reads to exactly that email's user row and its org — nothing else.
 
 ## pgvector
 - Column `embedding vector(1536)`. **HNSW** index for ANN search.
@@ -74,6 +79,22 @@ web-search the current official docs (versions move). Focus here is "the way we 
   - **Larger scope:** use the **HNSW** index with a raised `ef_search` so post-filtering still returns
     a full `k`. Filtered-recall tuning is flagged as a **V2 revisit**.
 
+## Hybrid search (BM25-style lexical + vector, RRF fusion) — shipped, `HYBRID_SEARCH_ENABLED`
+- Native Postgres full-text search, no third-party extension: `chunks.content_tsv`, a `STORED`
+  generated `tsvector` column (`to_tsvector('english', content)`) + GIN index (migration `0021`).
+  **The ORM mapping needs `Computed("to_tsvector('english', content)", persisted=True)`** — without
+  it, SQLAlchemy's `insertmanyvalues` batch-insert path sends an explicit `NULL` for the column on
+  every insert, and Postgres rejects ANY explicit value (even NULL) into a `GENERATED ALWAYS` column,
+  breaking ingestion entirely. `Computed()` here is DML-only signaling (excludes the column from
+  INSERT/UPDATE); the actual DDL is owned by the migration's raw SQL.
+- `ChunkRepository.search_chunks_lexical` uses `websearch_to_tsquery`/`ts_rank`, returns `ChunkHit`
+  with `distance=None` (a lexical-only hit genuinely has no cosine distance — both `ChunkHit.distance`
+  and `ContextBlock.distance` are `float | None`).
+- Pure `fuse_rrf(vector_hits, lexical_hits, k=60)` (standard reciprocal-rank fusion) dedupes on
+  `chunk_id` — the vector instance wins on collision since it carries a real distance. Composes with
+  the reranker: effective candidate widening is
+  `max(k, RERANK_CANDIDATE_K, HYBRID_CANDIDATE_K)` when both flags are on.
+
 ## arq (background workers)
 - Task functions live in `app/services/<domain>/tasks.py` (currently only `app/services/ingestion/tasks.py`);
   `worker.py` only imports and registers them in `WorkerSettings.functions`. Enqueue from a service.
@@ -85,12 +106,34 @@ web-search the current official docs (versions move). Focus here is "the way we 
 - Ingestion stages are separate task functions chained on success; each is idempotent so retries
   are safe and a `FAILED` doc resumes from its last good stage.
 
-## The 3 seams (our wrappers, in `app/services/seams/`)
+## The 4 seams (our wrappers, in `app/services/seams/`)
 - Real adapters wrap the vendor APIs; **fakes** are the default in tests/local:
   - `FakeEmbedder`: deterministic vector from `sha256(text)` → reproducible retrieval assertions.
   - `FakeLLM`: streams back a templated answer citing the provided context → tests citation mapping.
   - `FakeParser`: returns a fixed text + outline → tests structuring without a real PDF.
-- Swap real⇄fake via per-seam config (`PARSER_MODE`, `EMBEDDER_MODE`, `LLM_MODE`); production wires real adapters, CI wires fakes.
+  - `FakeReranker`: identity passthrough stamping `rerank_score = 1.0 - distance` (or `0.0` when
+    `distance is None`, e.g. a hybrid-search lexical-only hit) — deterministic, lets confidence-gate
+    tests control the score via `FakeEmbedder` distance.
+- Swap real⇄fake via per-seam config (`PARSER_MODE`, `EMBEDDER_MODE`, `LLM_MODE`, `RERANKER_MODE`);
+  production wires real adapters, CI wires fakes. `RERANKER_ENABLED` (default `False`) is a SEPARATE
+  switch from `RERANKER_MODE` — it gates whether the reranker is called at all; shipping the code
+  changes nothing in existing behavior until explicitly turned on. Same one-flag-per-capability
+  pattern for every V2-style addition since (`HYBRID_SEARCH_ENABLED`, `BROAD_QUERY_ENABLED`,
+  `NOTEBOOK_OVERVIEW_ENABLED`, `CONTEXTUAL_EMBEDDING_ENABLED`, `ENRICHMENT_ENABLED`,
+  `SEMANTIC_OUTLINE_ENABLED`, `HIERARCHICAL_RETRIEVAL_ENABLED`).
+- **`RealReranker`** (`app/services/seams/real_reranker.py`): an `httpx` client (NOT an SDK wrapper
+  like the OpenAI-compatible `RealEmbedder`/`RealLLM`) to a self-hosted BGE-reranker-v2-m3 served by
+  Hugging Face Text-Embeddings-Inference (`docker-compose.yml`'s `reranker` service, port 8081,
+  `RERANKER_URL`). POSTs `{"query", "texts", "raw_scores": false}` to `/rerank` — `raw_scores:false`
+  means TEI returns sigmoid-normalized `[0,1]` scores (not raw logits), so `RERANK_MIN_SCORE`
+  (the confidence-gate threshold) must be calibrated in `[0,1]`. Response is
+  `[{"index": int, "score": float}, ...]`, NOT guaranteed sorted — `RealReranker.rerank` sorts
+  explicitly. **On CPU-only hardware, TEI internally caps `max_batch_requests=4`** regardless of how
+  many candidates are sent — the default `RERANK_CANDIDATE_K=25` can take long enough to exceed the
+  client's HTTP timeout (60s); `retrieval/service.py`'s `_retrieve_hits` catches the resulting
+  `SeamTransientError` and degrades to the unreranked candidates rather than failing the chat turn
+  (confirmed 2026-07-30, live, against a real TEI instance — a first cold-start warmup alone took
+  ~11.5 minutes on modest CPU hardware, so don't mistake a slow-but-alive container for a crash).
 
 ## SSE streaming (chat)
 - Chat endpoint returns `StreamingResponse` (or EventSourceResponse) yielding tokens from
@@ -104,10 +147,12 @@ web-search the current official docs (versions move). Focus here is "the way we 
   1. **DB:** `ON DELETE CASCADE` chains, atomically inside the transaction. Deleting a `documents`
      row cascades to its `sections`, `chunks`, `embeddings`. (Separately, deleting a `conversations`
      row cascades `messages`→`message_traces`; conversations belong to a notebook, not a document.)
-  2. **Object store:** S3 blobs are deleted by an **idempotent blob-deletion job** enqueued after the
-     DB commit (re-running it is safe).
-  3. **Safety net:** a periodic **orphan sweep** deletes any blob whose `document_id` no longer exists
-     in the DB — so a crash between (1) and (2) self-heals. (There is no "same DB tx" for blobs.)
+  2. **Object store:** `ObjectStore.delete` (added 2026-07-12) removes the blob(s) synchronously,
+     after the DB commit — DB-first ordering means a failed blob delete only orphans a blob, never
+     leaves a dangling row.
+  3. **NOT built, still a known gap:** a periodic orphan-sweep job that would delete any blob whose
+     `document_id` no longer exists in the DB (to self-heal a crash between DB commit and blob
+     delete) — there is no "same DB tx" for blobs, and nothing sweeps orphans left by that gap today.
 
 ## Parser / OCR vendor
 - **Resolved F23: OpenRouter's file-parser plugin**, called directly over HTTP from inside

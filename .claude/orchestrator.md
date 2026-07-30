@@ -9,8 +9,10 @@ loaded **first, every session**.
 > Architecture: **single-MVC: Express-style MVC backend** (`app/{models,routes,controllers,services,
 > middleware,config,utils}/`, JSON-only, no view layer) **+ conventional React SPA frontend as view layer** 
 > (`frontend/src/{pages,components,layouts,services,context,hooks,types,styles}/` — locked 2026-07-02 refactor, 
-> was layer-first MVC monolith before 2026-07-02), ports only for 3 seams (parser/embedder/llm),
-> staged ingestion pipeline, flag-gated V2/V3 retrieval. See `.claude/context/architecture.md`.
+> was layer-first MVC monolith before 2026-07-02), ports for 4 seams (parser/embedder/llm/reranker —
+> reranker shipped 2026-07-28), staged ingestion pipeline, flag-gated hierarchical/hybrid/reranked/
+> broad-query retrieval (mostly shipped, all flag-gated off by default). See
+> `.claude/context/architecture.md`.
 
 ---
 
@@ -24,7 +26,7 @@ loaded **first, every session**.
 3. `.claude/context/projectoverview.md` — the "why" and scope boundaries.
 4. `.claude/context/architecture.md`    — stack, module boundaries, schema, pipelines (HEAVYWEIGHT — read fully).
 5. `.claude/context/codestandards.md`   — how code must be written.
-6. `.claude/context/librarydocs.md`     — how THIS project uses FastAPI/SQLAlchemy/pgvector/arq and the 3 seams.
+6. `.claude/context/librarydocs.md`     — how THIS project uses FastAPI/SQLAlchemy/pgvector/arq and the 4 seams.
 
 **Only when touching the SPA:**
 7. `.claude/context/uitokens.md`, `.claude/context/uirules.md`, `.claude/context/uiregistry.md`
@@ -77,7 +79,7 @@ boxes in `.claude/progresstracker.md` with the commit ref. Never end a session w
    repository or tables.
 2. **No SQL outside the repository classes** (the `# ---- repository ----` sections in `services/<domain>.py`, `services/documents/{documents,folders,tags}.py`, or `services/ingestion/repository.py`). **No business logic in `routes/<domain>.py` or `controllers/<domain>.py`** — routes wire paths, controllers are thin handlers.
 3. **Every query is scoped by `org_id`.** RLS is the backstop, not the excuse to skip it.
-4. External services (LLM, embeddings, parser) are reached **only through a seam interface** (in `app/services/seams/`).
+4. External services (LLM, embeddings, parser, reranker) are reached **only through a seam interface** (in `app/services/seams/`).
 5. Ingestion stages are **idempotent and resumable**; intermediate artifacts are persisted.
 6. **Structural metadata is captured now; semantic enrichment (summaries/topics/graph) is
    designed-for now but populated later behind a flag.** Never break this split.

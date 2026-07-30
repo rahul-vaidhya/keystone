@@ -30,17 +30,21 @@ backend/
     utils/              # tokens.py, passwords.py, constants.py, http.py (utilities)
     services/           # business logic + SQL repositories, one file OR subpackage per domain:
                         #   auth.py, documents/ (subpackage), ingestion/ (subpackage),
-                        #   knowledge.py, retrieval.py, chat.py, base.py (BaseRepository),
-                        #   seams/ (3 seam Protocols + fakes + real adapters),
-                        #   storage.py, queue.py
+                        #   knowledge/ (subpackage), retrieval/ (subpackage), chat/ (subpackage),
+                        #   access_roles.py, embed.py, evals.py, queue.py, storage.py,
+                        #   base.py (BaseRepository),
+                        #   seams/ (4 seam Protocols — Parser/Embedder/LLM/Reranker — + fakes
+                        #   + real adapters)
     models/             # ORM models + Pydantic API schemas (merged), one file per domain:
                         #   auth.py, documents.py, ingestion.py, knowledge.py, retrieval.py,
-                        #   chat.py  (retrieval has schemas only, owns no table)
+                        #   chat.py, access_roles.py, embed.py, evals.py
+                        #   (retrieval has schemas only, owns no table)
     routes/             # HTTP path wiring only, one file per domain: auth.py, documents.py,
-                        #   ingestion.py, notebooks.py (= knowledge domain), retrieval.py, chat.py
+                        #   ingestion.py, notebooks.py (= knowledge domain), retrieval.py, chat.py,
+                        #   access_roles.py, embed.py, evals.py
     controllers/        # thin handlers (parse/validate/call service/shape response),
                         #   one file per domain: auth.py, documents.py, ingestion.py,
-                        #   notebooks.py, retrieval.py, chat.py
+                        #   notebooks.py, retrieval.py, chat.py, access_roles.py, embed.py, evals.py
   tests/
   migrations/           # alembic
   worker.py             # arq entrypoint
@@ -184,7 +188,7 @@ current single-MVC paths.
     policy + `app_user` grant in its own migration** — 0015 only covers the 18 tables that existed
     at F60.
 
-## The 3 seams (and only these)
+## The 4 seams (and only these)
 ```python
 class Parser(Protocol):
     async def extract(self, blob: bytes, mime: str) -> ParsedDoc: ...   # text + outline + pages + language
@@ -192,20 +196,32 @@ class Embedder(Protocol):
     async def embed(self, texts: list[str]) -> list[list[float]]: ...
 class LLM(Protocol):
     async def stream(self, messages: list[Message]) -> AsyncIterator[str]: ...   # async-IO rule
+class Reranker(Protocol):
+    async def rerank(self, query: str, candidates: list[ChunkHit], top_k: int) -> list[ChunkHit]: ...
 ```
-Fakes: hash-based deterministic embedder; echo-context LLM; fixed-output parser. → run the whole
-app and test suite with no API keys, no cost, reproducible. pgvector, object store, and the queue
-are called directly (we are not swapping Postgres). A `Reranker` seam is added in V2, not now.
+Fakes: hash-based deterministic embedder; echo-context LLM; fixed-output parser; identity-passthrough
+reranker. → run the whole app and test suite with no API keys, no cost, reproducible. pgvector,
+object store, and the queue are called directly (we are not swapping Postgres).
 
-**Seam mode is PER-SEAM, not one global switch (decided F23):** the original single
-`SEAMS_MODE=fake|real` flag is refined into three independent switches — parser, embedder, and
-llm each resolve `fake`/`real` on their own (e.g. `PARSER_MODE`/`EMBEDDER_MODE`/`LLM_MODE`).
-This lets the real parser be validated against real documents while the embedder and LLM stay
-on fakes (no API cost/keys needed for that validation). **Default for every seam, in every
-environment, remains `fake`** — real is opt-in per seam, never the app default, and the
-offline Testcontainers CI suite always runs fully fake regardless of what's configured locally.
-The 3-seam rule itself (Parser/Embedder/LLM, nothing else) is unchanged — this only changes how
-each seam's mode is selected, not how many seams exist or their Protocol shapes.
+**`Reranker` shipped 2026-07-28** (the V2 seam originally scoped as "added only when quality work
+demands it" — that trigger fired). `RERANKER_ENABLED` (default `False`) is a separate switch from
+`RERANKER_MODE` — gates whether `RetrievalService._retrieve_hits` widens the candidate kNN pool
+(`candidate_k = max(k, RERANK_CANDIDATE_K)`) and reranks it back down
+(`final_k = min(k, RERANK_TOP_K)`); `RERANKER_MODE` (fake|real) only matters once enabled. Real impl
+= self-hosted BGE-reranker-v2-m3 via Hugging Face TEI (`docker-compose.yml`'s `reranker` service) —
+see librarydocs.md "The 4 seams" for the HTTP contract, timeout/fallback behavior, and the CPU-only
+warmup-time gotcha (live-verified 2026-07-30).
+
+**Seam mode is PER-SEAM, not one global switch (decided F23, extended to the 4th seam at F-P0):**
+the original single `SEAMS_MODE=fake|real` flag is refined into independent switches — parser,
+embedder, llm, and (once `Reranker` shipped) reranker each resolve `fake`/`real` on their own
+(`PARSER_MODE`/`EMBEDDER_MODE`/`LLM_MODE`/`RERANKER_MODE`). This lets the real parser be validated
+against real documents while the embedder and LLM stay on fakes (no API cost/keys needed for that
+validation). **Default for every seam, in every environment, remains `fake`** — real is opt-in per
+seam, never the app default, and the offline Testcontainers CI suite always runs fully fake
+regardless of what's configured locally. `RERANKER_ENABLED` is additionally its own separate gate
+from `RERANKER_MODE` (see "The 4 seams" above) — a pattern unique to the reranker, since calling it
+at all (not just which mode) changes retrieval behavior.
 
 **Real Parser vendor — resolved F23 (OpenRouter file-parser plugin):**
 - `RealParser` calls OpenRouter's `/chat/completions` file-parser plugin directly over HTTP
@@ -283,19 +299,38 @@ POSTPONED, BACKFILLABLE JOBS (designed now, OFF in MVP, run over existing corpus
 Idempotency: `chunk_id = hash(document_id, ordinal, content)` + unique constraints ⇒ re-running a
 stage upserts (no duplicates); a failed doc resumes from its last good stage.
 
-## Retrieval pipeline (one function, strategy behind flags)
+## Retrieval pipeline (multiple flag-gated strategies, all shipped, all additive over the MVP flat path)
+
+Real current shape (`app/services/retrieval/service.py`'s `RetrievalService`, `app/services/chat/
+broad_query.py`, `app/services/chat/service.py`), not the original MVP-only sketch:
+
 ```python
-async def retrieve(req) -> Context:
-    allowed = resolve_allowed_documents(req.ctx)   # owner/admin: all org docs. Others: gated by
-                                                   # Access Roles' granted tags (2026-07-12) —
-                                                   # see docs/access-roles-dnd-plan.md.
-    scope   = req.notebook.document_ids & allowed
-    qvec    = await embedder.embed([req.query])
-    if   FLAGS.graph_retrieval: hits = graph_then_vector(req, qvec, scope)   # V3
-    elif FLAGS.hierarchical:    hits = coarse_to_fine(req, qvec, scope)      # V2
-    else:                       hits = flat_vector(qvec, scope, k=30)        # MVP
-    return assemble_context(hits[:8])              # numbered, with source refs for citations
+async def ask(ctx, req) -> ChatResponse:
+    scope = resolve_notebook_scope(ctx, req.notebook_id)   # notebook ∩ Access-Roles-allowed docs
+
+    if BROAD_QUERY_ENABLED:                                  # P1, 2026-07-29 — one cheap LLM
+        if is_broad_query(req.query, scope):                 # classifier call; falls through to
+            return await try_broad_query(ctx, scope, req)    # flat/hybrid/rerank on any fallback
+                                                               # (no section summaries, doc count
+                                                               # over BROAD_QUERY_MAX_DOCUMENTS)
+
+    qvec = await embedder.embed([req.query])
+    # _search_hits: coarse-to-fine section->chunk kNN if HIERARCHICAL_RETRIEVAL_ENABLED, else flat;
+    # ALSO widens + RRF-fuses in a lexical (BM25-style) candidate list if HYBRID_SEARCH_ENABLED —
+    # orthogonal to flat vs. hierarchical.
+    hits = await _search_hits(ctx, qvec, scope, candidate_k, k)
+    if RERANKER_ENABLED:                                     # P0, 2026-07-28
+        hits = await reranker.rerank(req.query, hits, final_k)   # falls back to unreranked hits on
+                                                                   # SeamTransientError, never fails
+                                                                   # the whole turn (2026-07-30 fix)
+        if hits[0].rerank_score < RERANK_MIN_SCORE:            # confidence gate — no separate flag,
+            return weak_evidence_response()                    # inert whenever reranker is off
+
+    return await generate_answer(assemble_context(hits[:8]))    # numbered, cited
 ```
+
+`FLAGS.graph_retrieval` (V3, knowledge-graph) is still unbuilt — the only strategy in the original
+sketch that hasn't shipped.
 
 ---
 
@@ -314,7 +349,12 @@ users(id uuid pk, org_id fk, email citext,
       created_at)
 
 folders(id uuid pk, org_id fk, parent_id uuid null fk→folders.id,
-        name text, path text,            -- [now] materialized path 'HR/Policies'
+        name text,
+        path text,       -- [now] NON-AUTHORITATIVE display cache (F25, 2026-07-12: was a true
+                          -- materialized path; parent_id/adjacency-list is now authoritative,
+                          -- path is synchronously rebuilt from parent_id+name on every
+                          -- move/rename via _rebuild_subtree_paths — never sliced from the old
+                          -- string, which risks false-matching a sibling name prefix)
         created_at)
 tags(id uuid pk, org_id fk, name text)
 document_tags(org_id fk, document_id fk, tag_id fk, primary key(document_id, tag_id))
@@ -409,36 +449,87 @@ relationships(id uuid pk, org_id fk, subject_entity_id fk, predicate text,
               object_entity_id fk, chunk_id fk, confidence real)
 ```
 
+### Tables shipped since the original MVP sketch above (all additive, no rewrites of the tables
+### above — full column-by-column detail lives in memory.md's "Schema quick-reference")
+```sql
+-- P0 hybrid search (migration 0021): chunks gained content_tsv (STORED generated tsvector +
+-- GIN index) — needs Computed(...) in the ORM mapping, see librarydocs.md "Hybrid search".
+
+-- access-based RBAC (migration 0012, 2026-07-12): a tag only gates access once GRANTED to a
+-- role — untagged/ungranted resources stay open to everyone.
+access_roles(id, org_id, name)
+user_access_roles(user_id, access_role_id)
+access_role_tags(access_role_id, tag_id)     -- which tags a role grants
+folder_tags(folder_id, tag_id)               -- inherits to the whole subtree
+
+invite_tokens(id, org_id, user_id, token_hash unique, expires_at, used_at)   -- migration 0016
+widgets(id, org_id, knowledge_base_id, name, public_id unique, allowed_origins jsonb,
+        is_active, created_by)                                              -- migration 0019
+notebook_shares(id, org_id, notebook_id, user_id, created_at)               -- migration 0020,
+        -- per-person notebook sharing; creator-only by default, NO owner/admin bypass (the one
+        -- resource in this app where the org system role does not see everything)
+message_feedback(id, org_id, message_id, user_id, rating, reason_tags text[], comment,
+        corrected_answer, unique(message_id, user_id))                      -- migration 0022
+golden_questions(id, org_id, notebook_id, question, reference_answer,
+        reference_contexts jsonb, source_message_id null)                   -- migration 0023
+notebook_overviews(id, org_id, notebook_id unique, content, citations jsonb,
+        generated_by, stale bool default false)                            -- migration 0024
+
+-- users gained (auth hardening, migration 0013 + 0018): is_active, failed_login_attempts,
+-- locked_until, token_version (bumped to invalidate every other session), name.
+-- documents gained (migration 0017): uploaded_by.
+-- sections/embeddings' `summary`/`topics`/`owner_type='section'` — labeled [later] above — are
+-- now ACTUALLY POPULATED when ENRICHMENT_ENABLED (shipped 2026-07-15), not just designed-for.
+```
+
 ### How this one schema serves all four retrieval futures
-- **Document/flat retrieval (MVP):** search `embeddings WHERE owner_type='chunk'`, filter
+- **Document/flat retrieval (MVP, shipped):** search `embeddings WHERE owner_type='chunk'`, filter
   `document_id IN (notebook ∩ allowed)`.
-- **Section retrieval (V2):** chunks carry `section_id` + offsets → expand a hit to its section or
+- **Section retrieval (shipped):** chunks carry `section_id` + offsets → expand a hit to its section or
   parent via the `sections` tree. No re-ingest.
-- **Hierarchical/indexed (V2):** enrichment fills `*.summary` + inserts `embeddings(owner_type=
-  'section'|'document')` into the SAME table. Coarse-to-fine routing needs no schema change.
-- **Knowledge graph (V3):** extraction reads existing chunks → fills `entities/mentions/relationships`,
-  each triple pointing back to `chunk_id` + offsets. Possible only because provenance was stored in MVP.
+- **Hierarchical/indexed (shipped, flag-gated off by default):** enrichment fills `*.summary` +
+  inserts `embeddings(owner_type='section')` into the SAME table (`'document'`-level rows are
+  designed-for but not populated by any shipped feature yet). Coarse-to-fine routing needed no
+  schema change, exactly as designed.
+- **Knowledge graph (V3, NOT built):** extraction would read existing chunks → fill
+  `entities/mentions/relationships`, each triple pointing back to `chunk_id` + offsets — possible
+  only because provenance was stored in MVP, whenever this is actually built.
 
 ---
 
-## MVP / V2 / V3 (strictly additive)
-- **MVP — flat RAG, NotebookLM-style.** Core ingestion path + flat vector retrieval + grounded
-  cited chat + tenant isolation. The whole shippable product.
-- **V2 — hierarchical / indexed.** Turn on `enrichment` backfill; add `coarse_to_fine` +
-  parent-expansion strategies behind flags; optionally add the `Reranker` seam. New tables: none.
-- **V3 — knowledge graph / advanced.** Create `entities/mentions/relationships`; run `extraction`
-  backfill; add `graph_then_vector`; layer hybrid (vector+BM25) and any agentic multi-hop here.
+## MVP / V2 / V3 (strictly additive) — MVP + most of V2 are now SHIPPED, not aspirational
+- **MVP — flat RAG, NotebookLM-style. SHIPPED.** Core ingestion path + flat vector retrieval +
+  grounded cited chat + tenant isolation (including enforced RLS, F60).
+- **V2 — hierarchical / indexed / reranked. MOSTLY SHIPPED**, all flag-gated off by default:
+  semantic outline + enrichment backfill (`ENRICHMENT_ENABLED`, 2026-07-15), hierarchical
+  coarse-to-fine retrieval (`HIERARCHICAL_RETRIEVAL_ENABLED` — built, but a real-seam eval found
+  no measured benefit on a single-document corpus, recommended OFF until a large multi-document
+  notebook creates real pressure on flat's precision), the `Reranker` seam
+  (`RERANKER_ENABLED`, 2026-07-28), hybrid vector+BM25 search (`HYBRID_SEARCH_ENABLED`,
+  2026-07-28), a reranker-score confidence gate (implicit whenever the reranker is on),
+  contextual retrieval (`CONTEXTUAL_EMBEDDING_ENABLED`, 2026-07-29 — prepends a section summary
+  before re-embedding a chunk, Anthropic's technique). New tables: none for any of these (all
+  additive to the MVP schema). Not yet built from the original V2 scope: per-user grants beyond
+  Access-Roles' tag-based model, connector-sourced folders.
+- **P1 — synthesis-across-documents. SHIPPED** (2026-07-29, flag-gated off by default): a
+  broad-query router (`BROAD_QUERY_ENABLED`, one cheap LLM classifier call, falls back to the
+  normal flat/hierarchical/hybrid/rerank pipeline on any narrow question) + a shared
+  map-reduce retrieval strategy (`services/retrieval/mapreduce.py`) reused by an on-demand
+  Notebook Overview artifact (`NOTEBOOK_OVERVIEW_ENABLED`).
+- **V3 — knowledge graph / advanced. NOT built.** Create `entities/mentions/relationships`; run
+  `extraction` backfill; add `graph_then_vector`; any agentic multi-hop retrieval.
 
 ## Build-now vs designed-for-postponed
 | Concern | Build now | Postponed (designed-for) |
 |---|---|---|
 | Tenancy (app-level) | `org_id` on every table + always-on app filter + `tenant_session` plumbing | — |
-| Tenancy (enforced RLS) | **DONE (F60, migration `0015`):** unconditional policies + `FORCE RLS` on all 18 tables, `app_user`/`migrator` split, teeth-having isolation test | — |
+| Tenancy (enforced RLS) | **DONE (F60, migration `0015`):** unconditional policies + `FORCE RLS` on all 18-tables-at-the-time, `app_user`/`migrator` split, teeth-having isolation test. Every table added since ships its own RLS block. | — |
 | Tenancy (isolation model) | shared DB, `org_id` rows | per-tenant DB/schema (Enterprise) |
-| Permissions | Access Roles: tag-granted resource access (2026-07-12) | per-user grants, connectors, browsing-endpoint gating (V2) |
-| Folders/tags | full nav tree + tags | connector-sourced folders |
-| Sections | tree + structural fields | summary/topics (V2 enrichment) |
-| Embeddings | `owner_type='chunk'` | section/document rows (V2, insert-only) |
+| Permissions | Access Roles: tag-granted resource access (2026-07-12); per-person notebook sharing, no owner/admin bypass (2026-07-27) | connectors, browsing-endpoint gating beyond tags (V2) |
+| Folders/tags | full nav tree + tags; folder-mutation gated by Access Roles too (2026-07-27) | connector-sourced folders |
+| Sections | tree + structural fields + summary/topics (**populated** when `ENRICHMENT_ENABLED`) | — |
+| Embeddings | `owner_type='chunk'` always; `'section'` populated when `ENRICHMENT_ENABLED` | `'document'`-level rows |
 | KG tables | NOT migrated; shape decided | created + extraction (V3) |
-| Retrieval | flat vector | hierarchical (V2) + graph (V3) behind flags |
-| Reranker / eval framework | none (manual golden questions) | added only when quality work demands |
+| Retrieval | flat vector, hierarchical, hybrid (BM25+vector RRF), reranked, broad-query map-reduce — all flag-gated, composable | graph (V3) |
+| Reranker | **SHIPPED (2026-07-28):** self-hosted BGE-reranker-v2-m3 via TEI, `RERANKER_ENABLED` | — |
+| Eval framework | golden-question set (`golden_questions` table) + admin curation UI shipped (2026-07-28); Ragas metrics grading harness written but **currently broken** (upstream ragas↔langchain_community incompatibility, unfixed as of 2026-07-30) | fixing the Ragas dependency chain |
