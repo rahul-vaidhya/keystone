@@ -11,6 +11,7 @@ import uuid
 from collections.abc import AsyncIterator
 
 import pytest
+import structlog
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
@@ -725,6 +726,47 @@ async def test_stream_llm_failure_mid_stream_yields_error_event(
     assert len(error_events) >= 1
     # No done event after error
     assert len(done_events) == 0
+
+
+async def test_stream_failure_log_includes_error_type_even_when_str_is_empty(
+    client: AsyncClient,
+) -> None:
+    """Some real exceptions (e.g. httpx's ReadTimeout as actually raised by RealReranker)
+    have an empty str() — `error=str(exc)` alone then logs a useless blank string. The
+    stream-failure log must also carry `error_type` (the exception's class name) so a
+    genuinely message-less failure is still diagnosable from the persisted log line."""
+    tokens = await _signup(client, "chatstream-emptyerr@test.com", "StreamEmptyErr")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    notebook_id = (await client.post("/notebooks", headers=headers, json={"name": "NB"})).json()[
+        "id"
+    ]
+
+    class _EmptyMessageFailingLLM:
+        """Raises an exception whose str() is the empty string, mirroring a real
+        message-less httpx.ReadTimeout."""
+
+        @property
+        def model(self) -> str:
+            return "empty-message-failing"
+
+        async def stream(self, messages: list) -> AsyncIterator[str]:
+            yield "partial"
+            raise SeamTransientError()
+            yield ""  # pragma: no cover - unreachable
+
+    app.dependency_overrides[get_llm] = lambda: _EmptyMessageFailingLLM()
+
+    with structlog.testing.capture_logs() as cap_logs:
+        resp = await client.post(
+            "/chat/stream", headers=headers, json={"notebook_id": notebook_id, "query": "q"}
+        )
+    assert resp.status_code == 200
+
+    failure_logs = [e for e in cap_logs if e["event"] == "chat.stream_failed"]
+    assert len(failure_logs) == 1
+    assert failure_logs[0]["error"] == ""  # the empty-str() case this test targets
+    assert failure_logs[0]["error_type"] == "SeamTransientError"
 
 
 async def test_stream_missing_notebook_yields_error(client: AsyncClient) -> None:

@@ -74,7 +74,12 @@ async def stream_ask(
             ):
                 yield f"data: {json.dumps(event_dict)}\n\n"
         except Exception as exc:
-            logger.error("chat.stream_failed", correlation_id=correlation_id, error=str(exc))
+            logger.error(
+                "chat.stream_failed",
+                correlation_id=correlation_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
             yield 'data: {"type":"error","message":"Stream failed"}\n\n'
         finally:
             structlog.contextvars.unbind_contextvars("correlation_id")

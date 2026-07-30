@@ -103,7 +103,12 @@ async def stream_public_chat(
             async for event_dict in event_stream:
                 yield f"data: {json.dumps(event_dict)}\n\n"
         except Exception as exc:
-            logger.error("embed.stream_failed", correlation_id=correlation_id, error=str(exc))
+            logger.error(
+                "embed.stream_failed",
+                correlation_id=correlation_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
             yield 'data: {"type":"error","message":"Stream failed"}\n\n'
         finally:
             structlog.contextvars.unbind_contextvars("correlation_id")
