@@ -507,7 +507,10 @@ async def test_contextual_embedding_enabled_reembeds_with_section_summary(
                 continue
             summary = summary_by_section_id[chunk.section_id]
             (expected,) = await fake.embed([f"{summary}\n\n{chunk.content}"])
-            assert vector == expected
+            # pgvector stores `embedding` as single-precision float4, so a value read back
+            # after a round-trip through Postgres never exactly equals the full-precision
+            # float64 `expected` computed fresh in Python — approx (not ==) is correct here.
+            assert vector == pytest.approx(expected, abs=1e-6)
             assert vector != before[chunk_id]
             any_reembedded = True
 
