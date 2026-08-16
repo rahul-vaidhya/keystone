@@ -35,6 +35,15 @@ converges on: **reranker + hybrid search fix this**, not prompt changes.
    widens the candidate kNN to `RERANK_CANDIDATE_K` (~25), reranks, keeps `RERANK_TOP_K`
    (~6-8). This is the item already named "reranker seam" in `buildplan.md`'s Postponed
    V2 list — this research operationalizes it.
+
+   > **Addendum (2026-08-04, locked decision):** self-hosted TEI is confirmed the right call for
+   > local/offline dev (no per-call cost, no external data exposure) but is too CPU-heavy to run
+   > as production infra for this team (~11.5 min warmup confirmed 2026-07-30). Production will
+   > use a **hosted cross-encoder-as-a-service API** (Cohere Rerank / Jina Reranker / Voyage
+   > rerank-2) instead — still a genuine cross-encoder, not an LLM prompt, so the LLM-as-reranker
+   > rejection above still holds. This is a pure `Reranker`-Protocol adapter swap (new
+   > `real_reranker_<vendor>.py`), no change to `RetrievalService`. Full detail:
+   > `architecture.md`'s "Reranker" section and the Build-now/Postponed table.
 2. **Confidence gate using the reranker score, not raw cosine distance.** Raw distance
    cutoffs don't generalize across corpora/models. If the top reranked score falls below
    `RERANK_MIN_SCORE` (tune empirically, same methodology as the 2026-07-16 eval

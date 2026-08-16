@@ -1671,6 +1671,20 @@ policies + the `app_user`/`migrator` role split.
 ## Open questions / future decisions
 
 - Reranker (4th seam) — add when real quality complaints arise in V2.
+- **Reranker production deployment (locked 2026-08-04, not yet built)**: swap self-hosted
+  BGE-reranker-v2-m3/TEI for a hosted cross-encoder-as-a-service API (Cohere Rerank / Jina
+  Reranker / Voyage rerank-2) when this project actually deploys — CPU-only TEI warmup
+  (~11.5 min) is fine for dev, too heavy for production infra on this team's scale. Pure
+  `Reranker`-Protocol adapter swap (new `real_reranker_<vendor>.py`), zero change to
+  `RetrievalService`'s widen/rerank/fallback logic. LLM-as-reranker re-confirmed rejected
+  (cost/latency + poor score calibration for the confidence gate's fixed threshold) — target
+  a real cross-encoder API, not an LLM prompt. Known trade-off, not yet resolved: sending
+  chunk text to a third-party rerank API is in tension with the "your documents never leave
+  your infrastructure" pitch — same class of caution as the SaaS-tracing-vendor rejection in
+  `research-production-agent-features.md`. Local dev keeps `RERANKER_MODE=fake|real` (self-
+  hosted) regardless — this only changes what production uses. Full detail:
+  `architecture.md`'s "Reranker" section + Build-now/Postponed table,
+  `research-production-agent-features.md`'s addendum under P0 item 1.
 - Hierarchical retrieval (V2) — built and flag-gated but recommended OFF by default per
   the 2026-07-16 eval harness (no measured benefit on a single-document corpus; revisit
   once a genuinely large multi-document notebook creates real pressure on flat's

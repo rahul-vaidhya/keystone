@@ -207,10 +207,27 @@ object store, and the queue are called directly (we are not swapping Postgres).
 demands it" — that trigger fired). `RERANKER_ENABLED` (default `False`) is a separate switch from
 `RERANKER_MODE` — gates whether `RetrievalService._retrieve_hits` widens the candidate kNN pool
 (`candidate_k = max(k, RERANK_CANDIDATE_K)`) and reranks it back down
-(`final_k = min(k, RERANK_TOP_K)`); `RERANKER_MODE` (fake|real) only matters once enabled. Real impl
+(`final_k = min(k, RERANK_TOP_K)`); `RERANKER_MODE` (fake|real) only matters once enabled. Real impl (current, dev)
 = self-hosted BGE-reranker-v2-m3 via Hugging Face TEI (`docker-compose.yml`'s `reranker` service) —
 see librarydocs.md "The 4 seams" for the HTTP contract, timeout/fallback behavior, and the CPU-only
 warmup-time gotcha (live-verified 2026-07-30).
+
+**Locked decision (2026-08-04): production deployment will swap self-hosted TEI for a hosted
+cross-encoder-as-a-service API** (e.g. Cohere Rerank, Jina Reranker, Voyage rerank-2) — same
+cross-encoder architecture, someone else's GPU. Reason: BGE-reranker-v2-m3's CPU-only warmup
+(~11.5 min, confirmed 2026-07-30) and per-query inference cost are real operational weight for
+this team's infra; a hosted rerank API removes that entirely for a small per-call cost. This is a
+**pure adapter swap, not a design change**: write a new `real_reranker_<vendor>.py` implementing
+the exact same `Reranker` Protocol (`rerank(query, candidates, top_k) -> list[ChunkHit]`), select
+it the same way `RERANKER_MODE` already does. `RetrievalService._retrieve_hits`'s widen/rerank/
+fallback logic is unchanged — it only calls the `Reranker` Protocol, never TEI specifically. Local
+dev can keep `RERANKER_MODE=fake|real` (self-hosted TEI) — this decision is about what production
+uses, not about ripping out local/offline dev capability. **Trade-off to weigh at build time**:
+this sends chunk text to a third-party API — a real tension for a product whose pitch is "your
+documents never leave your infrastructure" (see librarydocs.md's identical caution about SaaS
+tracing vendors). LLM-as-reranker was considered and rejected again for the same reasons as the
+original research below (cost/latency, and poor score calibration for the confidence gate's fixed
+threshold) — a hosted cross-encoder API, not an LLM prompt, is the target.
 
 **Seam mode is PER-SEAM, not one global switch (decided F23, extended to the 4th seam at F-P0):**
 the original single `SEAMS_MODE=fake|real` flag is refined into independent switches — parser,
@@ -531,5 +548,5 @@ notebook_overviews(id, org_id, notebook_id unique, content, citations jsonb,
 | Embeddings | `owner_type='chunk'` always; `'section'` populated when `ENRICHMENT_ENABLED` | `'document'`-level rows |
 | KG tables | NOT migrated; shape decided | created + extraction (V3) |
 | Retrieval | flat vector, hierarchical, hybrid (BM25+vector RRF), reranked, broad-query map-reduce — all flag-gated, composable | graph (V3) |
-| Reranker | **SHIPPED (2026-07-28):** self-hosted BGE-reranker-v2-m3 via TEI, `RERANKER_ENABLED` | — |
+| Reranker | **SHIPPED (2026-07-28):** self-hosted BGE-reranker-v2-m3 via TEI, `RERANKER_ENABLED` (dev/local) | **Locked (2026-08-04):** hosted cross-encoder API (Cohere/Jina/Voyage) for production — same `Reranker` Protocol, new adapter only |
 | Eval framework | golden-question set (`golden_questions` table) + admin curation UI shipped (2026-07-28); Ragas metrics grading harness written but **currently broken** (upstream ragas↔langchain_community incompatibility, unfixed as of 2026-07-30) | fixing the Ragas dependency chain |
