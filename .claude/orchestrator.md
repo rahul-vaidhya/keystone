@@ -18,9 +18,12 @@ loaded **first, every session**.
 
 ## 1. Reading order (load only what the task needs — save tokens)
 
-**Every session, always** (these are auto-imported by the root `CLAUDE.md`):
-1. `.claude/memory.md`          — what happened last, open decisions, gotchas.
+**Every session, always** (auto-imported by the root `CLAUDE.md`):
+1. `.claude/memory.md`          — current state, locked decisions, gotchas, schema, open questions.
+
+**On demand** (read when resuming a specific thread or ticking progress):
 2. `.claude/progresstracker.md` — what is done / what is next.
+   `.claude/memory-history.md`  — full session-by-session history.
 
 **Before planning or implementing a backend feature:**
 3. `.claude/context/projectoverview.md` — the "why" and scope boundaries.

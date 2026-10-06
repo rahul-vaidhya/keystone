@@ -21,4 +21,6 @@ imported below.
 
 @.claude/orchestrator.md
 @.claude/memory.md
-@.claude/progresstracker.md
+
+On demand only (not auto-loaded, to save context): `.claude/progresstracker.md` (done/next,
+per-feature DoD record) and `.claude/memory-history.md` (full session-by-session history).
