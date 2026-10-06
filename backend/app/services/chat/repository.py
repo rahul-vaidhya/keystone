@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.models.chat import Conversation, Message, MessageFeedback, MessageTrace
@@ -74,7 +74,16 @@ class MessageRepository(BaseRepository[Message]):
                 Conversation.knowledge_base_id == knowledge_base_id,
                 Conversation.org_id == self._ctx.org_id,
             )
-            .order_by(Message.created_at.asc())
+            # A user/assistant pair is written in one transaction, so both rows share
+            # the same ``created_at`` (transaction timestamp). Without tiebreakers the
+            # pair's order is nondeterministic — keep each conversation's messages
+            # together, user question before assistant answer, then id for stability.
+            .order_by(
+                Message.created_at.asc(),
+                Message.conversation_id.asc(),
+                case((Message.role == "user", 0), else_=1).asc(),
+                Message.id.asc(),
+            )
         )
         return list(await self._db.scalars(stmt))
 
