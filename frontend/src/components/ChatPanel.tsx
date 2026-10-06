@@ -5,6 +5,7 @@ import { evalsApi } from "../services/evalsService";
 import type {
   ChatHistoryMessage,
   ChatResponse,
+  ClaimCheck,
   MessageTrace,
   ResolvedCitation,
 } from "../types/chat";
@@ -20,6 +21,8 @@ type ChatMessage = {
   // ChatResponse carried weak_evidence — history hydration has no equivalent signal
   // (MessageOut doesn't persist it), so a reloaded weak-evidence answer shows no badge.
   weakEvidence?: boolean;
+  // Per-sentence citation check results (null/undefined when the checker is off).
+  claimChecks?: ClaimCheck[] | null;
 };
 
 // Finding A (Medium, UX audit): static, generic starter questions shown the instant a
@@ -88,6 +91,35 @@ function TraceDetails({ messageId }: { messageId: string }) {
               <li key={hit.chunk_id} className="font-mono text-muted">
                 [{hit.index}] doc {hit.document_id.slice(0, 8)}…
                 {hit.distance !== null && <> · distance {hit.distance.toFixed(3)}</>}
+                {hit.rerank_score != null && <> · rerank {hit.rerank_score.toFixed(3)}</>}
+                {hit.sparse_score != null && <> · sparse {hit.sparse_score.toFixed(3)}</>}
+                {hit.sparse_explanation && hit.sparse_explanation.length > 0 && (
+                  <table
+                    className="mt-1 mb-2 border-collapse text-[11px]"
+                    aria-label={`Term contributions for hit ${hit.index}`}
+                  >
+                    <thead>
+                      <tr className="text-left">
+                        <th className="pr-3 font-medium">term</th>
+                        <th className="pr-3 font-medium">zone</th>
+                        <th className="pr-3 font-medium text-right">tf</th>
+                        <th className="pr-3 font-medium text-right">idf</th>
+                        <th className="font-medium text-right">weight</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {hit.sparse_explanation.map((c) => (
+                        <tr key={`${c.term}-${c.zone}`}>
+                          <td className="pr-3">{c.term}</td>
+                          <td className="pr-3">{c.zone}</td>
+                          <td className="pr-3 text-right">{c.tf}</td>
+                          <td className="pr-3 text-right">{c.idf.toFixed(3)}</td>
+                          <td className="text-right">{c.weight.toFixed(4)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </li>
             ) : (
               <li key={hit.index} className="font-mono text-muted">
@@ -132,18 +164,96 @@ function TraceDetails({ messageId }: { messageId: string }) {
 }
 
 // Splits answer text at [n] markers and renders resolved citations as clickable buttons.
+// Weak/uncited sentences from the per-sentence citation check are wrapped in an amber
+// dotted underline + ⚠ whose title tooltip shows the lexical/semantic/combined scores.
+function fmtScore(v: number | null): string {
+  return v === null ? "n/a" : v.toFixed(2);
+}
+
+function claimTooltip(check: ClaimCheck): string {
+  if (check.status === "uncited") return "Uncited claim: this sentence cites no source.";
+  return `Weak support for cited source(s) ${check.citations.map((n) => `[${n}]`).join("")} — lexical ${fmtScore(check.lexical)} · semantic ${fmtScore(check.semantic)} · combined ${fmtScore(check.score)}`;
+}
+
 function AnswerText({
   content,
   citations,
   onCitationClick,
+  claimChecks,
 }: {
   content: string;
   citations: ResolvedCitation[];
   onCitationClick: (c: ResolvedCitation) => void;
+  claimChecks?: ClaimCheck[] | null;
 }) {
-  const parts = content.split(/(\[\d+\])/);
+  // Partition the answer into plain and flagged segments by locating each flagged
+  // sentence (backend sentences are verbatim substrings of the answer) in order.
+  const segments: { text: string; check?: ClaimCheck }[] = [];
+  let cursor = 0;
+  for (const check of claimChecks ?? []) {
+    if (check.status === "supported") continue;
+    const at = content.indexOf(check.sentence, cursor);
+    if (at === -1) continue;
+    if (at > cursor) segments.push({ text: content.slice(cursor, at) });
+    segments.push({ text: check.sentence, check });
+    cursor = at + check.sentence.length;
+  }
+  if (cursor < content.length) segments.push({ text: content.slice(cursor) });
+
   return (
     <span className="whitespace-pre-wrap">
+      {segments.map((seg, si) =>
+        seg.check ? (
+          <span
+            key={si}
+            data-claim-status={seg.check.status}
+            title={claimTooltip(seg.check)}
+            className="underline decoration-dotted decoration-warning underline-offset-2"
+          >
+            <MarkedText
+              text={seg.text}
+              citations={citations}
+              onCitationClick={onCitationClick}
+            />
+            <span className="text-warning text-xs ml-0.5" aria-hidden="true">
+              ⚠
+            </span>
+          </span>
+        ) : (
+          <MarkedText
+            key={si}
+            text={seg.text}
+            citations={citations}
+            onCitationClick={onCitationClick}
+          />
+        ),
+      )}
+    </span>
+  );
+}
+
+function ClaimCheckSummary({ checks }: { checks: ClaimCheck[] }) {
+  const count = (s: ClaimCheck["status"]) => checks.filter((c) => c.status === s).length;
+  return (
+    <p className="text-xs text-muted mt-1" data-testid="claim-check-summary">
+      Claim check: {count("supported")} supported · {count("weak")} weak ·{" "}
+      {count("uncited")} uncited
+    </p>
+  );
+}
+
+function MarkedText({
+  text,
+  citations,
+  onCitationClick,
+}: {
+  text: string;
+  citations: ResolvedCitation[];
+  onCitationClick: (c: ResolvedCitation) => void;
+}) {
+  const parts = text.split(/(\[\d+\])/);
+  return (
+    <>
       {parts.map((part, i) => {
         const match = /^\[(\d+)\]$/.exec(part);
         if (match) {
@@ -166,7 +276,7 @@ function AnswerText({
         }
         return <span key={i}>{part}</span>;
       })}
-    </span>
+    </>
   );
 }
 
@@ -222,6 +332,7 @@ export function ChatPanel({
                 content: m.content,
                 citations: m.citations ?? [],
                 messageId: m.id,
+                claimChecks: m.claim_checks ?? null,
               }))
             : prev,
         );
@@ -293,6 +404,7 @@ export function ChatPanel({
               citations: response.citations,
               messageId: response.message_id,
               weakEvidence: response.weak_evidence,
+              claimChecks: response.claim_checks ?? null,
             };
             return next;
           });
@@ -405,11 +517,16 @@ export function ChatPanel({
                       content={msg.content}
                       citations={msg.citations ?? []}
                       onCitationClick={setActiveCitation}
+                      claimChecks={msg.claimChecks}
                     />
                   ) : (
                     <span className="whitespace-pre-wrap">{msg.content}</span>
                   )}
                 </div>
+
+                {isFinalAssistant && msg.claimChecks && msg.claimChecks.length > 0 && (
+                  <ClaimCheckSummary checks={msg.claimChecks} />
+                )}
 
                 {canRate && (
                   <div className="max-w-[80%] w-full flex items-center gap-3 mt-1">

@@ -46,6 +46,7 @@ class MessageRepository(BaseRepository[Message]):
         role: str,
         content: str,
         citations: list[dict] | None,
+        claim_checks: list[dict] | None = None,
     ) -> Message:
         message = Message(
             org_id=self._ctx.org_id,
@@ -53,6 +54,7 @@ class MessageRepository(BaseRepository[Message]):
             role=role,
             content=content,
             citations=citations,
+            claim_checks=claim_checks,
         )
         self._db.add(message)
         await self._db.flush()

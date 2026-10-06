@@ -25,6 +25,18 @@ export type ResolvedCitation = {
   heading: string | null;
 };
 
+// Per-sentence citation check (backend CITATION_CHECK_ENABLED) — mirrors
+// app.models.chat.ClaimCheck. lexical = tf-idf cosine (from-scratch sparse index),
+// semantic = embedding cosine, score = mean of whichever are available.
+export type ClaimCheck = {
+  sentence: string;
+  citations: number[];
+  lexical: number | null;
+  semantic: number | null;
+  score: number | null;
+  status: "supported" | "weak" | "uncited";
+};
+
 export type ChatResponse = {
   correlation_id: string;
   conversation_id: string;
@@ -37,6 +49,8 @@ export type ChatResponse = {
   // Reranker-score confidence gate: true when the answer is the fixed "weak
   // evidence" message rather than a real LLM answer (citations will be empty).
   weak_evidence: boolean;
+  // Null/absent unless the backend's citation checker is enabled.
+  claim_checks?: ClaimCheck[] | null;
 };
 
 export type ChatRequest = {
@@ -64,6 +78,7 @@ export type ChatHistoryMessage = {
   // The CALLING user's own prior rating on this message — never anyone else's, never
   // an aggregate. null when this user hasn't rated it yet.
   my_feedback: "up" | "down" | null;
+  claim_checks?: ClaimCheck[] | null;
 };
 
 // POST /chat/messages/{message_id}/feedback — mirrors app.models.chat.FeedbackCreate.
@@ -87,6 +102,19 @@ export type ChunkTraceHit = {
   content: string;
   // Null for a lexical-only hybrid-search hit (no cosine distance to report).
   distance: number | null;
+  rerank_score?: number | null;
+  // From-scratch sparse channel (SPARSE_RETRIEVAL_MODE != "off"): this block's sparse
+  // score and its per-term contributions (weights sum to sparse_score).
+  sparse_score?: number | null;
+  sparse_explanation?: SparseTermContribution[] | null;
+};
+
+export type SparseTermContribution = {
+  term: string;
+  zone: string;
+  tf: number;
+  idf: number;
+  weight: number;
 };
 
 export type SectionTraceHit = {

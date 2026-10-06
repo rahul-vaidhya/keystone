@@ -74,6 +74,10 @@ class Message(Base):
     role: Mapped[str] = mapped_column(Text, nullable=False)  # 'user' | 'assistant'
     content: Mapped[str] = mapped_column(Text, nullable=False)
     citations: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Per-sentence citation check (migration 0025) — a list of ``ClaimCheck``-shaped
+    # dicts, written only when CITATION_CHECK_ENABLED was on for the answering turn;
+    # NULL otherwise (and always NULL on 'user' messages).
+    claim_checks: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -202,6 +206,23 @@ class ResolvedCitation(BaseModel):
     heading: str | None = None
 
 
+class ClaimCheck(BaseModel):
+    """One answer sentence checked against the context blocks it cites
+    (``app.services.chat.citation_check``). ``citations`` = the ``[n]`` markers found in
+    the sentence. ``lexical`` = max tf-idf cosine (from-scratch sparse index) between the
+    sentence and any cited chunk; ``semantic`` = max embedding cosine; ``score`` = mean of
+    whichever of the two were computable (``None`` if neither). ``status``:
+    ``supported`` (score >= CITATION_SUPPORT_THRESHOLD), ``weak`` (below it, or cited
+    markers that don't resolve / couldn't be scored), ``uncited`` (no markers at all)."""
+
+    sentence: str
+    citations: list[int]
+    lexical: float | None = None
+    semantic: float | None = None
+    score: float | None = None
+    status: Literal["supported", "weak", "uncited"]
+
+
 class ChatResponse(BaseModel):
     correlation_id: str
     conversation_id: uuid.UUID
@@ -217,6 +238,9 @@ class ChatResponse(BaseModel):
     # including every response while RERANKER_ENABLED=False (rerank_score is always None
     # then, so the gate structurally cannot fire).
     weak_evidence: bool = False
+    # Per-sentence citation check — None unless CITATION_CHECK_ENABLED (and the answer
+    # came from the normal chunk-cited LLM path).
+    claim_checks: list[ClaimCheck] | None = None
 
 
 class MessageTraceOut(BaseModel):
@@ -253,6 +277,7 @@ class MessageOut(BaseModel):
     # which can never be rated). Populated by ChatService.list_messages from a
     # FeedbackRepository.get_for_messages read scoped to ctx.user_id.
     my_feedback: Literal["up", "down"] | None = None
+    claim_checks: list[ClaimCheck] | None = None
 
     model_config = {"from_attributes": True}
 

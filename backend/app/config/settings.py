@@ -139,6 +139,20 @@ class Settings(BaseSettings):
     # Zone weight of the chunk's section heading (the body zone is always 1.0).
     SPARSE_HEADING_ZONE_WEIGHT: float = 2.0
 
+    # --- Per-sentence citation checker (app/services/chat/citation_check.py) ---
+    # Off by default: when on, every normal (chunk-cited) answer is split into sentences
+    # and each sentence is scored against the chunks it cites — lexical = tf-idf cosine
+    # over the from-scratch sparse index, semantic = embedding cosine (one batched
+    # Embedder call) — and the result is returned + persisted as messages.claim_checks.
+    CITATION_CHECK_ENABLED: bool = False
+    # Threshold on the COMBINED score (mean of lexical + semantic). 0.30 is a heuristic,
+    # not a calibrated value: a sentence faithfully paraphrasing a ~1000-char chunk
+    # typically lands around 0.1-0.4 tf-idf cosine (the chunk has many extra terms) and
+    # well above ~0.4 embedding cosine, so a supported claim's mean sits near/above 0.3,
+    # while an unrelated sentence scores ~0 lexically and low semantically (mean well
+    # under 0.2). Tune it against real traces before relying on it.
+    CITATION_SUPPORT_THRESHOLD: float = 0.30
+
     # --- Broad-query map-reduce / P1 (memory.md "P1 roadmap") ---
     # Off by default (same pattern as HIERARCHICAL_RETRIEVAL_ENABLED/RERANKER_ENABLED/
     # HYBRID_SEARCH_ENABLED) — shipping this changes nothing in existing chat behavior

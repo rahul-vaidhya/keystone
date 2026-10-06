@@ -444,6 +444,140 @@ describe("ChatPanel", () => {
     expect(screen.queryByRole("button", { name: "Add to golden set" })).not.toBeInTheDocument();
   });
 
+  describe("per-sentence citation check", () => {
+    const answer =
+      "Atoms want eight electrons [1]. Bananas are yellow [1]. This has no source at all.";
+    const checks = [
+      {
+        sentence: "Atoms want eight electrons [1].",
+        citations: [1],
+        lexical: 0.62,
+        semantic: 0.71,
+        score: 0.665,
+        status: "supported" as const,
+      },
+      {
+        sentence: "Bananas are yellow [1].",
+        citations: [1],
+        lexical: 0,
+        semantic: 0.12,
+        score: 0.06,
+        status: "weak" as const,
+      },
+      {
+        sentence: "This has no source at all.",
+        citations: [],
+        lexical: null,
+        semantic: null,
+        score: null,
+        status: "uncited" as const,
+      },
+    ];
+
+    it("renders the summary line and flags weak/uncited sentences after a streamed answer", async () => {
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(makeDoneResponse({ answer, claim_checks: checks }));
+        return () => {};
+      });
+      const { container } = render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      const input = screen.getByPlaceholderText("Ask a question…");
+      fireEvent.change(input, { target: { value: "test" } });
+      fireEvent.submit(input.closest("form")!);
+
+      await waitFor(() =>
+        expect(screen.getByTestId("claim-check-summary")).toHaveTextContent(
+          "Claim check: 1 supported · 1 weak · 1 uncited",
+        ),
+      );
+      const weak = container.querySelector('[data-claim-status="weak"]')!;
+      expect(weak).toHaveTextContent("Bananas are yellow");
+      expect(weak.getAttribute("title")).toContain("lexical 0.00");
+      expect(weak.getAttribute("title")).toContain("semantic 0.12");
+      expect(weak.getAttribute("title")).toContain("combined 0.06");
+      const uncited = container.querySelector('[data-claim-status="uncited"]')!;
+      expect(uncited).toHaveTextContent("This has no source at all.");
+      expect(container.querySelector('[data-claim-status="supported"]')).toBeNull();
+      // Existing [n] citation buttons still render (one per marker occurrence).
+      expect(screen.getAllByRole("button", { name: "[1]" })).toHaveLength(2);
+    });
+
+    it("hydrates claim checks from history", async () => {
+      vi.mocked(chatApi.listMessages).mockResolvedValue([
+        makeHistoryMessage({
+          id: "h2",
+          role: "assistant",
+          content: answer,
+          citations: [makeCitation()],
+          claim_checks: checks,
+        }),
+      ]);
+      vi.mocked(chatApi.streamAsk).mockReturnValue(() => {});
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      await waitFor(() =>
+        expect(screen.getByTestId("claim-check-summary")).toHaveTextContent(
+          "1 supported · 1 weak · 1 uncited",
+        ),
+      );
+    });
+
+    it("renders no summary when claim checks are absent", async () => {
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(makeDoneResponse());
+        return () => {};
+      });
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      const input = screen.getByPlaceholderText("Ask a question…");
+      fireEvent.change(input, { target: { value: "test" } });
+      fireEvent.submit(input.closest("form")!);
+      await waitFor(() => expect(screen.getByText("[1]")).toBeInTheDocument());
+      expect(screen.queryByTestId("claim-check-summary")).not.toBeInTheDocument();
+    });
+  });
+
+  it("shows sparse score and the term-contribution table in the admin Debug panel", async () => {
+    mockUser("admin");
+    vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+      callbacks.onDone(makeDoneResponse({ message_id: "msg-sparse" }));
+      return () => {};
+    });
+    vi.mocked(chatApi.getTrace).mockResolvedValue(
+      makeTrace({
+        hits: [
+          {
+            index: 1,
+            document_id: "doc-1",
+            chunk_id: "chunk-1",
+            char_start: 0,
+            char_end: 13,
+            content: "relevant text",
+            distance: null,
+            rerank_score: 0.91,
+            sparse_score: 1.234,
+            sparse_explanation: [
+              { term: "octet", zone: "body", tf: 2, idf: 1.5, weight: 0.8 },
+              { term: "rule", zone: "heading", tf: 1, idf: 0.9, weight: 0.434 },
+            ],
+          },
+        ],
+      }),
+    );
+
+    render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+    const input = screen.getByPlaceholderText("Ask a question…");
+    fireEvent.change(input, { target: { value: "test" } });
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() => expect(screen.getByText("Debug")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Debug"));
+
+    const table = await screen.findByRole("table", { name: "Term contributions for hit 1" });
+    expect(table).toHaveTextContent("octet");
+    expect(table).toHaveTextContent("heading");
+    expect(table).toHaveTextContent("1.500");
+    expect(table).toHaveTextContent("0.8000");
+    expect(screen.getByText(/sparse 1\.234/)).toBeInTheDocument();
+    expect(screen.getByText(/rerank 0\.910/)).toBeInTheDocument();
+  });
+
   // Finding A (Medium, UX audit): static starter-question chips on the empty state.
   describe("starter question chips (Finding A)", () => {
     it("renders starter chips when the notebook has documents and no messages yet", async () => {

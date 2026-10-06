@@ -23,6 +23,7 @@ from app.middleware.context import TenantContext
 from app.models.chat import (
     ChatRequest,
     ChatResponse,
+    ClaimCheck,
     CurationSnapshot,
     FeedbackCreate,
     FeedbackOut,
@@ -32,6 +33,7 @@ from app.models.chat import (
 )
 from app.models.retrieval import ContextBlock, RetrievalSearchRequest, SynthesisBlock
 from app.services.chat.broad_query import try_broad_query
+from app.services.chat.citation_check import check_claims
 from app.services.chat.repository import (
     ConversationRepository,
     FeedbackRepository,
@@ -352,6 +354,14 @@ class ChatService:
             blocks=retrieval_response.results,
             correlation_id=correlation_id,
         )
+        claim_checks = await self._maybe_check_claims(
+            ctx,
+            req=req,
+            answer=answer,
+            blocks=retrieval_response.results,
+            embedder=embedder,
+            correlation_id=correlation_id,
+        )
 
         conversation_id, message_id = await self._persist(
             ctx,
@@ -360,6 +370,7 @@ class ChatService:
             citations=citations,
             hits=retrieval_response.results,
             final_prompt=format_prompt_for_trace(messages),
+            claim_checks=claim_checks,
         )
 
         return ChatResponse(
@@ -372,7 +383,54 @@ class ChatService:
             citations=citations,
             model=llm.model,
             weak_evidence=False,
+            claim_checks=claim_checks,
         )
+
+    async def _maybe_check_claims(
+        self,
+        ctx: TenantContext,
+        *,
+        req: ChatRequest,
+        answer: str,
+        blocks: list[ContextBlock],
+        embedder: Embedder,
+        correlation_id: str,
+    ) -> list[ClaimCheck] | None:
+        """Per-sentence citation check (``citation_check``) -- ``None`` (and zero extra
+        work) when ``CITATION_CHECK_ENABLED`` is off, so the default path is unchanged.
+        Only runs on the normal chunk-cited LLM path (never the weak-evidence gate or the
+        broad-query section path). Never raises: a sparse-index or embedder failure only
+        nulls the respective score."""
+        if not settings.CITATION_CHECK_ENABLED:
+            return None
+        index = None
+        try:
+            document_ids = await retrieval_service.resolve_notebook_scope(ctx, req.notebook_id)
+            if document_ids:
+                index = (await retrieval_service.get_sparse_index(ctx, document_ids)).index
+                # idf = log(N/df) is 0 for every term when N < 2, so tf-idf cosine is
+                # meaningless on a 1-chunk corpus -- report lexical as unavailable.
+                if index.n_docs < 2:
+                    index = None
+        except Exception as exc:  # noqa: BLE001 -- a check must never fail the chat turn
+            logger.warning(
+                "chat.citation_check_index_failed",
+                correlation_id=correlation_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+        try:
+            return await check_claims(
+                answer, blocks, index=index, embedder=embedder, correlation_id=correlation_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "chat.citation_check_failed",
+                correlation_id=correlation_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return None
 
     async def _persist(
         self,
@@ -384,6 +442,7 @@ class ChatService:
         hits: list[ContextBlock] | list[SynthesisBlock],
         final_prompt: str,
         widget_id: uuid.UUID | None = None,
+        claim_checks: list[ClaimCheck] | None = None,
     ) -> tuple[uuid.UUID, uuid.UUID]:
         """Every ``/chat/ask`` call creates a FRESH conversation and its user/assistant
         message pair — no reuse across calls yet. Reuse only earns its place alongside
@@ -417,6 +476,11 @@ class ChatService:
                 role="assistant",
                 content=answer,
                 citations=[c.model_dump(mode="json") for c in citations],
+                claim_checks=(
+                    None
+                    if claim_checks is None
+                    else [c.model_dump(mode="json") for c in claim_checks]
+                ),
             )
             await TraceRepository(session, ctx).create(
                 message_id=assistant_message.id,
@@ -543,6 +607,14 @@ class ChatService:
             blocks=retrieval_response.results,
             correlation_id=correlation_id,
         )
+        claim_checks = await self._maybe_check_claims(
+            ctx,
+            req=req,
+            answer=answer,
+            blocks=retrieval_response.results,
+            embedder=embedder,
+            correlation_id=correlation_id,
+        )
         conversation_id, message_id = await self._persist(
             ctx,
             req=req,
@@ -551,8 +623,9 @@ class ChatService:
             hits=retrieval_response.results,
             final_prompt=format_prompt_for_trace(messages),
             widget_id=widget_id,
+            claim_checks=claim_checks,
         )
-        yield {
+        done: dict = {
             "type": "done",
             "correlation_id": correlation_id,
             "conversation_id": str(conversation_id),
@@ -564,6 +637,10 @@ class ChatService:
             "model": llm.model,
             "weak_evidence": False,
         }
+        # Key present only when the checker ran -- flag off keeps the event byte-identical.
+        if claim_checks is not None:
+            done["claim_checks"] = [c.model_dump(mode="json") for c in claim_checks]
+        yield done
 
     async def list_messages(self, ctx: TenantContext, notebook_id: uuid.UUID) -> list[MessageOut]:
         """History hydration for the chat panel (fixes the "conversation vanishes on

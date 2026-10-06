@@ -48,6 +48,13 @@ class RetrievalService:
         allowed = set(await resolve_allowed_documents(ctx))
         return [doc.id for doc in notebook_docs if doc.id in allowed]
 
+    async def get_sparse_index(self, ctx: TenantContext, document_ids: list[uuid.UUID]):
+        """The (cached) from-scratch sparse index over ``document_ids``' chunks — the
+        public entry point other domains (the chat citation checker) use to reach
+        ``sparse_channel.get_index`` (module-boundary rule: through this service only).
+        Works regardless of ``SPARSE_RETRIEVAL_MODE``."""
+        return await sparse_channel.get_index(ctx, document_ids)
+
     async def search(
         self,
         ctx: TenantContext,
