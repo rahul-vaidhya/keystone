@@ -15,9 +15,20 @@ import { AccessRolesPage } from "./pages/AccessRolesPage";
 import { EmbedWidgetsPage } from "./pages/EmbedWidgetsPage";
 import { EmbedChatPage } from "./pages/EmbedChatPage";
 import { AuthProvider } from "./context/AuthContext";
+import { ApiError } from "./types/auth";
 import { DialogProvider } from "./context/DialogContext";
 
-const queryClient = new QueryClient();
+// Client errors (401/403/404/422…) are deterministic — retrying them only keeps the
+// page stuck on "Loading…" for several seconds before an error state can render.
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: (failureCount, error) =>
+        !(error instanceof ApiError && error.status >= 400 && error.status < 500) &&
+        failureCount < 3,
+    },
+  },
+});
 
 export default function App() {
   return (

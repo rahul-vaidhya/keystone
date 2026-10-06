@@ -18,6 +18,7 @@ vi.mock("../services/notebooksService", async () => {
       list: vi.fn(),
       create: vi.fn(),
       delete: vi.fn(),
+      update: vi.fn(),
     },
   };
 });
@@ -76,6 +77,7 @@ describe("NotebookList", () => {
     vi.mocked(notebooksApi.list).mockReset();
     vi.mocked(notebooksApi.create).mockReset();
     vi.mocked(notebooksApi.delete).mockReset();
+    vi.mocked(notebooksApi.update).mockReset();
     mockUser();
   });
 
@@ -169,5 +171,22 @@ describe("NotebookList", () => {
 
     expect(screen.getByText("Shared")).toBeInTheDocument();
     expect(screen.queryByLabelText("Delete Someone else's")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Rename Someone else's")).not.toBeInTheDocument();
+  });
+
+  it("renames an owned notebook from the list without navigating into it", async () => {
+    vi.mocked(notebooksApi.list).mockResolvedValue([makeNotebook({ name: "Physics" })]);
+    vi.mocked(notebooksApi.update).mockResolvedValue(makeNotebook({ name: "Physics II" }));
+
+    renderWithAll(<NotebookList />);
+    await waitFor(() => expect(screen.getByText("Physics")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Rename Physics"));
+    fireEvent.change(screen.getByLabelText("Notebook name"), { target: { value: "Physics II" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(notebooksApi.update).toHaveBeenCalledWith(expect.any(String), { name: "Physics II" }),
+    );
   });
 });

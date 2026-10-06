@@ -16,6 +16,7 @@ vi.mock("../hooks/useAuth", () => ({ useAuth: vi.fn() }));
 vi.mock("../services/notebooksService", () => ({
   notebooksApi: {
     get: vi.fn(),
+    update: vi.fn(),
     listDocuments: vi.fn(),
     attachDocument: vi.fn(),
     detachDocument: vi.fn(),
@@ -260,6 +261,7 @@ describe("NotebookPage", () => {
 
     expect(screen.getByText("Shared with you")).toBeInTheDocument();
     expect(screen.queryByText("Share")).not.toBeInTheDocument();
+    expect(screen.queryByText("Rename")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Remove report.pdf from notebook")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Add other.pdf to notebook")).not.toBeInTheDocument();
   });
@@ -280,5 +282,56 @@ describe("NotebookPage", () => {
     fireEvent.click(screen.getByText("Overview"));
 
     await waitFor(() => expect(screen.getByText(/No overview yet/)).toBeInTheDocument());
+  });
+
+  it("lets the owner rename the notebook via a dialog (PATCH name)", async () => {
+    vi.mocked(notebooksApi.get).mockResolvedValue(makeNotebook({ name: "Chemistry" }));
+    vi.mocked(notebooksApi.listDocuments).mockResolvedValue([]);
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([]);
+    vi.mocked(notebooksApi.update).mockResolvedValue(makeNotebook({ name: "Organic Chem" }));
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Rename")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Rename"));
+
+    const input = screen.getByLabelText("Notebook name");
+    expect(input).toHaveValue("Chemistry");
+    fireEvent.change(input, { target: { value: "  Organic Chem " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(notebooksApi.update).toHaveBeenCalledWith("nb-1", { name: "Organic Chem" }),
+    );
+  });
+
+  it("shows an access-denied state (not Loading/empty chat) for a 403 notebook", async () => {
+    vi.mocked(notebooksApi.get).mockRejectedValue(
+      new ApiError(403, "You don't have access to this notebook", null),
+    );
+    vi.mocked(notebooksApi.listDocuments).mockRejectedValue(new ApiError(403, "no", null));
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([]);
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("You don't have access to this notebook")).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("link", { name: /Back to Notebooks/ })).toHaveAttribute(
+      "href",
+      "/app/notebooks",
+    );
+    expect(screen.queryByText("Chat")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Loading/)).not.toBeInTheDocument();
+  });
+
+  it("shows a not-found state for a 404 notebook", async () => {
+    vi.mocked(notebooksApi.get).mockRejectedValue(new ApiError(404, "Notebook not found", null));
+    vi.mocked(notebooksApi.listDocuments).mockRejectedValue(new ApiError(404, "no", null));
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([]);
+
+    renderPage("does-not-exist");
+
+    await waitFor(() => expect(screen.getByText("Notebook not found")).toBeInTheDocument());
+    expect(screen.queryByText("Chat")).not.toBeInTheDocument();
   });
 });

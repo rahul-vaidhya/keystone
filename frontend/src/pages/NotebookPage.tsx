@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { documentsApi } from "../services/documentsService";
 import { notebooksApi } from "../services/notebooksService";
@@ -11,6 +11,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { ChatPanel } from "../components/ChatPanel";
 import { NotebookOverviewPanel } from "../components/NotebookOverviewPanel";
 import { ShareNotebookDialog } from "../components/ShareNotebookDialog";
+import { RenameDialog } from "../components/RenameDialog";
 
 export function NotebookPage() {
   const { notebookId } = useParams<{ notebookId: string }>();
@@ -19,6 +20,7 @@ export function NotebookPage() {
   const dialog = useDialog();
   const { user } = useAuth();
   const [shareOpen, setShareOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"chat" | "overview">("chat");
 
   const notebookQuery = useQuery({
@@ -57,10 +59,46 @@ export function NotebookPage() {
       void dialog.alert(err instanceof ApiError ? err.message : "Failed to remove document"),
   });
 
+  const renameMutation = useMutation({
+    mutationFn: (name: string) => notebooksApi.update(notebookId!, { name }),
+    onSuccess: () => {
+      setRenameOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["notebooks"] });
+    },
+    onError: (err) =>
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to rename notebook"),
+  });
+
   const nbDocIds = new Set((nbDocsQuery.data ?? []).map((d: Document) => d.id));
   const addableDocs = (allDocsQuery.data ?? []).filter((d: Document) => !nbDocIds.has(d.id));
 
   if (!notebookId) return null;
+
+  // U5: a private notebook you weren't shared on (403) or a bad id (404) gets a real
+  // error state — never the endless "Loading…" + empty chat it used to fall through to.
+  if (notebookQuery.isError) {
+    const status = notebookQuery.error instanceof ApiError ? notebookQuery.error.status : 0;
+    const [heading, body] =
+      status === 403
+        ? [
+            "You don't have access to this notebook",
+            "This notebook is private. Ask its owner to share it with you.",
+          ]
+        : status === 404
+          ? ["Notebook not found", "It may have been deleted, or the link is incorrect."]
+          : ["Couldn't load this notebook", "Something went wrong. Please try again."];
+    return (
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <main className="p-6 max-w-md mx-auto w-full mt-12 text-center space-y-3" role="alert">
+          <h1 className="text-lg font-semibold">{heading}</h1>
+          <p className="text-sm text-muted">{body}</p>
+          <Link to="/app/notebooks" className="inline-block text-sm text-accent hover:underline">
+            ← Back to Notebooks
+          </Link>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col lg:flex-row flex-1 min-h-0">
@@ -82,19 +120,39 @@ export function NotebookPage() {
                 {notebookQuery.data?.name ?? "Notebook"}
               </h1>
               {isOwner ? (
-                <button
-                  type="button"
-                  onClick={() => setShareOpen(true)}
-                  className="shrink-0 text-xs text-accent hover:underline"
-                >
-                  Share
-                </button>
+                <div className="shrink-0 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setRenameOpen(true)}
+                    className="text-xs text-muted hover:text-text transition"
+                  >
+                    Rename
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShareOpen(true)}
+                    className="text-xs text-accent hover:underline"
+                  >
+                    Share
+                  </button>
+                </div>
               ) : (
                 <span className="shrink-0 text-xs text-muted">Shared with you</span>
               )}
             </div>
           )}
         </div>
+        {isOwner && notebookQuery.data && (
+          <RenameDialog
+            open={renameOpen}
+            title="Rename notebook"
+            label="Notebook name"
+            initialValue={notebookQuery.data.name}
+            pending={renameMutation.isPending}
+            onClose={() => setRenameOpen(false)}
+            onSubmit={(name) => renameMutation.mutate(name)}
+          />
+        )}
         {isOwner && notebookQuery.data && (
           <ShareNotebookDialog
             open={shareOpen}
@@ -205,7 +263,11 @@ export function NotebookPage() {
             Overview
           </button>
         </div>
-        {activeTab === "chat" ? (
+        {/* Don't mount chat (and fire its history request) until the notebook itself
+            has loaded — a 403/404 renders the error state above instead. */}
+        {!notebookQuery.data ? (
+          <p className="p-6 text-sm text-muted">Loading…</p>
+        ) : activeTab === "chat" ? (
           <ChatPanel notebookId={notebookId} documents={nbDocsQuery.data ?? []} />
         ) : (
           <NotebookOverviewPanel notebookId={notebookId} documents={nbDocsQuery.data ?? []} />

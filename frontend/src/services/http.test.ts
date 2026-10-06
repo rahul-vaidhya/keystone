@@ -1,5 +1,13 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiFetch } from "./http";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  apiFetch,
+  consumeSessionNotice,
+  getStoredAccessToken,
+  SESSION_ENDED_NOTICE,
+  SESSION_NOTICE_KEY,
+  setSessionExpiredHandler,
+  setStoredAccessToken,
+} from "./http";
 
 function jsonResponse(status: number, statusText: string, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -92,5 +100,86 @@ describe("apiFetch error detail extraction", () => {
       status: 500,
       message: "Internal Server Error",
     });
+  });
+});
+
+describe("apiFetch session recovery on 401 (U4)", () => {
+  let resetHandler: () => void = () => {};
+  const onExpired = vi.fn();
+
+  beforeEach(() => {
+    sessionStorage.clear();
+    onExpired.mockReset();
+    resetHandler = setSessionExpiredHandler(onExpired);
+  });
+
+  afterEach(() => {
+    resetHandler();
+    vi.unstubAllGlobals();
+    sessionStorage.clear();
+  });
+
+  it("refreshes once and replays the request with the new token", async () => {
+    setStoredAccessToken("old-token");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(401, "Unauthorized", { detail: "expired" }))
+      .mockResolvedValueOnce(jsonResponse(200, "OK", { access_token: "new-token" }))
+      .mockResolvedValueOnce(jsonResponse(200, "OK", [{ id: "d1" }]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(apiFetch("/documents")).resolves.toEqual([{ id: "d1" }]);
+
+    expect(fetchMock.mock.calls[1][0]).toBe("/auth/refresh");
+    const replayHeaders = fetchMock.mock.calls[2][1].headers as Headers;
+    expect(replayHeaders.get("Authorization")).toBe("Bearer new-token");
+    expect(getStoredAccessToken()).toBe("new-token");
+    expect(onExpired).not.toHaveBeenCalled();
+  });
+
+  it("clears the session and fires the expired handler when refresh fails", async () => {
+    setStoredAccessToken("dead-token");
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(401, "Unauthorized", { detail: "Account deactivated" }))
+        .mockResolvedValueOnce(jsonResponse(401, "Unauthorized", { detail: "Invalid refresh token" })),
+    );
+
+    await expect(apiFetch("/documents")).rejects.toMatchObject({ status: 401 });
+    expect(getStoredAccessToken()).toBeNull();
+    expect(onExpired).toHaveBeenCalledTimes(1);
+  });
+
+  it("never treats a login 401 (wrong password) as an ended session", async () => {
+    setStoredAccessToken("some-token");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(401, "Unauthorized", { detail: "Invalid email or password" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(apiFetch("/auth/login", { method: "POST" })).rejects.toMatchObject({
+      status: 401,
+      message: "Invalid email or password",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no refresh attempt
+    expect(onExpired).not.toHaveBeenCalled();
+    expect(getStoredAccessToken()).toBe("some-token");
+  });
+
+  it("does not attempt recovery when no token was sent", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(401, "Unauthorized", {}));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(apiFetch("/documents")).rejects.toMatchObject({ status: 401 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onExpired).not.toHaveBeenCalled();
+  });
+
+  it("the default handler leaves a notice for the login page", () => {
+    resetHandler();
+    sessionStorage.setItem(SESSION_NOTICE_KEY, SESSION_ENDED_NOTICE);
+    expect(consumeSessionNotice()).toBe(SESSION_ENDED_NOTICE);
+    expect(consumeSessionNotice()).toBeNull();
   });
 });

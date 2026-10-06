@@ -5,6 +5,8 @@ import { notebooksApi } from "../services/notebooksService";
 import { useDialog } from "../hooks/useDialog";
 import { useAuth } from "../hooks/useAuth";
 import { ApiError } from "../types/auth";
+import type { Notebook } from "../types/knowledge";
+import { RenameDialog } from "../components/RenameDialog";
 
 export function NotebookList() {
   const navigate = useNavigate();
@@ -13,6 +15,7 @@ export function NotebookList() {
   const { user } = useAuth();
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  const [renaming, setRenaming] = useState<Notebook | null>(null);
 
   const notebooksQuery = useQuery({
     queryKey: ["notebooks"],
@@ -33,6 +36,16 @@ export function NotebookList() {
     onSuccess: invalidate,
     onError: (err) =>
       void dialog.alert(err instanceof ApiError ? err.message : "Failed to delete notebook"),
+  });
+
+  const renameMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => notebooksApi.update(id, { name }),
+    onSuccess: () => {
+      setRenaming(null);
+      void invalidate();
+    },
+    onError: (err) =>
+      void dialog.alert(err instanceof ApiError ? err.message : "Failed to rename notebook"),
   });
 
   function handleCreate() {
@@ -135,6 +148,19 @@ export function NotebookList() {
                   {isOwner && (
                     <button
                       type="button"
+                      aria-label={`Rename ${nb.name}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenaming(nb);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-xs text-muted hover:text-text transition p-1 rounded"
+                    >
+                      Rename
+                    </button>
+                  )}
+                  {isOwner && (
+                    <button
+                      type="button"
                       aria-label={`Delete ${nb.name}`}
                       onClick={(e) => void handleDelete(e, nb.id, nb.name)}
                       className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted hover:text-danger transition p-1 rounded"
@@ -147,6 +173,15 @@ export function NotebookList() {
             })}
           </div>
         )}
+        <RenameDialog
+          open={renaming !== null}
+          title="Rename notebook"
+          label="Notebook name"
+          initialValue={renaming?.name ?? ""}
+          pending={renameMutation.isPending}
+          onClose={() => setRenaming(null)}
+          onSubmit={(name) => renaming && renameMutation.mutate({ id: renaming.id, name })}
+        />
       </main>
     </div>
   );
