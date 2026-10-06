@@ -54,3 +54,20 @@
 - Demo: `demo+1791310304@example.com` / `DemoPass!2026` (notebook a21dc7f1-…)
 - QA core: `qa-core+1791310996@example.com` / `QaNewPass!2026y`
 - QA team: owner `qa-owner+1791311134@example.com` / `QaPass!2345`; admin `qa-membera+1791311134@example.com` / `QaNewPass!6789`; member `qa-memberb+1791311134@example.com` / `QaPass!2345`
+
+## Final QA pass findings (2026-10-07, after D1–D5/U-fixes/Search modes)
+
+| ID | Problem | Status |
+|----|---------|--------|
+| F1 | Medium. Notebook page scrolls the whole window on desktop once a chat is long (~10 msgs): sidebar/header/tabs scroll off, Ask box can fall below the fold after opening a citation. Likely `AppShell.tsx` `min-h-screen` instead of `h-screen` + `overflow-hidden` | OPEN |
+| F2 | Medium (demo). Heading-zone slider has no effect on kech104.pdf (headings are parser "Page N" → 0 heading postings; enable `SEMANTIC_OUTLINE_ENABLED` + re-ingest for real headings). Champion lists only visible for frequent terms (use "bond": 85→50 candidates) | OPEN |
+| F3 | Low. Phrase-mode snippet not centred on an actual phrase occurrence (positions correct) | OPEN |
+| F4 | Low. Boolean: malformed queries (`AND NOT`, unsupported parentheses) give no "malformed query" hint | OPEN |
+| F5 | Low. "N matching chunks" vs only top-k cards shown, no "showing top 10" note | OPEN |
+| F6 | Low. "Why this score?" bars scaled to max term but column labelled "share" | OPEN |
+| F7 | Low. Mobile: "Phrase" search tab cut off (tab row scrolls); open drawer covers its own ✕ | OPEN |
+| F8 | Low. List item without own `[n]` is "uncited" even when the next list item cites (per-item scope by design; looks harsh) | OPEN |
+| F9 | Low. Broad-query answers get no claim-check line; semantic search cards show raw `### Page N` and no page/score | OPEN |
+| F10 | Info. Citation checker measured on SciFact (`backend/eval/results/citation_check_eval.md`): app threshold 0.33 kept for demo; eval recommends 0.49 for precision (F1 vs hard negatives 0.52→0.61) — decision pending | OPEN (decision) |
+
+Final QA account: `final-qa+1791317653@example.com` / `FinalQa!2026new`.
