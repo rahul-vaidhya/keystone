@@ -40,6 +40,7 @@ from app.services.documents import (
     FolderNotEmpty,
     FolderNotFound,
     TagNotFound,
+    UnsupportedFileType,
 )
 from app.services.embed import EmbedError, OriginNotAllowed, WidgetNotFound, WidgetRateLimited
 from app.services.knowledge import (
@@ -100,6 +101,13 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
             content={"detail": str(exc) or "Document not found"},
+        )
+
+    @app.exception_handler(UnsupportedFileType)
+    async def _unsupported_file_type(_request: Request, exc: UnsupportedFileType) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            content={"detail": str(exc) or "Unsupported file type"},
         )
 
     @app.exception_handler(FolderNotEmpty)

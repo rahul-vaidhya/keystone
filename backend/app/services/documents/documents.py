@@ -11,7 +11,11 @@ from app.config import db as db_mod
 from app.middleware.context import TenantContext
 from app.models.documents import Document, DocumentOut, DocumentStatus, DocumentTag
 from app.services.base import BaseRepository
-from app.services.documents.exceptions import DocumentNotFound, FolderNotFound
+from app.services.documents.exceptions import (
+    DocumentNotFound,
+    FolderNotFound,
+    UnsupportedFileType,
+)
 from app.services.storage import ObjectStore, build_artifact_key, build_storage_key
 
 # ---- exceptions (imported from documents.exceptions) ----
@@ -220,6 +224,22 @@ async def _resolve_uploader_emails(
     return await auth_service.get_users_by_ids(ctx, list(uploader_ids))
 
 
+# Only PDFs can be ingested (the real Parser seam is PDF-only). Browsers derive the
+# multipart Content-Type from the extension, but some send a generic type for PDFs,
+# so a generic type is accepted when the filename itself says .pdf.
+_PDF_MIME_TYPES = frozenset({"application/pdf", "application/x-pdf"})
+_GENERIC_MIME_TYPES = frozenset({"application/octet-stream", "binary/octet-stream", ""})
+UNSUPPORTED_FILE_TYPE_MESSAGE = "Only PDF files can be uploaded. Please choose a .pdf file."
+
+
+def is_supported_upload(filename: str, content_type: str) -> bool:
+    mime = content_type.split(";", 1)[0].strip().lower()
+    has_pdf_extension = filename.lower().endswith(".pdf")
+    if mime in _PDF_MIME_TYPES:
+        return True
+    return mime in _GENERIC_MIME_TYPES and has_pdf_extension
+
+
 async def upload_document(
     ctx: TenantContext,
     *,
@@ -233,6 +253,9 @@ async def upload_document(
     file (same org, same checksum) returns the existing document instead of a duplicate
     (``unique(org_id, checksum)`` — the DoD this enforces)."""
     from app.services.documents.folders import FolderRepository
+
+    if not is_supported_upload(filename, content_type):
+        raise UnsupportedFileType(UNSUPPORTED_FILE_TYPE_MESSAGE)
 
     checksum = hashlib.sha256(data).hexdigest()
     async with db_mod.tenant_session(ctx.org_id) as session:

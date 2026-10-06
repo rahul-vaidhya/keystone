@@ -5,9 +5,13 @@ import { Modal } from "./Modal";
  * Bespoke replacement for FolderTree's old native-prompt-based cascade/reflow
  * chooser. Two clearly labeled, visually distinct action areas instead of a bare
  * text box: a non-destructive "move contents up" option (no confirmation needed
- * — nothing is deleted) and a destructive "delete everything inside" option that
+ * — nothing is deleted) and a destructive "delete folder and subfolders" option that
  * keeps a typed-confirmation safety check, but as a validated text field gating a
  * disabled/enabled button rather than the only way to make a choice at all.
+ *
+ * Copy must match backend semantics: cascade deletes the folder subtree, but
+ * documents are NEVER deleted — `documents.folder_id` is ON DELETE SET NULL, so
+ * every document anywhere in the subtree lands in Repository root.
  */
 export function FolderDeleteDialog({
   open,
@@ -50,14 +54,16 @@ export function FolderDeleteDialog({
       >
         <span className="block text-sm font-medium">Move contents up a level</span>
         <span className="block text-xs text-muted mt-1">
-          Its contents move to the parent folder; only this now-empty folder is deleted.
+          Its subfolders and documents move into the parent folder (or Repository root);
+          only this now-empty folder is deleted.
         </span>
       </button>
 
       <div className="border border-danger/40 rounded-md p-3 space-y-2">
-        <p className="text-sm font-medium text-danger">Delete everything inside</p>
+        <p className="text-sm font-medium text-danger">Delete folder and subfolders</p>
         <p className="text-xs text-muted">
-          Permanently deletes this folder and everything inside it. This cannot be undone.
+          Permanently deletes this folder and all of its subfolders. Documents are not
+          deleted — any documents inside are moved to Repository root. This cannot be undone.
         </p>
         <label className="block space-y-1">
           <span className="text-xs text-muted">Type &quot;{folderName}&quot; to confirm</span>
@@ -73,7 +79,7 @@ export function FolderDeleteDialog({
           onClick={() => handleChoose("cascade")}
           className="text-sm bg-danger text-white rounded-md px-3 py-1.5 hover:opacity-90 disabled:opacity-50"
         >
-          Delete everything inside
+          Delete folder and subfolders
         </button>
       </div>
 

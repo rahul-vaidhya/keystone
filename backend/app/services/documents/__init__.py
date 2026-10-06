@@ -43,6 +43,9 @@ from app.services.documents.exceptions import (
 from app.services.documents.exceptions import (
     TagNotFound as TagNotFound,
 )
+from app.services.documents.exceptions import (
+    UnsupportedFileType as UnsupportedFileType,
+)
 from app.services.documents.folders import DeleteMode
 from app.services.storage import ObjectStore
 

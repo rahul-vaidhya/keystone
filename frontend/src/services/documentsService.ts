@@ -1,4 +1,4 @@
-import { apiFetch } from "./http";
+import { apiFetch, apiFetchWithStatus } from "./http";
 import type { Document, Folder, FolderDeleteMode, Tag } from "../types/documents";
 
 export const documentsApi = {
@@ -56,7 +56,11 @@ export const documentsApi = {
     const form = new FormData();
     form.append("file", file);
     if (folderId) form.append("folder_id", folderId);
-    return apiFetch<Document>("/documents/upload", { method: "POST", body: form });
+    // 201 = newly uploaded; 200 = byte-identical file already in the repository
+    // (checksum dedupe returns the existing document) — the UI tells them apart.
+    return apiFetchWithStatus<Document>("/documents/upload", { method: "POST", body: form }).then(
+      ({ status, data }) => ({ document: data, created: status === 201 }),
+    );
   },
 
   deleteDocument: (documentId: string) =>

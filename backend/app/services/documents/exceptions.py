@@ -37,3 +37,8 @@ class TagNotFound(DocumentsError):
 
 class DocumentNotFound(DocumentsError):
     pass
+
+
+class UnsupportedFileType(DocumentsError):
+    """Upload rejected before storage: only PDFs can be ingested (the real parser seam
+    is PDF-only). Maps to 415 with a user-readable message."""

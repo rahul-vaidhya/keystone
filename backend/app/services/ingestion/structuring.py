@@ -17,6 +17,7 @@ from app.middleware.context import TenantContext
 from app.models.documents import DocumentOut, DocumentStatus
 from app.models.ingestion import Chunk, Section
 from app.services.documents import documents_service
+from app.services.ingestion.errors import user_facing_error
 from app.services.ingestion.repository import ChunkRepository, SectionRepository
 from app.services.ingestion.semantic_outline import (
     derive_semantic_outline,
@@ -281,7 +282,7 @@ async def run_structuring_stage(
             ctx,
             document_id,
             failed_stage=DocumentStatus.STRUCTURING.value,
-            error_detail=str(exc),
+            error_detail=user_facing_error(DocumentStatus.STRUCTURING, exc),
         )
 
     async with db_mod.tenant_session(ctx.org_id) as session:

@@ -243,7 +243,7 @@ async def test_upload_missing_folder_404(client: AsyncClient) -> None:
     resp = await client.post(
         "/documents/upload",
         headers=headers,
-        files={"file": ("x.txt", b"x", "text/plain")},
+        files={"file": ("x.pdf", b"x", "application/pdf")},
         data={"folder_id": str(uuid.uuid4())},
     )
     assert resp.status_code == 404

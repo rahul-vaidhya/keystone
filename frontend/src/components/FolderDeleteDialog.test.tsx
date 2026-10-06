@@ -7,7 +7,7 @@ describe("FolderDeleteDialog", () => {
     render(
       <FolderDeleteDialog open folderName="HR" onClose={vi.fn()} onChoose={vi.fn()} />,
     );
-    const cascadeButton = screen.getByRole("button", { name: "Delete everything inside" });
+    const cascadeButton = screen.getByRole("button", { name: "Delete folder and subfolders" });
     expect(cascadeButton).toBeDisabled();
 
     const input = screen.getByLabelText('Type "HR" to confirm');
@@ -26,7 +26,7 @@ describe("FolderDeleteDialog", () => {
     fireEvent.change(screen.getByLabelText('Type "HR" to confirm'), {
       target: { value: "HR" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Delete everything inside" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete folder and subfolders" }));
 
     expect(onChoose).toHaveBeenCalledWith("cascade");
   });

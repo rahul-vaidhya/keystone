@@ -10,6 +10,7 @@ from app.config.logging import get_logger
 from app.middleware.context import TenantContext
 from app.models.documents import DocumentOut, DocumentStatus
 from app.services.documents import documents_service
+from app.services.ingestion.errors import user_facing_error
 from app.services.seams import ParsedDoc, Parser
 from app.services.storage import ObjectStore, build_artifact_key
 
@@ -85,7 +86,7 @@ async def run_parsing_stage(
             ctx,
             document_id,
             failed_stage=DocumentStatus.PARSING.value,
-            error_detail=str(exc),
+            error_detail=user_facing_error(DocumentStatus.PARSING, exc),
         )
 
     return await documents_service.complete_parsing(

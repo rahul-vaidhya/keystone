@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider, type Query } from "@tanstack/react-qu
 import type { Document, Folder } from "../types/documents";
 import { documentsApi } from "../services/documentsService";
 import { DialogProvider } from "../context/DialogContext";
-import { DocumentList, pollIntervalFor } from "./DocumentList";
+import { DocumentList, PDF_ONLY_MESSAGE, pollIntervalFor } from "./DocumentList";
 
 vi.mock("../services/documentsService", async () => {
   const actual = await vi.importActual<typeof import("../services/documentsService")>(
@@ -104,8 +104,10 @@ describe("DocumentList", () => {
     renderWithClient(<DocumentList currentFolderId={null} />);
 
     await waitFor(() => expect(screen.getByText("report.pdf")).toBeInTheDocument());
-    expect(screen.getByText("Ready")).toBeInTheDocument();
-    expect(screen.getByText(/Failed/)).toBeInTheDocument();
+    // Rendered twice per row (stacked under the title on phones, own column from sm:)
+    // — CSS decides which is visible; jsdom sees both.
+    expect(screen.getAllByText("Ready").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Failed/).length).toBeGreaterThan(0);
   });
 
   it("shows an empty-state prompt when there are no documents", async () => {
@@ -118,7 +120,7 @@ describe("DocumentList", () => {
 
   it("uploads the selected file scoped to the current folder and invalidates documents", async () => {
     vi.mocked(documentsApi.listDocuments).mockResolvedValue([]);
-    vi.mocked(documentsApi.uploadDocument).mockResolvedValue(makeDoc());
+    vi.mocked(documentsApi.uploadDocument).mockResolvedValue({ document: makeDoc(), created: true });
 
     renderWithClient(<DocumentList currentFolderId="folder-1" />);
     await waitFor(() => expect(documentsApi.listDocuments).toHaveBeenCalled());
@@ -154,6 +156,71 @@ describe("DocumentList", () => {
       ).toBeInTheDocument(),
     );
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("restricts the file picker to PDFs and rejects a non-PDF client-side without uploading", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([]);
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(documentsApi.listDocuments).toHaveBeenCalled());
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(input.accept).toBe(".pdf,application/pdf");
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => expect(screen.getByText(PDF_ONLY_MESSAGE)).toBeInTheDocument());
+    expect(documentsApi.uploadDocument).not.toHaveBeenCalled();
+  });
+
+  it("tells the user when an upload was a duplicate of an existing document (HTTP 200)", async () => {
+    const existing = makeDoc({ id: "doc-9", title: "already-here.pdf" });
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([existing]);
+    vi.mocked(documentsApi.uploadDocument).mockResolvedValue({
+      document: existing,
+      created: false,
+    });
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getByText("already-here.pdf")).toBeInTheDocument());
+
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(["x"], "copy.pdf", { type: "application/pdf" })] },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("This file is already in your repository")).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Repository root");
+    const row = screen
+      .getAllByText("already-here.pdf")
+      .map((el) => el.closest("tr"))
+      .find((tr) => tr !== null)!;
+    expect(row.className).toMatch(/outline-accent/);
+  });
+
+  it("does not show the duplicate notice for a genuinely new upload (HTTP 201)", async () => {
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([]);
+    vi.mocked(documentsApi.uploadDocument).mockResolvedValue({ document: makeDoc(), created: true });
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(documentsApi.listDocuments).toHaveBeenCalled());
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(["x"], "new.pdf", { type: "application/pdf" })] },
+    });
+    await waitFor(() => expect(documentsApi.uploadDocument).toHaveBeenCalled());
+    expect(screen.queryByText("This file is already in your repository")).not.toBeInTheDocument();
+  });
+
+  it("truncates long error text with the full text in a tooltip", async () => {
+    const longError = "This file couldn't be read as a PDF (it may be corrupted or password-protected).";
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([
+      makeDoc({ status: "FAILED", failed_stage: "PARSING", error_detail: longError }),
+    ]);
+    renderWithClient(<DocumentList currentFolderId={null} />);
+    await waitFor(() => expect(screen.getAllByTitle(longError).length).toBeGreaterThan(0));
+    for (const el of screen.getAllByTitle(longError)) expect(el.className).toMatch(/truncate/);
   });
 
   it("deletes a document after confirming in the dialog and invalidates the list", async () => {

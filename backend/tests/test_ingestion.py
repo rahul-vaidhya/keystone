@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.models.ingestion import Chunk, Embedding, Section
+from app.services.ingestion.errors import EMBEDDING_FAILED, UNREADABLE_PDF
 from app.services.queue import get_job_queue
 from app.services.seams import ParsedDoc, get_embedder, get_parser
 from app.services.storage import build_artifact_key, get_object_store
@@ -98,7 +99,8 @@ async def test_parse_failure_sets_failed_status(client: AsyncClient) -> None:
     body = resp.json()
     assert body["status"] == "FAILED"
     assert body["failed_stage"] == "PARSING"
-    assert "OCR vendor unreachable" in body["error_detail"]
+    # Raw exception text is logged, never persisted for display (U6).
+    assert body["error_detail"] == UNREADABLE_PDF
 
 
 async def test_reparsing_a_structured_document_is_idempotent(client: AsyncClient) -> None:
@@ -302,7 +304,7 @@ async def test_embed_document_failure_sets_failed_status(client: AsyncClient) ->
     body = resp.json()
     assert body["status"] == "FAILED"
     assert body["failed_stage"] == "EMBEDDING"
-    assert "embeddings API unreachable" in body["error_detail"]
+    assert body["error_detail"] == EMBEDDING_FAILED
 
 
 async def test_embed_document_idempotent_rerun_no_duplicates(

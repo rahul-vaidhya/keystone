@@ -156,18 +156,35 @@ export function FolderTree({
     setRenamingId(null);
   }
 
-  function runDelete(id: string, mode: FolderDeleteMode) {
+  function runDelete(folder: TreeNode, mode: FolderDeleteMode) {
     deleteMutation.mutate(
-      { id, mode },
+      { id: folder.id, mode },
       {
-        onError: (err) =>
-          void dialog.alert(err instanceof ApiError ? err.message : "Failed to delete folder"),
+        onError: (err) => {
+          // `block` mode 409s when the folder still has contents the client didn't
+          // know about (e.g. documents, or a concurrent upload) — offer the
+          // cascade/reflow choice instead of surfacing the raw API message.
+          if (mode === "block" && err instanceof ApiError && err.status === 409) {
+            setPendingDelete(folder);
+            return;
+          }
+          void dialog.alert(err instanceof ApiError ? err.message : "Failed to delete folder");
+        },
       },
     );
   }
 
+  async function folderHasDocuments(folderId: string): Promise<boolean> {
+    try {
+      const docs = await documentsApi.listDocuments({ folderId });
+      return (docs ?? []).length > 0;
+    } catch {
+      return false; // fall through to block mode; a 409 still opens the choice dialog
+    }
+  }
+
   async function handleDelete(folder: TreeNode) {
-    const hasChildren = folder.children.length > 0;
+    const hasChildren = folder.children.length > 0 || (await folderHasDocuments(folder.id));
     if (hasChildren) {
       // Bespoke dialog (not plain confirm) — a folder with contents needs a
       // cascade-vs-reflow choice, not a yes/no.
@@ -179,14 +196,14 @@ export function FolderTree({
       danger: true,
     });
     if (!ok) return;
-    runDelete(folder.id, "block");
+    runDelete(folder, "block");
   }
 
   function handleChooseDeleteMode(mode: "cascade" | "reflow") {
     if (!pendingDelete) return;
-    const folderId = pendingDelete.id;
+    const folder = pendingDelete;
     setPendingDelete(null);
-    runDelete(folderId, mode);
+    runDelete(folder, mode);
   }
 
   // A folder the requesting user can't manage (Access-Role tag gating) can't be

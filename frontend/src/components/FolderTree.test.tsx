@@ -6,6 +6,7 @@ import { documentsApi } from "../services/documentsService";
 import { useAuth } from "../hooks/useAuth";
 import { DialogProvider } from "../context/DialogContext";
 import { FolderTree } from "./FolderTree";
+import { ApiError } from "../types/auth";
 
 vi.mock("../services/documentsService", async () => {
   const actual = await vi.importActual<typeof import("../services/documentsService")>(
@@ -23,6 +24,7 @@ vi.mock("../services/documentsService", async () => {
       untagFolder: vi.fn(),
       listTags: vi.fn(),
       moveDocument: vi.fn(),
+      listDocuments: vi.fn(),
     },
   };
 });
@@ -104,6 +106,7 @@ describe("FolderTree", () => {
     vi.mocked(documentsApi.untagFolder).mockReset();
     vi.mocked(documentsApi.listTags).mockReset().mockResolvedValue([]);
     vi.mocked(documentsApi.moveDocument).mockReset();
+    vi.mocked(documentsApi.listDocuments).mockReset().mockResolvedValue([]);
     mockUser("owner");
   });
 
@@ -230,6 +233,44 @@ describe("FolderTree", () => {
     );
   });
 
+  it("offers the cascade/reflow choice for a folder with documents but no subfolders", async () => {
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder()]);
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([
+      { id: "d-1" } as unknown as Awaited<ReturnType<typeof documentsApi.listDocuments>>[number],
+    ]);
+    vi.mocked(documentsApi.deleteFolder).mockResolvedValue(undefined);
+
+    renderWithClient(<FolderTree currentFolderId={null} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "HR" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Delete HR"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Move contents up a level/ })).toBeInTheDocument(),
+    );
+    expect(documentsApi.listDocuments).toHaveBeenCalledWith({ folderId: "f-1" });
+    fireEvent.click(screen.getByRole("button", { name: /Move contents up a level/ }));
+    await waitFor(() => expect(documentsApi.deleteFolder).toHaveBeenCalledWith("f-1", "reflow"));
+  });
+
+  it("opens the cascade/reflow choice when block-mode delete returns 409 (instead of raw API text)", async () => {
+    vi.mocked(documentsApi.listFolders).mockResolvedValue([makeFolder()]);
+    vi.mocked(documentsApi.deleteFolder).mockRejectedValueOnce(
+      new ApiError(409, "Folder is not empty; pass mode=cascade or mode=reflow", null),
+    );
+
+    renderWithClient(<FolderTree currentFolderId={null} onNavigate={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "HR" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Delete HR"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Move contents up a level/ })).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/pass mode=cascade/)).not.toBeInTheDocument();
+  });
+
   it("requires the folder name to be typed exactly before allowing cascade delete", async () => {
     vi.mocked(documentsApi.listFolders).mockResolvedValue([
       makeFolder({ id: "root", name: "HR", path: "HR" }),
@@ -243,7 +284,7 @@ describe("FolderTree", () => {
     fireEvent.click(screen.getByLabelText("Delete HR"));
     await waitFor(() => expect(screen.getByText('Delete "HR"?')).toBeInTheDocument());
 
-    const cascadeButton = screen.getByRole("button", { name: "Delete everything inside" });
+    const cascadeButton = screen.getByRole("button", { name: "Delete folder and subfolders" });
     expect(cascadeButton).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText('Type "HR" to confirm'), {
