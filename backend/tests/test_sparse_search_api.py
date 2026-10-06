@@ -222,3 +222,12 @@ async def test_validation_bounds(client, session_factory) -> None:
     assert (await _search(client, headers, nb, query="x", mode="fuzzy")).status_code == 422
     empty = await _search(client, headers, nb, query="the of", mode="ranked")
     assert empty.status_code == 200 and empty.json()["results"] == []
+
+
+async def test_malformed_boolean_query_is_a_clear_422(client, session_factory) -> None:
+    headers = await _signup(client, "sparsesearch-malformed@test.com", "SparseMalformed")
+    nb = await _seed_notebook(client, session_factory, headers)
+    for query in ["AND NOT", "hydrogen AND (bond", "bond OR"]:
+        resp = await _search(client, headers, nb, query=query, mode="boolean")
+        assert resp.status_code == 422
+        assert "Parentheses aren't supported" in resp.json()["detail"]

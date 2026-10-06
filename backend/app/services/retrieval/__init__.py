@@ -22,3 +22,6 @@ from app.services.retrieval.permissions import (
 )
 from app.services.retrieval.service import RetrievalService as RetrievalService
 from app.services.retrieval.service import retrieval_service as retrieval_service
+from app.services.retrieval.sparse.trace import (
+    MalformedBooleanQuery as MalformedBooleanQuery,
+)

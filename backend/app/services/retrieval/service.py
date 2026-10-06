@@ -16,6 +16,8 @@ from app.models.ingestion import ChunkHit
 from app.models.retrieval import (
     RetrievalSearchRequest,
     RetrievalSearchResponse,
+    SearchPageResponse,
+    SearchResultBlock,
     SparseSearchRequest,
     SparseSearchResponse,
 )
@@ -70,6 +72,34 @@ class RetrievalService:
         regardless of ``SPARSE_RETRIEVAL_MODE`` / ``HYBRID_SEARCH_ENABLED``."""
         scope = await self.resolve_notebook_scope(ctx, req.notebook_id)
         return await sparse_search.run_sparse_search(ctx, req, scope)
+
+    async def search_with_pages(
+        self,
+        ctx: TenantContext,
+        req: RetrievalSearchRequest,
+        *,
+        embedder: Embedder,
+        reranker: Reranker,
+    ) -> SearchPageResponse:
+        """``/retrieval/search`` for the Search page: ``search`` plus each hit's page range
+        via ``ingestion_service.get_chunks`` (the chat-citation page derivation; service
+        call only — module-boundary rule). ``search`` itself (chat's path) is unchanged."""
+        base = await self.search(ctx, req, embedder=embedder, reranker=reranker)
+        records = {}
+        if base.results:
+            chunk_ids = [b.chunk_id for b in base.results]
+            records = {r.chunk_id: r for r in await ingestion_service.get_chunks(ctx, chunk_ids)}
+        results = []
+        for block in base.results:
+            record = records.get(block.chunk_id)
+            results.append(
+                SearchResultBlock(
+                    **block.model_dump(),
+                    page_start=record.page_start if record else None,
+                    page_end=record.page_end if record else None,
+                )
+            )
+        return SearchPageResponse(query=base.query, results=results)
 
     async def search(
         self,

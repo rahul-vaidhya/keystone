@@ -9,6 +9,7 @@ import { notebooksApi } from "../services/notebooksService";
 import { documentsApi } from "../services/documentsService";
 import { retrievalApi } from "../services/retrievalService";
 import { DialogProvider } from "../context/DialogContext";
+import { ApiError } from "../types/auth";
 import { SearchPage } from "./SearchPage";
 
 vi.mock("../services/notebooksService", () => ({
@@ -75,6 +76,65 @@ function makeHit(overrides: Partial<ContextBlock> = {}): ContextBlock {
     distance: 0.32,
     ...overrides,
   };
+}
+
+function sparseResponse(total: number, n: number, mode: SparseSearchResponse["mode"] = "ranked"): SparseSearchResponse {
+  return {
+    query: "octet rule",
+    mode,
+    analysis: {
+      raw_tokens: ["octet", "rule"],
+      casefolded: ["octet", "rule"],
+      stop_words_removed: [],
+      kept_tokens: ["octet", "rule"],
+      stems: ["octet", "rule"],
+      terms: [],
+      ranked: null,
+      phrase: null,
+      boolean: null,
+    },
+    index_stats: {
+      n_docs: 110,
+      vocabulary_size: 2000,
+      avg_postings_length: 3,
+      zones: ["body", "heading"],
+      champion_r: 50,
+      cached: true,
+      build_ms: 0,
+      query_ms: 0.5,
+      total_ms: 1,
+    },
+    total_matches: total,
+    results: Array.from({ length: n }, (_, i) => ({
+      rank: i + 1,
+      chunk_id: `chunk-${i}`,
+      document_id: "doc-1",
+      document_title: "kech104.pdf",
+      heading: null,
+      content: "octet rule",
+      snippet: "octet rule",
+      char_start: 0,
+      char_end: 10,
+      page_start: null,
+      page_end: null,
+      score: 1,
+      contributions: [],
+      matched_terms: [],
+      highlights: [],
+      phrase_matches: [],
+    })),
+  };
+}
+
+async function runSparse(tab: string, q: string) {
+  renderPage();
+  await waitFor(() =>
+    expect(screen.getByRole("option", { name: "Chemistry" })).toBeInTheDocument(),
+  );
+  fireEvent.click(screen.getByRole("tab", { name: tab }));
+  fireEvent.change(screen.getByLabelText("Notebook"), { target: { value: "nb-1" } });
+  fireEvent.change(screen.getByLabelText("Query"), { target: { value: q } });
+  fireEvent.click(screen.getByRole("button", { name: "Search" }));
 }
 
 function renderPage() {
@@ -361,5 +421,68 @@ describe("SearchPage", () => {
         zone_weights: { heading: 2, body: 1 },
       }),
     );
+  });
+
+  it("labels a truncated result list and fetches more with a larger k", async () => {
+    vi.mocked(notebooksApi.list).mockResolvedValue([makeNotebook()]);
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([]);
+    vi.mocked(retrievalApi.sparseSearch)
+      .mockResolvedValueOnce(sparseResponse(13, 10))
+      .mockResolvedValueOnce(sparseResponse(13, 13));
+    await runSparse("Ranked (tf-idf / BM25)", "octet rule");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("results-count")).toHaveTextContent(
+        "showing top 10 of 13 matching chunks",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Show more/ }));
+    await waitFor(() =>
+      expect(retrievalApi.sparseSearch).toHaveBeenLastCalledWith(
+        expect.objectContaining({ k: 20, query: "octet rule" }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("results-count")).toHaveTextContent("showing all 13 matching chunks"),
+    );
+    expect(screen.queryByRole("button", { name: /Show more/ })).not.toBeInTheDocument();
+  });
+
+  it("shows Boolean syntax help and a malformed-query 422 inline, not as a dialog", async () => {
+    vi.mocked(notebooksApi.list).mockResolvedValue([makeNotebook()]);
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([]);
+    vi.mocked(retrievalApi.sparseSearch).mockRejectedValue(
+      new ApiError(422, "The query can't start with AND. Parentheses aren't supported.", {}),
+    );
+    await runSparse("Boolean", "AND NOT");
+    expect(screen.getByTestId("boolean-syntax")).toHaveTextContent("no parentheses");
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("The query can't start with AND."),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("semantic cards strip parser page markers and show page, rank and distance", async () => {
+    vi.mocked(notebooksApi.list).mockResolvedValue([makeNotebook()]);
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([makeDoc({ title: "kech104.pdf" })]);
+    vi.mocked(retrievalApi.search).mockResolvedValue({
+      query: "covalent bond",
+      results: [
+        makeHit({ content: "### Page 32\nA covalent bond shares electrons.", distance: 0.41234, page_start: 32, page_end: 32 }),
+      ],
+    });
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "Chemistry" })).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByLabelText("Notebook"), { target: { value: "nb-1" } });
+    fireEvent.change(screen.getByLabelText("Query"), { target: { value: "covalent bond" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    const card = await screen.findByRole("button", { name: "Open source #1" });
+    expect(card).toHaveTextContent("p. 32");
+    expect(card).toHaveTextContent("cos distance 0.4123");
+    expect(card).toHaveTextContent("A covalent bond shares electrons.");
+    expect(card).not.toHaveTextContent("### Page 32");
   });
 });

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { SparseSearchResult } from "../types/retrieval";
 import { HighlightedText } from "./HighlightedText";
+import { TIPS, Tip } from "./Tip";
 
 function pageLabel(r: SparseSearchResult): string | null {
   if (r.page_start === null) return null;
@@ -17,8 +18,9 @@ export function SparseResultCard({
   onOpen: (r: SparseSearchResult) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const maxWeight = Math.max(0, ...result.contributions.map((c) => c.weight));
   const total = result.contributions.reduce((s, c) => s + c.weight, 0);
+  // Each bar is the row's share of the total score, so the bars (and %s) sum to 100%.
+  const share = (w: number) => (total > 0 ? (w / total) * 100 : 0);
   const page = pageLabel(result);
 
   return (
@@ -36,8 +38,11 @@ export function SparseResultCard({
           </span>
           {page && <span className="text-muted shrink-0">{page}</span>}
           {result.score !== null && (
-            <span className="font-mono text-accent shrink-0" title="score">
-              {result.score.toFixed(4)}
+            <span className="shrink-0 text-muted">
+              score{" "}
+              <span className="font-mono text-accent" title="Σ zone-weighted term contributions">
+                {result.score.toFixed(4)}
+              </span>
             </span>
           )}
         </div>
@@ -57,7 +62,7 @@ export function SparseResultCard({
           </span>
         ))}
         {result.phrase_matches.map((m) => (
-          <span key={m.zone} className="text-muted">
+          <span key={m.zone} className="text-muted" title={TIPS.position}>
             phrase in {m.zone} at position{m.positions.length > 1 ? "s" : ""}{" "}
             <span className="font-mono text-text">{m.positions.join(", ")}</span>
           </span>
@@ -81,10 +86,18 @@ export function SparseResultCard({
               <tr>
                 <th className="font-normal py-1 pr-3">term</th>
                 <th className="font-normal py-1 pr-3">zone</th>
-                <th className="font-normal py-1 pr-3">tf</th>
-                <th className="font-normal py-1 pr-3">idf</th>
-                <th className="font-normal py-1 pr-3">weight</th>
-                <th className="font-normal py-1 w-1/3">share</th>
+                <th className="font-normal py-1 pr-3">
+                  <Tip tip={TIPS.tf}>tf</Tip>
+                </th>
+                <th className="font-normal py-1 pr-3">
+                  <Tip tip={TIPS.idf}>idf</Tip>
+                </th>
+                <th className="font-normal py-1 pr-3">
+                  <Tip tip={TIPS.weight}>weight</Tip>
+                </th>
+                <th className="font-normal py-1 w-1/3">
+                  <Tip tip={TIPS.share}>share of score</Tip>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -98,12 +111,17 @@ export function SparseResultCard({
                   <td className="py-1 pr-3 font-mono">{c.idf.toFixed(3)}</td>
                   <td className="py-1 pr-3 font-mono">{c.weight.toFixed(4)}</td>
                   <td className="py-1">
-                    <div className="h-1.5 rounded-sm bg-border">
-                      <div
-                        data-testid="contribution-bar"
-                        className={`h-1.5 rounded-sm ${c.zone === "heading" ? "bg-warning" : "bg-accent"}`}
-                        style={{ width: `${maxWeight > 0 ? (c.weight / maxWeight) * 100 : 0}%` }}
-                      />
+                    <div className="flex items-center gap-2">
+                      <div className="h-1.5 flex-1 rounded-sm bg-border">
+                        <div
+                          data-testid="contribution-bar"
+                          className={`h-1.5 rounded-sm ${c.zone === "heading" ? "bg-warning" : "bg-accent"}`}
+                          style={{ width: `${share(c.weight).toFixed(1)}%` }}
+                        />
+                      </div>
+                      <span className="font-mono text-muted w-12 text-right">
+                        {share(c.weight).toFixed(1)}%
+                      </span>
                     </div>
                   </td>
                 </tr>
@@ -113,7 +131,7 @@ export function SparseResultCard({
                   Σ weights = score
                 </td>
                 <td className="py-1 pr-3 font-mono text-text">{total.toFixed(4)}</td>
-                <td />
+                <td className="py-1 font-mono text-right">{total > 0 ? "100%" : "—"}</td>
               </tr>
             </tbody>
           </table>

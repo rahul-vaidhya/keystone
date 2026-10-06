@@ -11,7 +11,7 @@ from app.middleware.context import TenantContext
 from app.middleware.deps import get_ctx
 from app.models.retrieval import (
     RetrievalSearchRequest,
-    RetrievalSearchResponse,
+    SearchPageResponse,
     SparseSearchRequest,
     SparseSearchResponse,
 )
@@ -24,8 +24,8 @@ async def search(
     ctx: Annotated[TenantContext, Depends(get_ctx)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
     reranker: Annotated[Reranker, Depends(get_reranker)],
-) -> RetrievalSearchResponse:
-    return await retrieval_service.search(ctx, req, embedder=embedder, reranker=reranker)
+) -> SearchPageResponse:
+    return await retrieval_service.search_with_pages(ctx, req, embedder=embedder, reranker=reranker)
 
 
 async def sparse_search(

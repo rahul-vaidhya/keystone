@@ -14,14 +14,18 @@ from app.services.retrieval.sparse import (
     search,
 )
 from app.services.retrieval.sparse.trace import (
+    BOOLEAN_SYNTAX_HELP,
+    MalformedBooleanQuery,
     boolean_search_trace,
     index_avg_postings_length,
     matching_surface_forms,
+    phrase_occurrence_spans,
     phrase_search_trace,
     query_pipeline,
     ranked_search_trace,
     snippet_around,
     term_stats,
+    validate_boolean_query,
 )
 
 
@@ -161,3 +165,34 @@ def test_avg_postings_length(corpus) -> None:
         sum(corpus.df(t) for t in terms) / len(terms)
     )
     assert index_avg_postings_length(InvertedIndex.build([])) == 0.0
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["AND NOT", "AND bond", "bond OR", "bond NOT", "hydrogen AND (bond", "a OR AND b", "NOT AND x"],
+)
+def test_validate_boolean_query_rejects_malformed(query: str) -> None:
+    with pytest.raises(MalformedBooleanQuery) as exc:
+        validate_boolean_query(query)
+    assert BOOLEAN_SYNTAX_HELP in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "query", ["hydrogen AND bond NOT covalent", "NOT ionic", "octet rule", "a AND NOT b OR c"]
+)
+def test_validate_boolean_query_accepts_well_formed(query: str) -> None:
+    validate_boolean_query(query)
+
+
+def test_phrase_snippet_centres_on_the_verified_occurrence() -> None:
+    filler = "Filler words here. " * 20
+    text = "The enthalpy of lattice formation is discussed. " + filler + "Lattice enthalpy is big."
+    idx = InvertedIndex.build([SparseDoc(doc_id="d", zones={"body": text})])
+    trace = phrase_search_trace(idx, "lattice enthalpy")
+    [(zone, positions)] = trace.matches["d"]
+    assert zone == "body"
+    spans = phrase_occurrence_spans(text, positions, 2)
+    assert [text[a:b] for a, b in spans] == ["Lattice enthalpy"]
+    snip = snippet_around(text, ["Lattice enthalpy"], width=120, anchor=spans[0])
+    assert "Lattice enthalpy is big" in snip
+    assert "enthalpy of lattice" not in snip

@@ -43,11 +43,13 @@ from app.services.retrieval.sparse.trace import (
     boolean_search_trace,
     index_avg_postings_length,
     matching_surface_forms,
+    phrase_occurrence_spans,
     phrase_search_trace,
     query_pipeline,
     ranked_search_trace,
     snippet_around,
     term_stats,
+    validate_boolean_query,
 )
 
 
@@ -70,6 +72,8 @@ def _ordered_by_position(doc_ids: list[str], chunks: dict) -> list[str]:
 async def run_sparse_search(
     ctx: TenantContext, req: SparseSearchRequest, scope: list[uuid.UUID]
 ) -> SparseSearchResponse:
+    if req.mode == "boolean":
+        validate_boolean_query(req.query)  # MalformedBooleanQuery -> 422, before any work
     started = time.perf_counter()
     if scope:
         cached, was_cached, build_ms = await sparse_channel.get_index_with_status(ctx, scope)
@@ -96,6 +100,7 @@ async def run_sparse_search(
     contributions: dict[str, list[SparseContribution]] = {}
     matched_terms: dict[str, list[str]] = {}
     phrase_matches: dict[str, list[SparsePhraseMatch]] = {}
+    phrase_len = 0
 
     if req.mode == "ranked":
         zone_weights = {"heading": req.zone_weights.heading, "body": req.zone_weights.body}
@@ -162,6 +167,7 @@ async def run_sparse_search(
         total = len(ptrace.result)
         ordered = _ordered_by_position(ptrace.result, chunks)[: req.k]
         phrase_stems = list(dict.fromkeys(t for t, _ in ptrace.offsets))
+        phrase_len = ptrace.offsets[-1][1] + 1 if ptrace.offsets else 0
         for doc_id in ordered:
             matched_terms[doc_id] = phrase_stems
             phrase_matches[doc_id] = [
@@ -180,6 +186,17 @@ async def run_sparse_search(
     for rank, doc_id in enumerate(ordered, start=1):
         chunk = chunks[doc_id]
         words = matching_surface_forms(chunk.content, matched_terms.get(doc_id, []))
+        anchor = None
+        if phrase_len:
+            # Centre the snippet on the first VERIFIED occurrence (body-zone positions ->
+            # char spans) and highlight the whole phrase, not its words wherever they are.
+            body = [
+                p for m in phrase_matches.get(doc_id, []) if m.zone == "body" for p in m.positions
+            ]
+            spans = phrase_occurrence_spans(chunk.content, body, phrase_len)
+            if spans:
+                anchor = spans[0]
+                words = list(dict.fromkeys(chunk.content[a:b] for a, b in spans))
         record = pages.get(chunk.chunk_id)
         results.append(
             SparseSearchResult(
@@ -189,7 +206,7 @@ async def run_sparse_search(
                 document_title=titles.get(chunk.document_id),
                 heading=chunk.heading,
                 content=chunk.content,
-                snippet=snippet_around(chunk.content, words),
+                snippet=snippet_around(chunk.content, words, anchor=anchor),
                 char_start=chunk.char_start,
                 char_end=chunk.char_end,
                 page_start=record.page_start if record else None,

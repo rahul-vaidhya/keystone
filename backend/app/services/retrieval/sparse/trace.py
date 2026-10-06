@@ -14,7 +14,9 @@ Raghavan & Schütze, *Introduction to Information Retrieval*):
   then OR across clauses) with the intermediate result size after each step.
 - ``phrase_search_trace`` — ``scoring.phrase_search`` with candidates after postings
   intersection vs. docs surviving the positional check (IIR §2.4.2), plus match positions.
-- ``matching_surface_forms`` / ``snippet_around`` — highlight helpers.
+- ``matching_surface_forms`` / ``phrase_occurrence_spans`` / ``snippet_around`` —
+  highlight helpers.
+- ``validate_boolean_query`` — rejects dangling operators / parentheses up front.
 
 The existing ``scoring`` APIs are untouched; the trace functions return exactly the same
 result sets (asserted by tests). Pure module: no DB, no app imports.
@@ -218,6 +220,39 @@ class BooleanTrace:
     result: list[str]
 
 
+class MalformedBooleanQuery(ValueError):
+    """A Boolean query the left-to-right parser can't interpret unambiguously (dangling
+    operator, parentheses, no terms). Mapped to HTTP 422 with ``str(exc)`` as detail."""
+
+
+BOOLEAN_SYNTAX_HELP = (
+    "Use uppercase AND / OR / NOT between words, with a term on both sides of AND/OR "
+    "(e.g. hydrogen AND bond NOT covalent). Parentheses aren't supported — operators "
+    "are evaluated left to right, AND binding tighter than OR."
+)
+
+
+def validate_boolean_query(query: str) -> None:
+    """Reject queries ``_parse_boolean`` would otherwise silently reinterpret. Raises
+    ``MalformedBooleanQuery`` with a human-readable reason + the syntax help."""
+
+    def fail(reason: str) -> None:
+        raise MalformedBooleanQuery(f"{reason} {BOOLEAN_SYNTAX_HELP}")
+
+    if "(" in query or ")" in query:
+        fail("Grouping with ( ) isn't available.")
+    tokens = query.split()
+    if not any(t not in BOOLEAN_OPERATORS for t in tokens):
+        fail("The Boolean query has no search terms.")
+    if tokens[0] in {"AND", "OR"}:
+        fail(f"The query can't start with {tokens[0]}.")
+    if tokens[-1] in BOOLEAN_OPERATORS:
+        fail(f"The query can't end with {tokens[-1]}.")
+    for prev, cur in zip(tokens, tokens[1:], strict=False):
+        if prev in BOOLEAN_OPERATORS and cur in {"AND", "OR"}:
+            fail(f"'{prev} {cur}' needs a term between the operators.")
+
+
 def _parse_boolean(query: str) -> tuple[list[list[BooleanOperand]], list[str]]:
     clauses: list[list[BooleanOperand]] = [[]]
     operators: list[str] = []
@@ -376,13 +411,38 @@ def matching_surface_forms(text: str, stems: set[str] | list[str]) -> list[str]:
     return list(seen)
 
 
-def snippet_around(text: str, words: list[str], *, width: int = 320) -> str:
-    """A ~``width``-char window of ``text`` centred near the first highlighted word
-    (whole text when short or nothing matches near the start)."""
+def phrase_occurrence_spans(text: str, positions: list[int], length: int) -> list[tuple[int, int]]:
+    """Char spans ``(start, end)`` in ``text`` of each phrase occurrence that starts at
+    raw-token ``positions`` (the positional index's positions for the zone indexed from
+    ``text``) and spans ``length`` raw tokens. Empty when the token stream of ``text``
+    doesn't line up with ``tokenize`` (normalization changed token boundaries)."""
+    spans = [m.span() for m in _TOKEN_RE.finditer(text)]
+    if len(spans) != len(tokenize(text)):
+        return []
+    out: list[tuple[int, int]] = []
+    for p in positions:
+        last = p + max(length, 1) - 1
+        if 0 <= p and last < len(spans):
+            out.append((spans[p][0], spans[last][1]))
+    return out
+
+
+def snippet_around(
+    text: str,
+    words: list[str],
+    *,
+    width: int = 320,
+    anchor: tuple[int, int] | None = None,
+) -> str:
+    """A ~``width``-char window of ``text`` centred near ``anchor`` (a char span, e.g. a
+    verified phrase occurrence) or else the first highlighted word (whole text when
+    short or nothing matches near the start)."""
     if len(text) <= width:
         return text
     first = -1
-    for w in words:
+    if anchor is not None:
+        first = anchor[0]
+    for w in words if first < 0 else []:
         m = re.search(rf"(?<![^\W_]){re.escape(w)}(?![^\W_])", text)
         if m and (first < 0 or m.start() < first):
             first = m.start()

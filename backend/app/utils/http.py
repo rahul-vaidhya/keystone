@@ -50,6 +50,7 @@ from app.services.knowledge import (
     OverviewNotFound,
     OverviewUnavailable,
 )
+from app.services.retrieval import MalformedBooleanQuery
 
 
 def get_client_ip(request: Request) -> str:
@@ -82,6 +83,13 @@ def get_client_ip(request: Request) -> str:
 
 
 def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(MalformedBooleanQuery)
+    async def _malformed_boolean(_request: Request, exc: MalformedBooleanQuery) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": str(exc) or "Malformed Boolean query"},
+        )
+
     @app.exception_handler(FolderNotFound)
     async def _folder_not_found(_request: Request, exc: FolderNotFound) -> JSONResponse:
         return JSONResponse(

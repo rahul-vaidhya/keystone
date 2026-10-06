@@ -151,7 +151,6 @@ describe("QueryAnalysisPanel", () => {
   it("IndexStatsBar shows N, vocabulary and timing", () => {
     render(
       <IndexStatsBar
-        total={7}
         stats={{
           n_docs: 110,
           vocabulary_size: 2048,
@@ -184,7 +183,9 @@ describe("SparseResultCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Why this score?" }));
     const table = screen.getByLabelText("Term contributions");
     expect(within(table).getAllByTestId("contribution-bar")).toHaveLength(2);
-    expect(within(table).getAllByTestId("contribution-bar")[0]).toHaveStyle({ width: "100%" });
+    expect(within(table).getAllByTestId("contribution-bar")[0]).toHaveStyle({ width: "71.4%" });
+    expect(within(table).getByText("71.4%")).toBeInTheDocument();
+    expect(within(table).getByText("28.6%")).toBeInTheDocument();
     expect(within(table).getByText("Σ weights = score").parentElement).toHaveTextContent("3.5000");
 
     fireEvent.click(screen.getByRole("button", { name: "Open source #1" }));

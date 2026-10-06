@@ -1,4 +1,5 @@
 import type { SparseScheme } from "../types/retrieval";
+import { TIPS } from "./Tip";
 
 export type RankedOptions = {
   scheme: SparseScheme;
@@ -18,6 +19,7 @@ export const DEFAULT_RANKED_OPTIONS: RankedOptions = {
 
 function Slider({
   label,
+  tip,
   value,
   min,
   max,
@@ -25,6 +27,7 @@ function Slider({
   onChange,
 }: {
   label: string;
+  tip: string;
   value: number;
   min: number;
   max: number;
@@ -32,8 +35,10 @@ function Slider({
   onChange: (v: number) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-xs text-muted">
-      <span className="whitespace-nowrap">{label}</span>
+    <label className="flex items-center gap-2 text-xs text-muted" title={tip}>
+      <span className="whitespace-nowrap underline decoration-dotted underline-offset-2 cursor-help">
+        {label}
+      </span>
       <input
         type="range"
         aria-label={label}
@@ -72,6 +77,7 @@ export function SparseOptions({
             key={scheme}
             type="button"
             role="radio"
+            title={scheme === "bm25" ? TIPS.bm25 : TIPS.lncltc}
             aria-checked={value.scheme === scheme}
             onClick={() => set("scheme", scheme)}
             className={`px-3 py-1 transition ${
@@ -82,7 +88,7 @@ export function SparseOptions({
           </button>
         ))}
       </div>
-      <label className="flex items-center gap-2 text-xs text-muted cursor-pointer">
+      <label className="flex items-center gap-2 text-xs text-muted cursor-pointer" title={TIPS.champions}>
         <input
           type="checkbox"
           checked={value.useChampions}
@@ -93,6 +99,7 @@ export function SparseOptions({
       </label>
       <Slider
         label="idf threshold"
+        tip={TIPS.idfThreshold}
         value={value.idfThreshold}
         min={0}
         max={1.5}
@@ -101,6 +108,7 @@ export function SparseOptions({
       />
       <Slider
         label="heading weight"
+        tip={TIPS.zoneWeights}
         value={value.headingWeight}
         min={0}
         max={5}
@@ -109,6 +117,7 @@ export function SparseOptions({
       />
       <Slider
         label="body weight"
+        tip={TIPS.zoneWeights}
         value={value.bodyWeight}
         min={0}
         max={5}

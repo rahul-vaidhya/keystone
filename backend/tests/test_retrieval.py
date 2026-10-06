@@ -162,6 +162,33 @@ async def test_search_scoped_to_notebook_documents(client: AsyncClient, session_
     assert body["results"][0]["index"] == 1
 
 
+async def test_search_results_carry_page_range(client: AsyncClient, session_factory) -> None:
+    """The Search page shows a page number on semantic cards too: ``/retrieval/search``
+    hits carry the chat-citation page derivation (here: the parser's page marker)."""
+    tokens = await _signup(client, "ret-pages@test.com", "Pages")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    org_id = await _org_id(client, headers)
+    doc = await _seed_document(session_factory, org_id, "Paged")
+    await _seed_chunk_with_embedding(
+        session_factory,
+        org_id=org_id,
+        document_id=doc,
+        ordinal=0,
+        content="### Page 7" + chr(10) + "alpha",
+    )
+    created = await client.post("/notebooks", headers=headers, json={"name": "NB"})
+    notebook_id = created.json()["id"]
+    await client.post(f"/notebooks/{notebook_id}/documents/{doc}", headers=headers)
+
+    resp = await client.post(
+        "/retrieval/search", headers=headers, json={"notebook_id": notebook_id, "query": "alpha"}
+    )
+    assert resp.status_code == 200
+    [hit] = resp.json()["results"]
+    assert hit["page_start"] == 7 and hit["page_end"] == 7
+    assert hit["distance"] is not None
+
+
 async def test_search_empty_notebook_returns_no_results(client: AsyncClient) -> None:
     tokens = await _signup(client, "ret-empty@test.com", "Empty")
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}

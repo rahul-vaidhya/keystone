@@ -4,6 +4,7 @@ import type {
   SparseMode,
   SparseQueryAnalysis,
 } from "../types/retrieval";
+import { TIPS, Tip } from "./Tip";
 
 function Chip({
   children,
@@ -26,7 +27,7 @@ function Chip({
   );
 }
 
-function Stage({ label, children }: { label: string; children: React.ReactNode }) {
+function Stage({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="flex flex-col sm:flex-row sm:items-start gap-1 sm:gap-3">
       <span className="text-xs text-muted sm:w-36 shrink-0 pt-0.5">{label}</span>
@@ -59,25 +60,30 @@ function StepChain({ steps }: { steps: SparseBooleanStep[] }) {
   );
 }
 
-export function IndexStatsBar({ stats, total }: { stats: SparseIndexStats; total: number }) {
+export function IndexStatsBar({ stats }: { stats: SparseIndexStats }) {
   return (
-    <p className="text-xs text-muted flex flex-wrap gap-x-3 gap-y-1" aria-label="Index statistics">
+    <p className="text-xs text-muted flex flex-wrap gap-x-4 gap-y-1" aria-label="Index statistics">
       <span>
-        N = <span className="text-text font-mono">{stats.n_docs}</span> chunks
+        <Tip tip={TIPS.N}>N</Tip> = <span className="text-text font-mono">{stats.n_docs}</span>{" "}
+        chunks
       </span>
       <span>
-        <span className="text-text font-mono">{stats.vocabulary_size}</span> dictionary terms
+        <span className="text-text font-mono">{stats.vocabulary_size}</span>{" "}
+        <Tip tip={TIPS.dictionary}>dictionary terms</Tip>
       </span>
       <span>
-        avg postings{" "}
+        <Tip tip={TIPS.avgPostings}>avg postings length</Tip>{" "}
         <span className="text-text font-mono">{fmt(stats.avg_postings_length, 1)}</span>
       </span>
       <span>
-        zones <span className="text-text font-mono">{stats.zones.join(", ") || "—"}</span>
+        <Tip tip={TIPS.zones}>zones</Tip>{" "}
+        <span className="text-text font-mono">{stats.zones.join(", ") || "—"}</span>
       </span>
       <span>
         {stats.cached ? (
-          <span className="text-success">index cached</span>
+          <span className="text-success" title="Reused the in-memory index built by an earlier query">
+            index cached
+          </span>
         ) : (
           <>
             index built in{" "}
@@ -86,10 +92,7 @@ export function IndexStatsBar({ stats, total }: { stats: SparseIndexStats; total
         )}
       </span>
       <span>
-        query <span className="text-text font-mono">{fmt(stats.query_ms, 2)} ms</span>
-      </span>
-      <span>
-        <span className="text-text font-mono">{total}</span> matching chunks
+        query processed in <span className="text-text font-mono">{fmt(stats.query_ms, 2)} ms</span>
       </span>
     </p>
   );
@@ -107,7 +110,7 @@ export function QueryAnalysisPanel({
   const ranked = analysis.ranked;
 
   return (
-    <details open className="bg-surface border border-border rounded-md p-3">
+    <details open className="bg-surface border border-border rounded-md p-4">
       <summary className="text-xs font-semibold uppercase tracking-wide text-muted cursor-pointer select-none">
         Query analysis
       </summary>
@@ -122,7 +125,7 @@ export function QueryAnalysisPanel({
             <Chip key={i}>{t}</Chip>
           ))}
         </Stage>
-        <Stage label="3. Stop words">
+        <Stage label={<Tip tip={TIPS.stopWords}>3. Stop words</Tip>}>
           {analysis.casefolded.map((t, i) => (
             <Chip
               key={i}
@@ -133,7 +136,7 @@ export function QueryAnalysisPanel({
             </Chip>
           ))}
         </Stage>
-        <Stage label="4. Porter stem">
+        <Stage label={<Tip tip={TIPS.stem}>4. Porter stem</Tip>}>
           {analysis.stems.length === 0 ? (
             <span className="text-xs text-muted">no index terms left</span>
           ) : (
@@ -148,15 +151,21 @@ export function QueryAnalysisPanel({
             <thead className="text-muted text-left">
               <tr>
                 <th className="font-normal py-1 pr-3">term</th>
-                <th className="font-normal py-1 pr-3">df</th>
-                <th className="font-normal py-1 pr-3">idf = log₁₀(N/df)</th>
+                <th className="font-normal py-1 pr-3">
+                  <Tip tip={TIPS.df}>df</Tip>
+                </th>
+                <th className="font-normal py-1 pr-3">
+                  <Tip tip={TIPS.idf}>idf = log₁₀(N/df)</Tip>
+                </th>
                 {zones.map((z) => (
                   <th key={z} className="font-normal py-1 pr-3">
-                    postings · {z}
+                    <Tip tip={TIPS.postings}>postings</Tip> · {z}
                   </th>
                 ))}
                 {mode === "ranked" && (
-                  <th className="font-normal py-1 pr-3">champions ({zones.join(" / ")})</th>
+                  <th className="font-normal py-1 pr-3">
+                    <Tip tip={TIPS.champions}>champions</Tip> ({zones.join(" / ")})
+                  </th>
                 )}
               </tr>
             </thead>
@@ -198,7 +207,7 @@ export function QueryAnalysisPanel({
           <p>
             {ranked.scheme === "bm25" ? (
               <>
-                Okapi BM25 per zone:{" "}
+                <Tip tip={TIPS.bm25}>Okapi BM25</Tip> per zone:{" "}
                 <span className="font-mono text-text">
                   idf · (k₁+1)·tf / (k₁((1−b)+b·L/L̄)+tf)
                 </span>
@@ -206,18 +215,23 @@ export function QueryAnalysisPanel({
               </>
             ) : (
               <>
-                SMART <span className="font-mono text-text">lnc.ltc</span> cosine per zone: doc
+                SMART{" "}
+                <Tip tip={TIPS.lncltc}>
+                  <span className="font-mono text-text">lnc.ltc</span>
+                </Tip>{" "}
+                cosine per zone: doc
                 (1+log tf)/‖d‖ × query (1+log tf)·idf/‖q‖
               </>
             )}
-            ; score = Σ zone weight × zone score (
+            ; score = Σ <Tip tip={TIPS.zoneWeights}>zone weight</Tip> × zone score (
             {Object.entries(ranked.zone_weights)
               .map(([z, w]) => `${z} ${w}`)
               .join(", ")}
             ); top-K selected with a heap.
           </p>
           <p>
-            Index elimination (idf ≤ {ranked.idf_threshold.toFixed(2)}):{" "}
+            <Tip tip={TIPS.idfThreshold}>Index elimination</Tip> (idf ≤{" "}
+            {ranked.idf_threshold.toFixed(2)}):{" "}
             {ranked.eliminated_terms.length > 0 ? (
               <span className="font-mono text-danger">
                 dropped {ranked.eliminated_terms.join(", ")}
@@ -230,7 +244,7 @@ export function QueryAnalysisPanel({
             {ranked.champion_candidates !== null && (
               <>
                 {" "}
-                · champion-list candidates:{" "}
+                · <Tip tip={TIPS.champions}>champion-list</Tip> candidates:{" "}
                 <span className="font-mono text-text">{ranked.champion_candidates}</span>
               </>
             )}{" "}

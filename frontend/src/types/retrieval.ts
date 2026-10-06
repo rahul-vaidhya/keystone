@@ -14,7 +14,13 @@ export type ContextBlock = {
   char_start: number;
   char_end: number;
   content: string;
-  distance: number;
+  // null for a lexical-only hybrid hit (no cosine distance).
+  distance: number | null;
+  rerank_score?: number | null;
+  // Search-page only (app.models.retrieval.SearchResultBlock): the chat-citation page
+  // derivation, null when unknown.
+  page_start?: number | null;
+  page_end?: number | null;
 };
 
 export type RetrievalSearchResponse = {

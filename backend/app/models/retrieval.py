@@ -49,6 +49,20 @@ class RetrievalSearchResponse(BaseModel):
     results: list[ContextBlock]
 
 
+class SearchResultBlock(ContextBlock):
+    """``/retrieval/search`` (Search page) hit: a ``ContextBlock`` plus the chunk's page
+    range — the same derivation chat citations use (``ingestion_service.get_chunks``),
+    ``None`` when unknown. Chat keeps consuming plain ``ContextBlock``s."""
+
+    page_start: int | None = None
+    page_end: int | None = None
+
+
+class SearchPageResponse(BaseModel):
+    query: str
+    results: list[SearchResultBlock]
+
+
 class SectionSummaryHit(BaseModel):
     """One section's V2 enrichment summary (``sections.summary``/``sections.topics``) —
     the broad-query map-reduce strategy's (``app.services.retrieval.mapreduce``) map-step
