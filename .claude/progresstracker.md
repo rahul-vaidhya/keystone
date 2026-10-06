@@ -1259,3 +1259,17 @@ backend/.env before user-run real-seam dev sessions; `SEAMS_MODE`/`RLS_ENABLED` 
 in .env are dead and can be deleted; restart stale uvicorn/arq after backend edits.
 **Resolved (2026-06-23):** `GET /context/docs` was deleted (decision: too risky to ship,
 not org-scoped) — see buildplan.md "Unplanned additions".
+
+## CSD358 IR hackathon (Track T1) — 2026-10-06 → 10-07 (all pushed, HEAD `0cfed4b`)
+Prof approved submitting Veratas as-is. Work done via parallel subagents, each verified by the orchestrator.
+- [x] From-scratch sparse IR core (positional inverted index, Porter, lnc.ltc, BM25, heap top-K, champion lists, idf elimination, zones, phrase/Boolean) as hybrid's lexical channel — `f3fafcc`
+- [x] BEIR SciFact ablation harness + results (tfidf/bm25/zones/champions/dense/hybrid RRF; sparse-vs-dense analysis) — `f75c816`, `7e3bc34`, `f396858`
+- [x] Per-sentence citation checker + Debug term-contribution view (migration 0025) — `e82c548`
+- [x] QA user walkthroughs (core + team/admin) → `.claude/known-issues.md` tracker — `d97408c`
+- [x] Usability fixes U1–U7, U10, U11 (repo table, folder delete, notebook rename, session expiry redirect, 403/404 notebook states, PDF-only uploads + friendly errors, history order, duplicate notice) — `cce1a83`, `9f60685`, `5b1f9b4`
+- [x] Demo fixes D1–D4 (claim-check inheritance + calibration, broad-query/enrichment/overview enabled, page-accurate citation panel) — `ed9cdc3`
+- [x] Markdown rendering in chat/overview/embed (D5) — `d63b766`
+- [x] Citation checker measured on SciFact claims (AUC, P/R/F1, contradiction rate, evidence localization) — `4b466b1`
+- [x] Search page Ranked/Boolean/Phrase modes with visible IR traces + `POST /retrieval/sparse-search` — `fa0fffa`, `126269c`
+- [x] Visual polish: fixed-viewport shell, titles/favicon, sidebar name, Search polish (phrase snippets, Boolean validation, share bars, semantic pages) — `01c8245`, `4de678d`
+Baselines: backend 493 passed / 3 deselected, frontend 224, ruff/tsc/build clean. Open items: `.claude/known-issues.md` (security S1–S4 deferred; F10 threshold decision; U8/U9/U12/U15–U18 low priority). Report + demo video not drafted (user's call).
