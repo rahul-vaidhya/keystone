@@ -9,7 +9,12 @@ from fastapi import Depends
 
 from app.middleware.context import TenantContext
 from app.middleware.deps import get_ctx
-from app.models.retrieval import RetrievalSearchRequest, RetrievalSearchResponse
+from app.models.retrieval import (
+    RetrievalSearchRequest,
+    RetrievalSearchResponse,
+    SparseSearchRequest,
+    SparseSearchResponse,
+)
 from app.services.retrieval import retrieval_service
 from app.services.seams import Embedder, Reranker, get_embedder, get_reranker
 
@@ -21,3 +26,10 @@ async def search(
     reranker: Annotated[Reranker, Depends(get_reranker)],
 ) -> RetrievalSearchResponse:
     return await retrieval_service.search(ctx, req, embedder=embedder, reranker=reranker)
+
+
+async def sparse_search(
+    req: SparseSearchRequest,
+    ctx: Annotated[TenantContext, Depends(get_ctx)],
+) -> SparseSearchResponse:
+    return await retrieval_service.sparse_search(ctx, req)

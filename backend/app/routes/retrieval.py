@@ -5,8 +5,11 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app import controllers
-from app.models.retrieval import RetrievalSearchResponse
+from app.models.retrieval import RetrievalSearchResponse, SparseSearchResponse
 
 router = APIRouter(prefix="/retrieval", tags=["retrieval"])
 
 router.post("/search", response_model=RetrievalSearchResponse)(controllers.retrieval.search)
+router.post("/sparse-search", response_model=SparseSearchResponse)(
+    controllers.retrieval.sparse_search
+)

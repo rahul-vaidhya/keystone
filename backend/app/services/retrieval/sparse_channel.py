@@ -18,6 +18,7 @@ hybrid search's lexical channel when ``SPARSE_RETRIEVAL_MODE != "off"`` (and onl
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -63,18 +64,29 @@ def _build(chunks: list[SparseIndexChunk]) -> _CachedIndex:
 
 async def get_index(ctx: TenantContext, document_ids: list[uuid.UUID]) -> _CachedIndex:
     """Return the (possibly cached) sparse index over ``document_ids``' chunks."""
+    cached, _was_cached, _build_ms = await get_index_with_status(ctx, document_ids)
+    return cached
+
+
+async def get_index_with_status(
+    ctx: TenantContext, document_ids: list[uuid.UUID]
+) -> tuple[_CachedIndex, bool, float]:
+    """``get_index`` plus ``(was_cache_hit, build_ms)`` — ``build_ms`` is the in-process
+    index-construction time (0.0 on a cache hit), surfaced by ``/retrieval/sparse-search``."""
     fingerprint = await ingestion_service.chunk_fingerprint(ctx, document_ids)
     key: _CacheKey = (ctx.org_id, frozenset(document_ids), fingerprint)
     cached = _cache.get(key)
     if cached is not None:
         _cache.move_to_end(key)
-        return cached
+        return cached, True, 0.0
     chunks = await ingestion_service.list_chunks_for_sparse_index(ctx, document_ids)
+    started = time.perf_counter()
     built = _build(chunks)
+    build_ms = (time.perf_counter() - started) * 1000.0
     _cache[key] = built
     while len(_cache) > _CACHE_MAX_ENTRIES:
         _cache.popitem(last=False)
-    return built
+    return built, False, build_ms
 
 
 async def search_sparse_lexical(

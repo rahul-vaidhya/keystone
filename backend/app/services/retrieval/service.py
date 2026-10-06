@@ -13,10 +13,15 @@ from app.config.logging import get_logger
 from app.config.settings import settings
 from app.middleware.context import TenantContext
 from app.models.ingestion import ChunkHit
-from app.models.retrieval import RetrievalSearchRequest, RetrievalSearchResponse
+from app.models.retrieval import (
+    RetrievalSearchRequest,
+    RetrievalSearchResponse,
+    SparseSearchRequest,
+    SparseSearchResponse,
+)
 from app.services.ingestion import ingestion_service
 from app.services.knowledge import knowledge_service
-from app.services.retrieval import sparse_channel
+from app.services.retrieval import sparse_channel, sparse_search
 from app.services.retrieval.fusion import assemble_context, fuse_rrf
 from app.services.retrieval.permissions import resolve_allowed_documents
 from app.services.seams import Embedder, Reranker, SeamTransientError
@@ -54,6 +59,17 @@ class RetrievalService:
         ``sparse_channel.get_index`` (module-boundary rule: through this service only).
         Works regardless of ``SPARSE_RETRIEVAL_MODE``."""
         return await sparse_channel.get_index(ctx, document_ids)
+
+    async def sparse_search(
+        self, ctx: TenantContext, req: SparseSearchRequest
+    ) -> SparseSearchResponse:
+        """``/retrieval/sparse-search``: ranked (tf-idf / BM25), Boolean or phrase query
+        over the from-scratch sparse index, with the full query-processing trace. Same
+        notebook-access + allowed-documents scoping as ``search`` (404 cross-org, 403 on
+        another user's private notebook, via ``resolve_notebook_scope``). Works
+        regardless of ``SPARSE_RETRIEVAL_MODE`` / ``HYBRID_SEARCH_ENABLED``."""
+        scope = await self.resolve_notebook_scope(ctx, req.notebook_id)
+        return await sparse_search.run_sparse_search(ctx, req, scope)
 
     async def search(
         self,

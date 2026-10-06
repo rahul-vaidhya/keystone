@@ -9,6 +9,7 @@ Note: retrieval owns no table, so this file contains only Pydantic schemas (no O
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -83,3 +84,155 @@ class SynthesisBlock(BaseModel):
     section_ids: list[uuid.UUID]
     headings: list[str | None]
     document_ids: list[uuid.UUID]
+
+
+# ---- /retrieval/sparse-search: the from-scratch IR core, made visible ---------------------
+
+
+class SparseZoneWeights(BaseModel):
+    heading: float = Field(default=2.0, ge=0.0, le=10.0)
+    body: float = Field(default=1.0, ge=0.0, le=10.0)
+
+
+class SparseSearchRequest(BaseModel):
+    notebook_id: uuid.UUID
+    query: str = Field(min_length=1, max_length=500)
+    mode: Literal["ranked", "boolean", "phrase"] = "ranked"
+    scheme: Literal["tfidf", "bm25"] = "bm25"
+    k: int = Field(default=10, ge=1, le=50)
+    use_champions: bool = False
+    idf_threshold: float = Field(default=0.0, ge=0.0, le=10.0)
+    zone_weights: SparseZoneWeights = Field(default_factory=SparseZoneWeights)
+
+
+class SparseTermStat(BaseModel):
+    term: str
+    surface: list[str]
+    query_tf: int
+    df: int
+    idf: float
+    postings: dict[str, int]
+    champions: dict[str, int]
+    eliminated: bool
+
+
+class SparseRankedTrace(BaseModel):
+    scheme: Literal["tfidf", "bm25"]
+    zone_weights: dict[str, float]
+    use_champions: bool
+    idf_threshold: float
+    active_terms: list[str]
+    eliminated_terms: list[str]
+    docs_with_postings: int
+    champion_candidates: int | None
+    docs_scored: int
+
+
+class SparseBooleanOperand(BaseModel):
+    word: str
+    terms: list[str]
+    negated: bool
+
+
+class SparseBooleanStep(BaseModel):
+    op: str
+    term: str
+    df: int
+    result_size: int
+
+
+class SparseBooleanClause(BaseModel):
+    operands: list[SparseBooleanOperand]
+    steps: list[SparseBooleanStep]
+    result_size: int
+
+
+class SparseBooleanTrace(BaseModel):
+    operators: list[str]
+    clauses: list[SparseBooleanClause]
+    union_steps: list[SparseBooleanStep]
+
+
+class SparsePhraseZone(BaseModel):
+    zone: str
+    postings: dict[str, int]
+    candidates: int
+    matched: int
+
+
+class SparsePhraseTerm(BaseModel):
+    term: str
+    offset: int
+
+
+class SparsePhraseTrace(BaseModel):
+    phrase: str
+    terms: list[SparsePhraseTerm]
+    zones: list[SparsePhraseZone]
+    candidates: int
+    matched: int
+
+
+class SparseQueryAnalysis(BaseModel):
+    raw_tokens: list[str]
+    casefolded: list[str]
+    stop_words_removed: list[str]
+    kept_tokens: list[str]
+    stems: list[str]
+    terms: list[SparseTermStat]
+    ranked: SparseRankedTrace | None = None
+    boolean: SparseBooleanTrace | None = None
+    phrase: SparsePhraseTrace | None = None
+
+
+class SparseIndexStats(BaseModel):
+    n_docs: int
+    vocabulary_size: int
+    avg_postings_length: float
+    zones: list[str]
+    champion_r: int
+    cached: bool
+    build_ms: float
+    query_ms: float
+    total_ms: float
+
+
+class SparseContribution(BaseModel):
+    term: str
+    zone: str
+    tf: int
+    idf: float
+    weight: float
+
+
+class SparsePhraseMatch(BaseModel):
+    zone: str
+    positions: list[int]
+
+
+class SparseSearchResult(BaseModel):
+    rank: int
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    document_title: str | None
+    heading: str | None
+    content: str
+    snippet: str
+    char_start: int
+    char_end: int
+    page_start: int | None = None
+    page_end: int | None = None
+    score: float | None = None
+    contributions: list[SparseContribution] = []
+    matched_terms: list[str] = []
+    highlights: list[str] = []
+    phrase_matches: list[SparsePhraseMatch] = []
+
+
+class SparseSearchResponse(BaseModel):
+    query: str
+    mode: Literal["ranked", "boolean", "phrase"]
+    analysis: SparseQueryAnalysis
+    index_stats: SparseIndexStats
+    total_matches: int
+    results: list[SparseSearchResult]
