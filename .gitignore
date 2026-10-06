@@ -35,3 +35,6 @@ node_modules/
 
 # Manual-validation PDFs (large binaries / copyrighted, not test fixtures)
 /pdf/
+
+# IR eval harness downloaded datasets + embedding caches
+/backend/eval/data/

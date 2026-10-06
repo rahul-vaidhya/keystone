@@ -46,6 +46,12 @@ real = [
 eval = [
   "ragas>=0.2",
 ]
+# Standalone IR evaluation harness (backend/eval/, BEIR SciFact ablation) — numpy for
+# dense cosine/top-k. Separate from `eval` (Ragas), which is currently broken upstream.
+ireval = [
+  "numpy>=1.26",
+  "fastembed>=0.3",  # optional offline dense encoder (--dense-backend local)
+]
 dev = [
   "pytest>=8.2",
   "pytest-asyncio>=0.23",
