@@ -3,6 +3,7 @@ import { notebooksApi } from "../services/notebooksService";
 import { ApiError } from "../types/auth";
 import type { Document } from "../types/documents";
 import type { NotebookOverview, NotebookOverviewCitation } from "../types/knowledge";
+import { Markdown } from "./Markdown";
 
 // Lightweight variant of CitationPanel.tsx's source-span viewer, adapted for the
 // section-level citation shape the P1 Notebook Overview map-reduce path produces
@@ -52,10 +53,9 @@ function OverviewCitationPanel({
   );
 }
 
-// Splits the overview's synthesized text at [n] markers and renders resolved
-// citations as clickable buttons — same convention as ChatPanel.tsx's private
-// AnswerText, adapted for NotebookOverviewCitation (not exported from ChatPanel, so
-// duplicated rather than imported).
+// Renders the overview's synthesized text as markdown (D5) with [n] markers as
+// clickable citation buttons — same convention as ChatPanel.tsx's AnswerText, adapted
+// for NotebookOverviewCitation.
 function OverviewText({
   content,
   citations,
@@ -65,32 +65,27 @@ function OverviewText({
   citations: NotebookOverviewCitation[];
   onCitationClick: (c: NotebookOverviewCitation) => void;
 }) {
-  const parts = content.split(/(\[\d+\])/);
   return (
-    <span className="whitespace-pre-wrap">
-      {parts.map((part, i) => {
-        const match = /^\[(\d+)\]$/.exec(part);
-        if (match) {
-          const marker = parseInt(match[1], 10);
-          const citation = citations.find((c) => c.marker === marker);
-          return citation ? (
-            <button
-              key={i}
-              type="button"
-              onClick={() => onCitationClick(citation)}
-              className="font-mono text-accent text-xs hover:underline align-super px-0.5"
-            >
-              [{marker}]
-            </button>
-          ) : (
-            <span key={i} className="font-mono text-muted text-xs">
-              {part}
-            </span>
-          );
-        }
-        return <span key={i}>{part}</span>;
-      })}
-    </span>
+    <Markdown
+      content={content}
+      renderCitation={(marker, raw, key) => {
+        const citation = citations.find((c) => c.marker === marker);
+        return citation ? (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onCitationClick(citation)}
+            className="font-mono text-accent text-xs hover:underline align-super px-0.5"
+          >
+            [{marker}]
+          </button>
+        ) : (
+          <span key={key} className="font-mono text-muted text-xs">
+            {raw}
+          </span>
+        );
+      }}
+    />
   );
 }
 

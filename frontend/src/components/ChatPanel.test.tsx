@@ -848,4 +848,94 @@ describe("ChatPanel", () => {
       expect(down).toHaveAttribute("aria-pressed", "false");
     });
   });
+
+  describe("markdown rendering (D5)", () => {
+    beforeEach(() => {
+      mockUser("member");
+      vi.mocked(chatApi.listMessages).mockResolvedValue([]);
+    });
+
+    function ask() {
+      const input = screen.getByPlaceholderText("Ask a question…");
+      fireEvent.change(input, { target: { value: "test" } });
+      fireEvent.submit(input.closest("form")!);
+    }
+
+    it("renders a bold numbered list with a clickable citation inside bold", async () => {
+      const answer =
+        "Key points:\n\n1. **Chemical Bonding Theories [1]**: octets.\n2. **VSEPR**: shapes.";
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(makeDoneResponse({ answer }));
+        return () => {};
+      });
+      const { container } = render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      ask();
+      await waitFor(() => expect(container.querySelector("ol")).not.toBeNull());
+      expect(container.querySelectorAll("ol > li")).toHaveLength(2);
+      expect(container.textContent).not.toContain("**");
+      const btn = screen.getByRole("button", { name: "[1]" });
+      expect(btn.closest("strong")).not.toBeNull();
+      fireEvent.click(btn);
+      expect(screen.getByText("Source [1]")).toBeInTheDocument();
+    });
+
+    it("applies the claim-check span to a sentence containing markdown", async () => {
+      const answer = "1. **Hybridisation** mixes atomic orbitals [1].";
+      const sentence = "**Hybridisation** mixes atomic orbitals [1].";
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(
+          makeDoneResponse({
+            answer,
+            claim_checks: [
+              {
+                sentence,
+                citations: [1],
+                lexical: 0,
+                semantic: 0.1,
+                score: 0.05,
+                status: "weak",
+              },
+            ],
+          }),
+        );
+        return () => {};
+      });
+      const { container } = render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      ask();
+      await waitFor(() =>
+        expect(container.querySelector('[data-claim-status="weak"]')).not.toBeNull(),
+      );
+      const weak = container.querySelector('[data-claim-status="weak"]')!;
+      expect(weak).toHaveTextContent("Hybridisation mixes atomic orbitals [1].");
+      expect(weak.querySelector("strong")).toHaveTextContent("Hybridisation");
+      expect(weak.closest("li")).not.toBeNull();
+      expect(weak.textContent).toContain("⚠");
+      expect(container.textContent).not.toContain("**");
+    });
+
+    it("renders an unclosed ** literally mid-stream", async () => {
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onToken("1. **Chemical Bon");
+        return () => {};
+      });
+      const { container } = render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      ask();
+      await waitFor(() => expect(container.querySelector("li")).not.toBeNull());
+      expect(container.querySelector("li")).toHaveTextContent("**Chemical Bon");
+      expect(container.querySelector("strong")).toBeNull();
+    });
+
+    it("renders <script> in model output as text, not markup", async () => {
+      const answer = '**Note** <script>alert("x")</script> [1]';
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(makeDoneResponse({ answer }));
+        return () => {};
+      });
+      const { container } = render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      ask();
+      await waitFor(() => expect(screen.getByRole("button", { name: "[1]" })).toBeInTheDocument());
+      expect(container.querySelector("script")).toBeNull();
+      expect(container.textContent).toContain('<script>alert("x")</script>');
+    });
+  });
 });

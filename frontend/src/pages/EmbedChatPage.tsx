@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { useSearchParams } from "react-router-dom";
 import { embedApi } from "../services/embedService";
 import type { EmbedConfig } from "../types/embed";
+import { Markdown } from "../components/Markdown";
 
 // Public, unauthenticated page rendered standalone inside widget.js's iframe — no
 // AppShell/Sidebar, no useAuth/useDialog (this component must never need any app
@@ -15,20 +16,19 @@ type Message = {
 
 type ConfigState = "loading" | "ready" | "unavailable";
 
-// Splits answer text at [n] markers and renders them as plain (non-clickable)
+// Renders answer text as markdown (D5) with [n] markers as plain (non-clickable)
 // superscripts — MVP scope per the plan; no CitationPanel, no click-through.
-function renderAnswer(content: string): ReactNode[] {
-  const parts = content.split(/(\[\d+\])/);
-  return parts.map((part, i) => {
-    if (/^\[\d+\]$/.test(part)) {
-      return (
-        <sup key={i} className="font-mono text-accent text-[0.7em]">
-          {part}
+function renderAnswer(content: string): ReactNode {
+  return (
+    <Markdown
+      content={content}
+      renderCitation={(_marker, raw, key) => (
+        <sup key={key} className="font-mono text-accent text-[0.7em]">
+          {raw}
         </sup>
-      );
-    }
-    return <span key={i}>{part}</span>;
-  });
+      )}
+    />
+  );
 }
 
 export function EmbedChatPage() {
@@ -181,8 +181,10 @@ export function EmbedChatPage() {
             >
               {msg.role === "assistant" && msg.content === "" && isStreaming ? (
                 <span className="text-muted animate-pulse">●●●</span>
+              ) : msg.role === "assistant" && !msg.isError ? (
+                renderAnswer(msg.content)
               ) : (
-                <span className="whitespace-pre-wrap">{renderAnswer(msg.content)}</span>
+                <span className="whitespace-pre-wrap">{msg.content}</span>
               )}
             </div>
           </div>

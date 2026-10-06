@@ -11,6 +11,7 @@ import type {
 } from "../types/chat";
 import type { Document } from "../types/documents";
 import { CitationPanel } from "./CitationPanel";
+import { Markdown, type Annotation } from "./Markdown";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -202,7 +203,7 @@ function TraceDetails({
   );
 }
 
-// Splits answer text at [n] markers and renders resolved citations as clickable buttons.
+// Answers render as markdown (D5) with [n] markers as clickable citation buttons.
 // Every checked sentence from the per-sentence citation check carries a title tooltip
 // with its lexical/semantic/combined scores and the [n] it was checked against.
 // Supported = visually quiet (no underline); weak = amber underline + ⚠; uncited = grey
@@ -243,50 +244,48 @@ function AnswerText({
   onCitationClick: (c: ResolvedCitation) => void;
   claimChecks?: ClaimCheck[] | null;
 }) {
-  // Partition the answer into plain and checked segments by locating each checked
-  // sentence (backend sentences are verbatim substrings of the answer) in order.
-  const segments: { text: string; check?: ClaimCheck }[] = [];
+  // Locate each checked sentence (backend sentences are verbatim substrings of the raw
+  // answer, markdown syntax included) in order; the Markdown renderer overlays these
+  // raw-text ranges onto its rendered output, so a sentence containing `**bold**` or a
+  // list item is still wrapped as one claim span.
+  const annotations: Annotation<ClaimCheck>[] = [];
   let cursor = 0;
   for (const check of claimChecks ?? []) {
     const at = content.indexOf(check.sentence, cursor);
     if (at === -1) continue;
-    if (at > cursor) segments.push({ text: content.slice(cursor, at) });
-    segments.push({ text: check.sentence, check });
+    annotations.push({ start: at, end: at + check.sentence.length, data: check });
     cursor = at + check.sentence.length;
   }
-  if (cursor < content.length) segments.push({ text: content.slice(cursor) });
 
   return (
-    <span className="whitespace-pre-wrap">
-      {segments.map((seg, si) =>
-        seg.check ? (
-          <span
-            key={si}
-            data-claim-status={seg.check.status}
-            title={claimTooltip(seg.check)}
-            className={CLAIM_CLASS[seg.check.status]}
-          >
-            <MarkedText
-              text={seg.text}
-              citations={citations}
-              onCitationClick={onCitationClick}
-            />
-            {seg.check.status === "weak" && (
-              <span className="text-warning text-xs ml-0.5" aria-hidden="true">
-                ⚠
-              </span>
-            )}
-          </span>
-        ) : (
-          <MarkedText
-            key={si}
-            text={seg.text}
-            citations={citations}
-            onCitationClick={onCitationClick}
-          />
-        ),
+    <Markdown
+      content={content}
+      renderCitation={(marker, raw, key) => (
+        <CitationMarker
+          key={key}
+          marker={marker}
+          raw={raw}
+          citations={citations}
+          onCitationClick={onCitationClick}
+        />
       )}
-    </span>
+      annotations={annotations}
+      renderAnnotation={(check, children, key, isEnd) => (
+        <span
+          key={key}
+          data-claim-status={check.status}
+          title={claimTooltip(check)}
+          className={CLAIM_CLASS[check.status]}
+        >
+          {children}
+          {isEnd && check.status === "weak" && (
+            <span className="text-warning text-xs ml-0.5" aria-hidden="true">
+              ⚠
+            </span>
+          )}
+        </span>
+      )}
+    />
   );
 }
 
@@ -300,41 +299,28 @@ function ClaimCheckSummary({ checks }: { checks: ClaimCheck[] }) {
   );
 }
 
-function MarkedText({
-  text,
+function CitationMarker({
+  marker,
+  raw,
   citations,
   onCitationClick,
 }: {
-  text: string;
+  marker: number;
+  raw: string;
   citations: ResolvedCitation[];
   onCitationClick: (c: ResolvedCitation) => void;
 }) {
-  const parts = text.split(/(\[\d+\])/);
-  return (
-    <>
-      {parts.map((part, i) => {
-        const match = /^\[(\d+)\]$/.exec(part);
-        if (match) {
-          const marker = parseInt(match[1], 10);
-          const citation = citations.find((c) => c.marker === marker);
-          return citation ? (
-            <button
-              key={i}
-              type="button"
-              onClick={() => onCitationClick(citation)}
-              className="font-mono text-accent text-xs hover:underline align-super px-0.5"
-            >
-              [{marker}]
-            </button>
-          ) : (
-            <span key={i} className="font-mono text-muted text-xs">
-              {part}
-            </span>
-          );
-        }
-        return <span key={i}>{part}</span>;
-      })}
-    </>
+  const citation = citations.find((c) => c.marker === marker);
+  return citation ? (
+    <button
+      type="button"
+      onClick={() => onCitationClick(citation)}
+      className="font-mono text-accent text-xs hover:underline align-super px-0.5"
+    >
+      [{marker}]
+    </button>
+  ) : (
+    <span className="font-mono text-muted text-xs">{raw}</span>
   );
 }
 
@@ -577,6 +563,10 @@ export function ChatPanel({
                       onCitationClick={setActiveCitation}
                       claimChecks={msg.claimChecks}
                     />
+                  ) : msg.role === "assistant" ? (
+                    // Still streaming: render markdown progressively (an unclosed `**`
+                    // stays literal until its closer arrives); markers aren't resolved yet.
+                    <Markdown content={msg.content} />
                   ) : (
                     <span className="whitespace-pre-wrap">{msg.content}</span>
                   )}
