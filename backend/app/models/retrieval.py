@@ -35,6 +35,12 @@ class ContextBlock(BaseModel):
     # only. Always `None` when `RERANKER_ENABLED=False` (the default); `distance` is
     # never touched or removed.
     rerank_score: float | None = None
+    # From-scratch sparse IR channel — surfaced from ``ChunkHit.sparse_score`` /
+    # ``ChunkHit.sparse_explanation`` unchanged, additive only (``None`` unless
+    # ``SPARSE_RETRIEVAL_MODE != "off"`` and hybrid search sourced this block lexically).
+    # Persisted into ``message_traces.hits`` with the rest of the block.
+    sparse_score: float | None = None
+    sparse_explanation: list[dict] | None = None
 
 
 class RetrievalSearchResponse(BaseModel):

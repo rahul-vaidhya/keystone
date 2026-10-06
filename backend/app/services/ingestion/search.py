@@ -8,7 +8,7 @@ import uuid
 
 from app.config import db as db_mod
 from app.middleware.context import TenantContext
-from app.models.ingestion import ChunkHit, ChunkRecord, SectionHit
+from app.models.ingestion import ChunkHit, ChunkRecord, SectionHit, SparseIndexChunk
 from app.models.retrieval import SectionSummaryHit
 from app.services.ingestion.repository import (
     ChunkRepository,
@@ -48,6 +48,22 @@ async def search_chunks_lexical(
         return await ChunkRepository(session, ctx).search_chunks_lexical(
             query, document_ids, k, section_ids=section_ids
         )
+
+
+async def list_chunks_for_sparse_index(
+    ctx: TenantContext, document_ids: list[uuid.UUID]
+) -> list[SparseIndexChunk]:
+    """The in-house sparse index's corpus (``retrieval.sparse_channel``) — all SQL lives
+    in ``ChunkRepository.list_for_sparse_index``; this is pure orchestration."""
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        return await ChunkRepository(session, ctx).list_for_sparse_index(document_ids)
+
+
+async def chunk_fingerprint(ctx: TenantContext, document_ids: list[uuid.UUID]) -> tuple[int, str]:
+    """Cache-validity fingerprint for the sparse index — all SQL lives in
+    ``ChunkRepository.fingerprint_for_documents``."""
+    async with db_mod.tenant_session(ctx.org_id) as session:
+        return await ChunkRepository(session, ctx).fingerprint_for_documents(document_ids)
 
 
 async def search_sections(

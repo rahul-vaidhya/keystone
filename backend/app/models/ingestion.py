@@ -185,8 +185,30 @@ class ChunkHit(BaseModel):
     # `RERANKER_ENABLED=False` (the default); never removes/replaces `distance`, which
     # stays the raw cosine-distance provenance from the kNN search regardless.
     rerank_score: float | None = None
+    # From-scratch sparse IR lexical channel (``SPARSE_RETRIEVAL_MODE != "off"``,
+    # app.services.retrieval.sparse_channel) — additive only, always ``None`` on every
+    # other path. ``sparse_score`` is the in-house tf-idf/BM25 score;
+    # ``sparse_explanation`` is the per-(term, zone) breakdown that sums to it:
+    # ``[{"term", "zone", "tf", "idf", "weight"}]``.
+    sparse_score: float | None = None
+    sparse_explanation: list[dict] | None = None
 
     model_config = {"from_attributes": True}
+
+
+class SparseIndexChunk(BaseModel):
+    """One chunk plus its owning section's heading — the input unit of the in-house
+    sparse index (``app.services.retrieval.sparse_channel``), produced by
+    ``ingestion_service.list_chunks_for_sparse_index``. ``heading`` is ``None`` when the
+    chunk has no section or the section has no heading."""
+
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    section_id: uuid.UUID | None
+    content: str
+    char_start: int
+    char_end: int
+    heading: str | None = None
 
 
 class ChunkRecord(BaseModel):

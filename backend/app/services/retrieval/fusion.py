@@ -28,6 +28,8 @@ def assemble_context(query: str, hits: list[ChunkHit]) -> RetrievalSearchRespons
             content=hit.content,
             distance=hit.distance,
             rerank_score=hit.rerank_score,
+            sparse_score=hit.sparse_score,
+            sparse_explanation=hit.sparse_explanation,
         )
         for position, hit in enumerate(hits, start=1)
     ]
@@ -68,5 +70,17 @@ def fuse_rrf(
                 current.rerank_score if current.rerank_score is not None else hit.rerank_score
             )
             hit_by_id[hit.chunk_id] = hit.model_copy(update={"rerank_score": rerank_score})
+        # The in-house sparse channel's lexical instance carries a score + explanation;
+        # keep them on whichever instance survived dedup (in either input order). Never
+        # fires on the Postgres lexical path, where sparse_score is always None.
+        source = current if current is not None and current.sparse_score is not None else hit
+        kept = hit_by_id[hit.chunk_id]
+        if source.sparse_score is not None and kept.sparse_score is None:
+            hit_by_id[hit.chunk_id] = kept.model_copy(
+                update={
+                    "sparse_score": source.sparse_score,
+                    "sparse_explanation": source.sparse_explanation,
+                }
+            )
 
     return sorted(hit_by_id.values(), key=lambda hit: scores[hit.chunk_id], reverse=True)

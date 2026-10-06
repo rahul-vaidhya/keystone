@@ -16,6 +16,7 @@ from app.models.ingestion import ChunkHit
 from app.models.retrieval import RetrievalSearchRequest, RetrievalSearchResponse
 from app.services.ingestion import ingestion_service
 from app.services.knowledge import knowledge_service
+from app.services.retrieval import sparse_channel
 from app.services.retrieval.fusion import assemble_context, fuse_rrf
 from app.services.retrieval.permissions import resolve_allowed_documents
 from app.services.seams import Embedder, Reranker, SeamTransientError
@@ -234,9 +235,16 @@ class RetrievalService:
             return vector_hits
 
         lexical_k = max(k, settings.HYBRID_CANDIDATE_K)
-        lexical_hits = await ingestion_service.search_chunks_lexical(
-            ctx, query=query, document_ids=scope, k=lexical_k, section_ids=section_ids
-        )
+        if settings.SPARSE_RETRIEVAL_MODE != "off":
+            # From-scratch sparse IR core (tf-idf / BM25 over an in-house positional zone
+            # index) replaces ONLY the lexical channel; fusion/rerank/gate unchanged.
+            lexical_hits = await sparse_channel.search_sparse_lexical(
+                ctx, query=query, document_ids=scope, k=lexical_k, section_ids=section_ids
+            )
+        else:
+            lexical_hits = await ingestion_service.search_chunks_lexical(
+                ctx, query=query, document_ids=scope, k=lexical_k, section_ids=section_ids
+            )
         # Deliberately no logger call on this path: `app.services.retrieval`'s module
         # logger is SHARED with hierarchical retrieval's own logging, and
         # `cache_logger_on_first_use=True` (config/logging.py) permanently locks that

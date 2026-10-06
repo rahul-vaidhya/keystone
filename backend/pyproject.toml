@@ -25,6 +25,9 @@ dependencies = [
   "boto3>=1.34",
   "python-multipart>=0.0.9",
   "httpx>=0.27",
+  # From-scratch sparse IR core (app/services/retrieval/sparse/): Porter stemmer only,
+  # no corpus download needed.
+  "nltk>=3.8",
 ]
 
 [project.optional-dependencies]

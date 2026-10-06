@@ -20,7 +20,13 @@ from typing import TYPE_CHECKING
 from app.config.logging import get_logger
 from app.middleware.context import TenantContext
 from app.models.documents import DocumentOut, DocumentStatus
-from app.models.ingestion import ChunkHit, ChunkRecord, EnrichmentBackfillResult, SectionHit
+from app.models.ingestion import (
+    ChunkHit,
+    ChunkRecord,
+    EnrichmentBackfillResult,
+    SectionHit,
+    SparseIndexChunk,
+)
 from app.models.retrieval import SectionSummaryHit
 from app.services.documents import documents_service
 from app.services.ingestion import embedding as _embedding
@@ -131,6 +137,16 @@ class IngestionService:
         return await _search.search_chunks_lexical(
             ctx, query=query, document_ids=document_ids, k=k, section_ids=section_ids
         )
+
+    async def list_chunks_for_sparse_index(
+        self, ctx: TenantContext, document_ids: list[uuid.UUID]
+    ) -> list[SparseIndexChunk]:
+        return await _search.list_chunks_for_sparse_index(ctx, document_ids)
+
+    async def chunk_fingerprint(
+        self, ctx: TenantContext, document_ids: list[uuid.UUID]
+    ) -> tuple[int, str]:
+        return await _search.chunk_fingerprint(ctx, document_ids)
 
     async def search_sections(
         self,

@@ -11,10 +11,18 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import Text, cast, delete, func, literal, select, update
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.models.ingestion import Chunk, ChunkHit, Embedding, Section, SectionHit
+from app.models.ingestion import (
+    Chunk,
+    ChunkHit,
+    Embedding,
+    Section,
+    SectionHit,
+    SparseIndexChunk,
+)
 from app.services.base import BaseRepository
 
 
@@ -180,6 +188,55 @@ class ChunkRepository(BaseRepository[Chunk]):
         )
         rows = await self._db.execute(stmt)
         return [ChunkHit(**row._mapping, distance=None) for row in rows]
+
+    async def list_for_sparse_index(self, document_ids: list[uuid.UUID]) -> list[SparseIndexChunk]:
+        """The in-house sparse index's input (``retrieval.sparse_channel``): every chunk
+        of ``document_ids`` with its owning section's heading (the "heading" zone).
+        Org-scoped on BOTH sides independently — the section side inside the OUTER join
+        predicate, same precedent as ``get_by_ids`` — so a missing/foreign section never
+        drops a chunk row, it just yields ``heading=None``."""
+        if not document_ids:
+            return []
+        stmt = (
+            select(
+                Chunk.id.label("chunk_id"),
+                Chunk.document_id,
+                Chunk.section_id,
+                Chunk.content,
+                Chunk.char_start,
+                Chunk.char_end,
+                Section.heading,
+            )
+            .outerjoin(
+                Section,
+                (Chunk.section_id == Section.id) & (Section.org_id == self._ctx.org_id),
+            )
+            .where(Chunk.org_id == self._ctx.org_id, Chunk.document_id.in_(document_ids))
+            .order_by(Chunk.document_id, Chunk.ordinal)
+        )
+        rows = await self._db.execute(stmt)
+        return [SparseIndexChunk(**row._mapping) for row in rows]
+
+    async def fingerprint_for_documents(self, document_ids: list[uuid.UUID]) -> tuple[int, str]:
+        """Cheap cache-validity fingerprint for the sparse index of ``document_ids``:
+        ``(chunk count, md5 of the sorted chunk ids)``. Any re-ingest (delete-then-
+        rebuild mints new chunk ids) or chunk-count change alters it, so a cached index
+        built from stale chunks is never reused."""
+        if not document_ids:
+            return (0, "")
+        stmt = select(
+            func.count(Chunk.id),
+            func.md5(
+                func.coalesce(
+                    func.string_agg(
+                        cast(Chunk.id, Text), aggregate_order_by(literal(","), Chunk.id)
+                    ),
+                    "",
+                )
+            ),
+        ).where(Chunk.org_id == self._ctx.org_id, Chunk.document_id.in_(document_ids))
+        count, digest = (await self._db.execute(stmt)).one()
+        return (int(count), str(digest))
 
 
 class EmbeddingRepository(BaseRepository[Embedding]):

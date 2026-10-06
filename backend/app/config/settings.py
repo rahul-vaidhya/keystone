@@ -6,6 +6,8 @@ Single source of truth for environment-driven config. Read it through the module
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -127,6 +129,15 @@ class Settings(BaseSettings):
     # widening pattern. When RERANKER_ENABLED is also on, the effective candidate pool
     # is max(k, RERANK_CANDIDATE_K, HYBRID_CANDIDATE_K) (see services/retrieval.py).
     HYBRID_CANDIDATE_K: int = 25
+    # From-scratch sparse IR lexical channel (app/services/retrieval/sparse/ +
+    # sparse_channel.py). "off" (default) keeps the Postgres tsvector/ts_rank lexical
+    # channel byte-identical. "tfidf" (SMART lnc.ltc) / "bm25" REPLACE that lexical
+    # channel with an in-house, inspectable inverted index — ONLY when
+    # HYBRID_SEARCH_ENABLED is also on (it is never a standalone retriever). Fusion,
+    # reranking and the confidence gate are unchanged.
+    SPARSE_RETRIEVAL_MODE: Literal["off", "tfidf", "bm25"] = "off"
+    # Zone weight of the chunk's section heading (the body zone is always 1.0).
+    SPARSE_HEADING_ZONE_WEIGHT: float = 2.0
 
     # --- Broad-query map-reduce / P1 (memory.md "P1 roadmap") ---
     # Off by default (same pattern as HIERARCHICAL_RETRIEVAL_ENABLED/RERANKER_ENABLED/
