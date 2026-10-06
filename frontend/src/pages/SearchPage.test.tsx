@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { Document } from "../types/documents";
 import type { Notebook } from "../types/knowledge";
-import type { ContextBlock } from "../types/retrieval";
+import type { ContextBlock, SparseSearchResponse } from "../types/retrieval";
 import { notebooksApi } from "../services/notebooksService";
 import { documentsApi } from "../services/documentsService";
 import { retrievalApi } from "../services/retrievalService";
@@ -26,6 +26,7 @@ vi.mock("../services/documentsService", () => ({
 vi.mock("../services/retrievalService", () => ({
   retrievalApi: {
     search: vi.fn(),
+    sparseSearch: vi.fn(),
   },
 }));
 
@@ -94,6 +95,7 @@ describe("SearchPage", () => {
     vi.mocked(notebooksApi.list).mockReset();
     vi.mocked(documentsApi.listDocuments).mockReset();
     vi.mocked(retrievalApi.search).mockReset();
+    vi.mocked(retrievalApi.sparseSearch).mockReset();
   });
 
   it("renders the notebook picker populated from notebooksApi.list", async () => {
@@ -226,6 +228,138 @@ describe("SearchPage", () => {
 
     await waitFor(() =>
       expect(screen.getByText("Search failed. Please try again.")).toBeInTheDocument(),
+    );
+  });
+
+  it("runs a Boolean query against /retrieval/sparse-search and shows the merge trace", async () => {
+    vi.mocked(notebooksApi.list).mockResolvedValue([makeNotebook({ id: "nb-1", name: "Chemistry" })]);
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([
+      makeDoc({ id: "doc-1", title: "kech104.pdf" }),
+    ]);
+    const response: SparseSearchResponse = {
+      query: "hydrogen AND bond NOT covalent",
+      mode: "boolean",
+      analysis: {
+        raw_tokens: ["hydrogen", "bond", "covalent"],
+        casefolded: ["hydrogen", "bond", "covalent"],
+        stop_words_removed: [],
+        kept_tokens: ["hydrogen", "bond", "covalent"],
+        stems: ["hydrogen", "bond", "coval"],
+        terms: [],
+        ranked: null,
+        phrase: null,
+        boolean: {
+          operators: ["AND", "NOT"],
+          clauses: [
+            {
+              operands: [],
+              steps: [
+                { op: "START", term: "hydrogen", df: 12, result_size: 12 },
+                { op: "AND NOT", term: "coval", df: 20, result_size: 4 },
+              ],
+              result_size: 4,
+            },
+          ],
+          union_steps: [{ op: "OR", term: "clause 1", df: 4, result_size: 4 }],
+        },
+      },
+      index_stats: {
+        n_docs: 110,
+        vocabulary_size: 2000,
+        avg_postings_length: 3,
+        zones: ["body", "heading"],
+        champion_r: 50,
+        cached: false,
+        build_ms: 40,
+        query_ms: 0.5,
+        total_ms: 60,
+      },
+      total_matches: 4,
+      results: [
+        {
+          rank: 1,
+          chunk_id: "chunk-7",
+          document_id: "doc-1",
+          document_title: "kech104.pdf",
+          heading: "Hydrogen Bonding",
+          content: "A hydrogen bond is weaker.",
+          snippet: "A hydrogen bond is weaker.",
+          char_start: 10,
+          char_end: 36,
+          page_start: 31,
+          page_end: 31,
+          score: null,
+          contributions: [],
+          matched_terms: ["hydrogen", "bond"],
+          highlights: ["hydrogen", "bond"],
+          phrase_matches: [],
+        },
+      ],
+    };
+    vi.mocked(retrievalApi.sparseSearch).mockResolvedValue(response);
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "Chemistry" })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Boolean" }));
+    expect(screen.getByRole("tab", { name: "Boolean" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText(/Postings are merged in increasing-df order/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Notebook"), { target: { value: "nb-1" } });
+    fireEvent.change(screen.getByLabelText("Query"), {
+      target: { value: "hydrogen AND bond NOT covalent" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() =>
+      expect(retrievalApi.sparseSearch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          notebook_id: "nb-1",
+          query: "hydrogen AND bond NOT covalent",
+          mode: "boolean",
+        }),
+      ),
+    );
+    expect(retrievalApi.search).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText("Query analysis")).toBeInTheDocument());
+    expect(screen.getByText(/START/).closest("li")).toHaveTextContent("hydrogen (df 12) = 12");
+    expect(screen.getByLabelText("Index statistics")).toHaveTextContent("N = 110 chunks");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open source #1" }));
+    await waitFor(() => expect(screen.getByText("Source [1]")).toBeInTheDocument());
+    expect(screen.getByText("Page 31")).toBeInTheDocument();
+  });
+
+  it("shows ranked options only on the Ranked tab and sends them", async () => {
+    vi.mocked(notebooksApi.list).mockResolvedValue([makeNotebook({ id: "nb-1", name: "Chemistry" })]);
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([]);
+    vi.mocked(retrievalApi.sparseSearch).mockRejectedValue(new Error("x"));
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "Chemistry" })).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("radiogroup", { name: "Scoring scheme" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Ranked (tf-idf / BM25)" }));
+    fireEvent.click(screen.getByRole("radio", { name: "tf-idf (lnc.ltc)" }));
+    fireEvent.click(screen.getByLabelText("Champion lists"));
+    fireEvent.change(screen.getByLabelText("Notebook"), { target: { value: "nb-1" } });
+    fireEvent.change(screen.getByLabelText("Query"), { target: { value: "octet rule" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() =>
+      expect(retrievalApi.sparseSearch).toHaveBeenCalledWith({
+        notebook_id: "nb-1",
+        query: "octet rule",
+        mode: "ranked",
+        k: 10,
+        scheme: "tfidf",
+        use_champions: true,
+        idf_threshold: 0,
+        zone_weights: { heading: 2, body: 1 },
+      }),
     );
   });
 });
