@@ -6,13 +6,13 @@ import { Sidebar } from "./Sidebar";
 
 vi.mock("../hooks/useAuth", () => ({ useAuth: vi.fn() }));
 
-function mockUser(role: "owner" | "admin" | "member" = "owner") {
+function mockUser(role: "owner" | "admin" | "member" = "owner", name: string | null = null) {
   vi.mocked(useAuth).mockReturnValue({
     user: {
       id: "u-1",
       org_id: "org-1",
       email: "u@test.com",
-      name: null,
+      name,
       role,
       is_active: true,
       created_at: "2026-01-01T00:00:00Z",
@@ -81,5 +81,25 @@ describe("Sidebar (mobile off-canvas drawer)", () => {
     renderSidebar(true, onClose);
     fireEvent.click(screen.getByText("Repository"));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("has its own close button inside the drawer", () => {
+    const onClose = vi.fn();
+    renderSidebar(true, onClose);
+    fireEvent.click(screen.getByRole("button", { name: "Close menu" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the display name with the email as tooltip", () => {
+    mockUser("owner", "Dana Demo");
+    renderSidebar(false);
+    const name = screen.getByText("Dana Demo");
+    expect(name.closest("[title]")).toHaveAttribute("title", "u@test.com");
+    expect(screen.queryByText("u@test.com")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the email when no name is on file", () => {
+    renderSidebar(false);
+    expect(screen.getByText("u@test.com")).toBeInTheDocument();
   });
 });

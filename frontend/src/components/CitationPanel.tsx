@@ -44,7 +44,7 @@ export function CitationPanel({
           type="button"
           onClick={onClose}
           aria-label="Close citation panel"
-          className="text-muted hover:text-text transition p-1 rounded"
+          className="text-lg leading-none text-muted hover:text-text hover:bg-surface transition px-2 py-1 rounded-md"
         >
           ×
         </button>
@@ -52,7 +52,7 @@ export function CitationPanel({
 
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {doc && (
-          <p className="text-xs text-muted truncate" title={doc.title}>
+          <p className="text-sm font-medium text-text truncate" title={doc.title}>
             {doc.title}
           </p>
         )}

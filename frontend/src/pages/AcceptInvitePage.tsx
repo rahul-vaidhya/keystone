@@ -1,9 +1,11 @@
 import { FormEvent, useState } from "react";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { Navigate, useSearchParams } from "react-router-dom";
 import { ApiError } from "../types/auth";
 import { useAuth } from "../hooks/useAuth";
 
 export function AcceptInvitePage() {
+  useDocumentTitle("Accept invite");
   const { user, acceptInvite } = useAuth();
   const [searchParams] = useSearchParams();
   const org = searchParams.get("org");

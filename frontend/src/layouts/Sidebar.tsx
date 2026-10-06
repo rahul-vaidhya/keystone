@@ -69,7 +69,10 @@ export function Sidebar({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose]);
 
-  const initial = user?.email?.[0]?.toUpperCase() ?? "?";
+  // U14: show the real display name, email as tooltip; fall back to the email
+  // when no name is on file (pre-name signups, invited members).
+  const displayName = user?.name?.trim() || user?.email || "";
+  const initial = displayName[0]?.toUpperCase() ?? "?";
 
   return (
     <>
@@ -85,13 +88,23 @@ export function Sidebar({
         id="app-sidebar"
         className={`fixed inset-y-0 left-0 z-40 transition-transform duration-200 ${
           isOpen ? "translate-x-0" : "-translate-x-full"
-        } lg:translate-x-0 lg:static w-60 shrink-0 bg-bg border-r border-border flex flex-col h-screen`}
+        } lg:translate-x-0 lg:static w-60 shrink-0 bg-bg border-r border-border flex flex-col h-dvh lg:h-full`}
       >
-        <div className="px-4 py-4">
+        <div className="px-4 py-4 flex items-center justify-between">
           <span className="font-semibold tracking-tight text-lg">Veratas</span>
+          {/* F7: the drawer covers the top bar's toggle, so it carries its own
+              close button (mobile only). */}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close menu"
+            className="lg:hidden text-xl leading-none text-muted hover:text-text transition p-1 rounded-md hover:bg-surface"
+          >
+            ✕
+          </button>
         </div>
 
-        <nav aria-label="Main navigation" className="flex-1 px-2 space-y-1">
+        <nav aria-label="Main navigation" className="flex-1 min-h-0 overflow-y-auto px-2 space-y-1">
           <NavItem to="/app" label="Home" onNavigate={onClose} />
           <NavItem to="/app/repository" label="Repository" onNavigate={onClose} />
           <NavItem to="/app/notebooks" label="Notebooks" onNavigate={onClose} />
@@ -105,12 +118,12 @@ export function Sidebar({
         </nav>
 
         <div className="px-2 pb-3 space-y-1 border-t border-border pt-3">
-          <div className="flex items-center gap-2 px-3 py-2">
+          <div className="flex items-center gap-2 px-3 py-2" title={user?.email}>
             <span className="w-7 h-7 rounded-full bg-accent text-white text-xs flex items-center justify-center shrink-0">
               {initial}
             </span>
             <div className="min-w-0 flex-1">
-              <p className="text-sm truncate">{user?.email}</p>
+              <p className="text-sm truncate">{displayName}</p>
               <p className="text-xs text-muted">
                 {user ? (ROLE_LABEL[user.role] ?? user.role) : ""}
               </p>

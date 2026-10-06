@@ -1,10 +1,12 @@
 import { FormEvent, useEffect, useState } from "react";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { Link, Navigate } from "react-router-dom";
 import { ApiError } from "../types/auth";
 import { useAuth } from "../hooks/useAuth";
 import { clearSessionNotice, peekSessionNotice } from "../services/http";
 
 export function LoginPage() {
+  useDocumentTitle("Sign in");
   const { user, login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

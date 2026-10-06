@@ -5,6 +5,7 @@ import { documentsApi } from "../services/documentsService";
 import { notebooksApi } from "../services/notebooksService";
 import { useDialog } from "../hooks/useDialog";
 import { useAuth } from "../hooks/useAuth";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { ApiError } from "../types/auth";
 import type { Document } from "../types/documents";
 import { StatusBadge } from "../components/StatusBadge";
@@ -28,6 +29,8 @@ export function NotebookPage() {
     queryFn: () => notebooksApi.get(notebookId!),
     enabled: !!notebookId,
   });
+
+  useDocumentTitle(notebookQuery.data?.name ?? "Notebook");
 
   const isOwner = !!user && notebookQuery.data?.created_by === user.id;
 

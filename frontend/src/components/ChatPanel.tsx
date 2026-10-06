@@ -289,10 +289,14 @@ function AnswerText({
   );
 }
 
+// Shared look for the per-answer action row (Copy / 👍 / 👎 / Debug).
+const ACTION_BTN =
+  "text-xs text-muted hover:text-text hover:bg-surface rounded-md px-2 py-1 transition";
+
 function ClaimCheckSummary({ checks }: { checks: ClaimCheck[] }) {
   const count = (s: ClaimCheck["status"]) => checks.filter((c) => c.status === s).length;
   return (
-    <p className="text-xs text-muted mt-1" data-testid="claim-check-summary">
+    <p className="text-xs text-muted mt-1.5 px-2" data-testid="claim-check-summary">
       Claim check: {count("supported")} supported · {count("weak")} weak ·{" "}
       {count("uncited")} uncited
     </p>
@@ -347,7 +351,7 @@ export function ChatPanel({
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Record<string, "up" | "down" | undefined>>({});
   const abortRef = useRef<(() => void) | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   // Abort in-progress stream on unmount.
   useEffect(() => {
@@ -403,10 +407,11 @@ export function ChatPanel({
     };
   }, [notebookId]);
 
-  // Auto-scroll to bottom whenever messages update.
-  // Use ?.() so jsdom (which doesn't implement scrollIntoView) doesn't throw in tests.
+  // Auto-scroll the message list (only it — never the page/shell, which
+  // scrollIntoView would also move) to the newest message whenever messages update.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView?.({ behavior: "smooth" });
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   // Shared by the form's Enter/Ask-button submit AND the starter-question chips (Finding
@@ -503,9 +508,9 @@ export function ChatPanel({
       {/* Chat area */}
       <div className="flex flex-col flex-1 min-h-0">
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto p-4 space-y-5">
           {messages.length === 0 && !isLoadingHistory && (
-            <div className="text-center mt-8 space-y-3">
+            <div className="text-center mt-12 max-w-md mx-auto space-y-4">
               <p className="text-muted text-sm">
                 {hasDocuments
                   ? "Ask a question about the documents in this notebook."
@@ -577,12 +582,12 @@ export function ChatPanel({
                 )}
 
                 {canRate && (
-                  <div className="max-w-[80%] w-full flex items-center gap-3 mt-1">
+                  <div className="max-w-[80%] w-full flex items-center gap-1 mt-0.5 text-xs">
                     <button
                       type="button"
                       aria-label="Copy answer"
                       onClick={() => void handleCopy(msg)}
-                      className="text-xs text-muted hover:text-text"
+                      className={ACTION_BTN}
                     >
                       {copiedMessageId === msg.messageId ? "Copied" : "Copy"}
                     </button>
@@ -591,10 +596,10 @@ export function ChatPanel({
                       aria-label="Good response"
                       aria-pressed={feedback[msg.messageId!] === "up"}
                       onClick={() => handleFeedback(msg.messageId!, "up")}
-                      className={`text-xs ${
+                      className={`${ACTION_BTN} ${
                         feedback[msg.messageId!] === "up"
-                          ? "text-accent"
-                          : "text-muted hover:text-text"
+                          ? "bg-surface"
+                          : "grayscale opacity-60 hover:opacity-100 hover:grayscale-0"
                       }`}
                     >
                       👍
@@ -604,27 +609,35 @@ export function ChatPanel({
                       aria-label="Bad response"
                       aria-pressed={feedback[msg.messageId!] === "down"}
                       onClick={() => handleFeedback(msg.messageId!, "down")}
-                      className={`text-xs ${
+                      className={`${ACTION_BTN} ${
                         feedback[msg.messageId!] === "down"
-                          ? "text-danger"
-                          : "text-muted hover:text-text"
+                          ? "bg-surface"
+                          : "grayscale opacity-60 hover:opacity-100 hover:grayscale-0"
                       }`}
                     >
                       👎
                     </button>
+                    {canDebug && (
+                      <>
+                        <span className="text-border mx-1" aria-hidden="true">
+                          |
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setOpenTraceIndex(openTraceIndex === i ? null : i)}
+                          aria-expanded={openTraceIndex === i}
+                          className={ACTION_BTN}
+                        >
+                          {openTraceIndex === i ? "Hide debug" : "Debug"}
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
 
-                {canDebug && (
+                {canDebug && openTraceIndex === i && (
                   <div className="max-w-[80%] w-full">
-                    <button
-                      type="button"
-                      onClick={() => setOpenTraceIndex(openTraceIndex === i ? null : i)}
-                      className="text-xs text-muted hover:text-text mt-1 underline"
-                    >
-                      {openTraceIndex === i ? "Hide debug" : "Debug"}
-                    </button>
-                    {openTraceIndex === i && msg.messageId && (
+                    {msg.messageId && (
                       <TraceDetails messageId={msg.messageId} claimChecks={msg.claimChecks} />
                     )}
                   </div>
@@ -633,7 +646,6 @@ export function ChatPanel({
             );
           })}
 
-          <div ref={bottomRef} />
         </div>
 
         {/* Input */}
