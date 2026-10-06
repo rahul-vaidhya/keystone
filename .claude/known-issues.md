@@ -12,7 +12,7 @@
 | D2 | Broad questions ("Summarize this chapter") refuse — `BROAD_QUERY_ENABLED` off; starter chip "Summarize the key points" likely refuses on large notebooks | FIXED (`ed9cdc3`; flags appended to backend/.env + enrich-backfill run) |
 | D3 | Citation panel shows whole-doc "Pages 1–36" instead of the cited page; shows dev details (`chars 7053–8053`, raw `### Page 3` markdown) | FIXED (`ed9cdc3`) |
 | D4 | Overview tab visible but `NOTEBOOK_OVERVIEW_ENABLED` off → Generate returns 409 | FIXED (`ed9cdc3`; NOTEBOOK_OVERVIEW_ENABLED=true in backend/.env, verified live) |
-| D5 | Markdown not rendered in chat answers / Overview: LLM bold `**Heading**` shows raw asterisks in numbered lists (seen live 2026-10-07) | OPEN |
+| D5 | Markdown not rendered in chat answers / Overview: LLM bold `**Heading**` shows raw asterisks in numbered lists (seen live 2026-10-07) | FIXED (d63b766) |
 | D6 | Answers asked BEFORE `ed9cdc3` keep their old persisted claim checks (noisier "uncited" counts) — use fresh questions in the demo, or clear the demo notebook history | OPEN (note) |
 | D7 | Broad-query answers take ~50s; broad answers cite parser page-label sections ("Page 1", "Contents") because `SEMANTIC_OUTLINE_ENABLED` is off | OPEN |
 
