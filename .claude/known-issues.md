@@ -47,7 +47,7 @@
 | U14 | Low. Accept-invite has no name field (greeting "Qa Membera+"); sidebar shows email not name | PARTIAL (01c8245): sidebar shows display name (email tooltip/fallback); accept-invite name field still open |
 | U15 | Low. Server-side validation errors are raw Pydantic text; no confirm-password fields; "incorrect password" shown twice | OPEN |
 | U16 | Low. Login is per-tab (sessionStorage) — new tab needs re-login | OPEN (by design?) |
-| U17 | Low. Search returns 8 random chunks for gibberish (no relevance cutoff, no scores); search source panel lacks page info | OPEN |
+| U17 | Low. Search returns 8 random chunks for gibberish (no relevance cutoff, no scores); search source panel lacks page info | PARTLY FIXED (4de678d: semantic cards + source panel now show page and score; no relevance cutoff for gibberish yet) |
 | U18 | Low. Share dialog lists the owner as a share target; folder-move select is a flat list | OPEN |
 
 ## Test accounts left in dev DB (2026-10-07)
@@ -61,13 +61,13 @@
 |----|---------|--------|
 | F1 | Medium. Notebook page scrolls the whole window on desktop once a chat is long (~10 msgs): sidebar/header/tabs scroll off, Ask box can fall below the fold after opening a citation. Likely `AppShell.tsx` `min-h-screen` instead of `h-screen` + `overflow-hidden` | FIXED (01c8245) |
 | F2 | Medium (demo). Heading-zone slider has no effect on kech104.pdf (headings are parser "Page N" → 0 heading postings; enable `SEMANTIC_OUTLINE_ENABLED` + re-ingest for real headings). Champion lists only visible for frequent terms (use "bond": 85→50 candidates) | OPEN |
-| F3 | Low. Phrase-mode snippet not centred on an actual phrase occurrence (positions correct) | OPEN |
-| F4 | Low. Boolean: malformed queries (`AND NOT`, unsupported parentheses) give no "malformed query" hint | OPEN |
-| F5 | Low. "N matching chunks" vs only top-k cards shown, no "showing top 10" note | OPEN |
-| F6 | Low. "Why this score?" bars scaled to max term but column labelled "share" | OPEN |
-| F7 | Low. Mobile: "Phrase" search tab cut off (tab row scrolls); open drawer covers its own ✕ | OPEN (drawer part fixed in 01c8245; Phrase tab cut-off owned by Search agent) |
+| F3 | Low. Phrase-mode snippet not centred on an actual phrase occurrence (positions correct) | FIXED (4de678d) |
+| F4 | Low. Boolean: malformed queries (`AND NOT`, unsupported parentheses) give no "malformed query" hint | FIXED (4de678d) |
+| F5 | Low. "N matching chunks" vs only top-k cards shown, no "showing top 10" note | FIXED (4de678d) |
+| F6 | Low. "Why this score?" bars scaled to max term but column labelled "share" | FIXED (4de678d) |
+| F7 | Low. Mobile: "Phrase" search tab cut off (tab row scrolls); open drawer covers its own ✕ | FIXED (drawer 01c8245; Phrase tab 4de678d) |
 | F8 | Low. List item without own `[n]` is "uncited" even when the next list item cites (per-item scope by design; looks harsh) | OPEN |
-| F9 | Low. Broad-query answers get no claim-check line; semantic search cards show raw `### Page N` and no page/score | OPEN |
+| F9 | Low. Broad-query answers get no claim-check line; semantic search cards show raw `### Page N` and no page/score | PARTLY FIXED (semantic cards 4de678d; broad-query claim-check line still open) |
 | F10 | Info. Citation checker measured on SciFact (`backend/eval/results/citation_check_eval.md`): app threshold 0.33 kept for demo; eval recommends 0.49 for precision (F1 vs hard negatives 0.52→0.61) — decision pending | OPEN (decision) |
 
 Final QA account: `final-qa+1791317653@example.com` / `FinalQa!2026new`.
