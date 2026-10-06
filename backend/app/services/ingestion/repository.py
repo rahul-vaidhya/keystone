@@ -25,6 +25,9 @@ from app.models.ingestion import (
 )
 from app.services.base import BaseRepository
 
+# A parser page-marker line, e.g. "### Page 3" (cloudflare-ai emits one per PDF page).
+PAGE_MARKER_SQL_RE = r"(^|\n)#{1,6} *Page +[0-9]+ *(\n|$)"
+
 
 class SectionRepository(BaseRepository[Section]):
     model = Section
@@ -144,6 +147,34 @@ class ChunkRepository(BaseRepository[Chunk]):
         )
         result = await self._db.execute(stmt)
         return [(chunk, page_start, page_end) for chunk, page_start, page_end in result]
+
+    async def latest_page_marker_chunk_before(
+        self, document_id: uuid.UUID, char_start: int
+    ) -> str | None:
+        """Content of the nearest chunk of ``document_id`` STRICTLY before ``char_start``
+        that contains a parser page marker line (``### Page N``), org-scoped — the page
+        a marker-less chunk starts on is the last marker preceding it in the document.
+        ``None`` if no earlier chunk carries a marker."""
+        stmt = (
+            select(Chunk.content)
+            .where(
+                Chunk.org_id == self._ctx.org_id,
+                Chunk.document_id == document_id,
+                Chunk.char_start < char_start,
+                Chunk.content.op("~")(PAGE_MARKER_SQL_RE),
+            )
+            .order_by(Chunk.char_start.desc())
+            .limit(1)
+        )
+        return await self._db.scalar(stmt)
+
+    async def document_max_page(self, document_id: uuid.UUID) -> int | None:
+        """Largest ``sections.page_end`` of ``document_id``, org-scoped — used to tell a
+        whole-document page range (1..max) apart from a real one."""
+        stmt = select(func.max(Section.page_end)).where(
+            Section.org_id == self._ctx.org_id, Section.document_id == document_id
+        )
+        return await self._db.scalar(stmt)
 
     async def search_chunks_lexical(
         self,

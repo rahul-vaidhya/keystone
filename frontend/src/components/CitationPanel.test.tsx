@@ -42,11 +42,30 @@ const documents: Document[] = [
 ];
 
 describe("CitationPanel", () => {
-  it("still renders the char-offset line for every citation", () => {
+  it("keeps char offsets out of the main view (admin Debug panel only)", () => {
     render(
       <CitationPanel citation={makeCitation()} documents={documents} onClose={vi.fn()} />,
     );
-    expect(screen.getByText("chars 0–13")).toBeTruthy();
+    expect(screen.queryByText(/chars/)).toBeNull();
+    expect(screen.getByText("relevant text")).toBeTruthy();
+  });
+
+  it("drops page-marker lines and strips markdown heading markers from the snippet", () => {
+    render(
+      <CitationPanel
+        citation={makeCitation({
+          content: "### Page 3\n## 4.1 Ionic Bonds\nIonic bonds form by transfer.",
+          page_start: 3,
+          page_end: 3,
+        })}
+        documents={documents}
+        onClose={vi.fn()}
+      />,
+    );
+    const quote = document.querySelector("blockquote")!;
+    expect(quote.textContent).toBe("4.1 Ionic Bonds\nIonic bonds form by transfer.");
+    expect(quote.textContent).not.toContain("#");
+    expect(screen.getByText("Page 3")).toBeTruthy();
   });
 
   it("renders 'Page N' when page_start === page_end", () => {
@@ -91,8 +110,6 @@ describe("CitationPanel", () => {
       />,
     );
     expect(screen.queryByText(/^Page/)).toBeNull();
-    // The char-offset fallback line is still there, unchanged.
-    expect(screen.getByText("chars 0–13")).toBeTruthy();
   });
 
   it("renders a section citation without char offsets, showing the heading instead", () => {

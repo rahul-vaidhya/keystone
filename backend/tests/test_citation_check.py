@@ -22,7 +22,9 @@ from app.models.documents import Document
 from app.models.ingestion import Chunk, Embedding
 from app.models.retrieval import ContextBlock
 from app.services.chat.citation_check import (
+    assign_citations,
     check_claims,
+    chunk_windows,
     is_checkable,
     score_claims,
     sentence_markers,
@@ -100,7 +102,7 @@ def test_supported_vs_weak_vs_uncited_lexical_only() -> None:
         "This sentence makes a claim without any citation.",
     ]
     checks = score_claims(
-        sentences,
+        assign_citations("\n".join(sentences)),
         blocks,
         lexical_fn=lambda a, b: tfidf_cosine(index, a, b),
         vectors=None,
@@ -119,7 +121,11 @@ def test_combined_score_is_mean_of_lexical_and_semantic() -> None:
     text = strip_markers(sentence)
     vectors = {text: [1.0, 0.0], OCTET: [1.0, 0.0]}  # semantic cosine = 1.0
     checks = score_claims(
-        [sentence], blocks, lexical_fn=lambda a, b: 0.2, vectors=vectors, threshold=0.5
+        assign_citations(sentence),
+        blocks,
+        lexical_fn=lambda a, b: 0.2,
+        vectors=vectors,
+        threshold=0.5,
     )
     assert checks[0].lexical == 0.2
     assert checks[0].semantic == 1.0
@@ -129,13 +135,77 @@ def test_combined_score_is_mean_of_lexical_and_semantic() -> None:
 
 def test_out_of_range_marker_is_weak_with_no_scores() -> None:
     checks = score_claims(
-        ["This cites a source that was never sent [9]."],
+        assign_citations("This cites a source that was never sent [9]."),
         [_block(1, OCTET)],
         lexical_fn=lambda a, b: 1.0,
         vectors=None,
         threshold=0.3,
     )
     assert checks[0].status == "weak" and checks[0].score is None
+
+
+def test_unmarked_sentences_inherit_paragraph_citations() -> None:
+    answer = (
+        "Here are the key points:\n"
+        "Atoms gain or lose electrons. They aim for eight valence electrons [1].\n"
+        "- Fajans rules cover covalent character [2]. Polarisation increases it.\n"
+        "This paragraph has no citation marker at all."
+    )
+    claims = assign_citations(answer)
+    # The lead-in line ending in ":" is not a claim.
+    assert claims == [
+        ("Atoms gain or lose electrons.", [1], True),
+        ("They aim for eight valence electrons [1].", [1], False),
+        ("- Fajans rules cover covalent character [2].", [2], False),
+        ("Polarisation increases it.", [2], True),
+        ("This paragraph has no citation marker at all.", [], False),
+    ]
+    index = _index()
+    checks = score_claims(
+        claims,
+        [_block(1, OCTET), _block(2, FAJANS)],
+        lexical_fn=lambda a, b: tfidf_cosine(index, a, b),
+        vectors=None,
+        threshold=0.3,
+    )
+    assert [c.citations_inherited for c in checks] == [True, False, False, True, False]
+    assert checks[0].citations == [1] and checks[0].score is not None
+    assert checks[-1].status == "uncited"
+
+
+def test_inherited_but_unsupported_sentence_is_weak() -> None:
+    index = _index()
+    checks = score_claims(
+        assign_citations("Bananas are a tropical fruit grown widely. Atoms want an octet [1]."),
+        [_block(1, OCTET)],
+        lexical_fn=lambda a, b: tfidf_cosine(index, a, b),
+        vectors=None,
+        threshold=0.3,
+    )
+    assert checks[0].citations_inherited and checks[0].status == "weak"
+
+
+def test_lexical_score_uses_best_matching_window_not_whole_chunk() -> None:
+    long_chunk = (
+        "### Page 3\n"
+        "Lattice enthalpy measures the energy to separate an ionic solid. "
+        + (FAJANS + " ") * 4
+        + "Bananas are a tropical fruit. "
+        + "The octet rule says atoms gain or lose electrons to reach eight valence electrons."
+    )
+    windows = chunk_windows(long_chunk)
+    assert "### Page 3" not in windows
+    index = _index()
+    sentence = "Atoms gain or lose electrons to reach eight valence electrons."
+    whole = tfidf_cosine(index, sentence, long_chunk)
+    [check] = score_claims(
+        assign_citations(sentence + " [1]"),
+        [_block(1, long_chunk)],
+        lexical_fn=lambda a, b: tfidf_cosine(index, a, b),
+        vectors=None,
+        threshold=0.3,
+    )
+    assert check.lexical > whole + 0.2 and check.lexical > 0.85
 
 
 class _CountingEmbedder:
@@ -208,7 +278,8 @@ class _TwoSentenceLLM:
 
     async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
         answer = (
-            "Atoms gain or lose electrons to reach eight valence electrons [1]. "
+            # Own paragraph -> no marker to inherit -> "uncited".
+            "Atoms gain or lose electrons to reach eight valence electrons [1].\n"
             "This extra sentence makes a claim with no citation at all."
         )
         for token in answer.split(" "):

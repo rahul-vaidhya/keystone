@@ -1,6 +1,22 @@
 import type { ResolvedCitation } from "../types/chat";
 import type { Document } from "../types/documents";
 
+// The parser emits markdown: a "### Page N" line per PDF page plus "#"-style headings.
+// The page is already shown above the quote, so page-marker lines are dropped and other
+// heading markers are stripped so the snippet reads as plain text. Char offsets live in
+// the admin Debug panel only.
+const PAGE_MARKER_LINE = /^#{1,6}\s*Page\s+\d+\s*$/;
+const HEADING_PREFIX = /^#{1,6}\s+/;
+
+function cleanSnippet(content: string): string {
+  return content
+    .split("\n")
+    .filter((line) => !PAGE_MARKER_LINE.test(line.trim()))
+    .map((line) => line.replace(HEADING_PREFIX, ""))
+    .join("\n")
+    .trim();
+}
+
 export function CitationPanel({
   citation,
   documents,
@@ -12,10 +28,8 @@ export function CitationPanel({
 }) {
   const doc = documents.find((d) => d.id === citation.document_id);
   const isSection = citation.citation_type === "section";
-  // Page info is chunk-path only (always null on the section path — a synthesized
-  // section-level answer has no single page to point at), so isSection alone would
-  // already gate this off, but check page_start too so a chunk citation with no
-  // recovered page info still falls through cleanly.
+  // Page info is chunk-path only and null when unknown (the backend also nulls a
+  // whole-document range, which says nothing about where the text is) — hide it then.
   const hasPageInfo = !isSection && citation.page_start !== null;
   const pageLabel =
     citation.page_end === null || citation.page_end === citation.page_start
@@ -43,17 +57,11 @@ export function CitationPanel({
           </p>
         )}
         {hasPageInfo && <p className="text-xs text-muted">{pageLabel}</p>}
-        {isSection ? (
-          citation.heading && (
-            <p className="text-xs text-muted">Section: {citation.heading}</p>
-          )
-        ) : (
-          <p className="font-mono text-xs text-muted">
-            chars {citation.char_start}–{citation.char_end}
-          </p>
+        {isSection && citation.heading && (
+          <p className="text-xs text-muted">Section: {citation.heading}</p>
         )}
         <blockquote className="border-l-2 border-accent pl-3 text-sm text-text whitespace-pre-wrap leading-relaxed">
-          {citation.content}
+          {cleanSnippet(citation.content)}
         </blockquote>
       </div>
     </div>

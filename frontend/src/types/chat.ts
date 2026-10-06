@@ -26,11 +26,15 @@ export type ResolvedCitation = {
 };
 
 // Per-sentence citation check (backend CITATION_CHECK_ENABLED) — mirrors
-// app.models.chat.ClaimCheck. lexical = tf-idf cosine (from-scratch sparse index),
+// app.models.chat.ClaimCheck. lexical = best tf-idf cosine over the cited chunk's sentence
+// windows (from-scratch sparse index),
 // semantic = embedding cosine, score = mean of whichever are available.
 export type ClaimCheck = {
   sentence: string;
   citations: number[];
+  // True when the sentence has no [n] of its own and `citations` were inherited from
+  // the marker at the end of its paragraph / list item.
+  citations_inherited?: boolean;
   lexical: number | null;
   semantic: number | null;
   score: number | null;

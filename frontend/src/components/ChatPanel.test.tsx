@@ -496,7 +496,16 @@ describe("ChatPanel", () => {
       expect(weak.getAttribute("title")).toContain("combined 0.06");
       const uncited = container.querySelector('[data-claim-status="uncited"]')!;
       expect(uncited).toHaveTextContent("This has no source at all.");
-      expect(container.querySelector('[data-claim-status="supported"]')).toBeNull();
+      expect(uncited.className).toContain("decoration-dotted");
+      expect(uncited.getAttribute("title")).toContain("Uncited");
+      // Supported sentences carry a score tooltip but stay visually quiet.
+      const supported = container.querySelector('[data-claim-status="supported"]')!;
+      expect(supported).toHaveTextContent("Atoms want eight electrons");
+      expect(supported.getAttribute("title")).toContain("Supported by [1]");
+      expect(supported.getAttribute("title")).toContain("combined 0.67");
+      expect(supported.className).not.toContain("underline");
+      expect(supported.textContent).not.toContain("⚠");
+      expect(weak.textContent).toContain("⚠");
       // Existing [n] citation buttons still render (one per marker occurrence).
       expect(screen.getAllByRole("button", { name: "[1]" })).toHaveLength(2);
     });
@@ -518,6 +527,62 @@ describe("ChatPanel", () => {
           "1 supported · 1 weak · 1 uncited",
         ),
       );
+    });
+
+    it("explains inherited paragraph citations in the tooltip", async () => {
+      const inheritedAnswer = "Atoms gain electrons. They want an octet [1].";
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(
+          makeDoneResponse({
+            answer: inheritedAnswer,
+            claim_checks: [
+              {
+                sentence: "Atoms gain electrons.",
+                citations: [1],
+                citations_inherited: true,
+                lexical: 0.5,
+                semantic: 0.6,
+                score: 0.55,
+                status: "supported",
+              },
+            ],
+          }),
+        );
+        return () => {};
+      });
+      const { container } = render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      const input = screen.getByPlaceholderText("Ask a question…");
+      fireEvent.change(input, { target: { value: "test" } });
+      fireEvent.submit(input.closest("form")!);
+      await waitFor(() =>
+        expect(container.querySelector('[data-claim-status="supported"]')).not.toBeNull(),
+      );
+      expect(
+        container.querySelector('[data-claim-status="supported"]')!.getAttribute("title"),
+      ).toContain("covered by [1] at the end of the paragraph");
+    });
+
+    it("lists claim checks with scores in the admin Debug panel", async () => {
+      mockUser("admin");
+      vi.mocked(chatApi.streamAsk).mockImplementation((_params, callbacks) => {
+        callbacks.onDone(
+          makeDoneResponse({ answer, claim_checks: checks, message_id: "msg-claims" }),
+        );
+        return () => {};
+      });
+      vi.mocked(chatApi.getTrace).mockResolvedValue(makeTrace());
+      render(<ChatPanel notebookId="nb-1" documents={[makeDoc()]} />);
+      const input = screen.getByPlaceholderText("Ask a question…");
+      fireEvent.change(input, { target: { value: "test" } });
+      fireEvent.submit(input.closest("form")!);
+      await waitFor(() => expect(screen.getByText("Debug")).toBeInTheDocument());
+      fireEvent.click(screen.getByText("Debug"));
+      const table = await screen.findByRole("table", { name: "Claim checks" });
+      expect(table).toHaveTextContent("Bananas are yellow");
+      expect(table).toHaveTextContent("0.62");
+      expect(table).toHaveTextContent("0.71");
+      expect(table).toHaveTextContent("weak");
+      expect(table).toHaveTextContent("uncited");
     });
 
     it("renders no summary when claim checks are absent", async () => {

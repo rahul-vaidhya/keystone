@@ -145,13 +145,14 @@ class Settings(BaseSettings):
     # over the from-scratch sparse index, semantic = embedding cosine (one batched
     # Embedder call) — and the result is returned + persisted as messages.claim_checks.
     CITATION_CHECK_ENABLED: bool = False
-    # Threshold on the COMBINED score (mean of lexical + semantic). 0.30 is a heuristic,
-    # not a calibrated value: a sentence faithfully paraphrasing a ~1000-char chunk
-    # typically lands around 0.1-0.4 tf-idf cosine (the chunk has many extra terms) and
-    # well above ~0.4 embedding cosine, so a supported claim's mean sits near/above 0.3,
-    # while an unrelated sentence scores ~0 lexically and low semantically (mean well
-    # under 0.2). Tune it against real traces before relying on it.
-    CITATION_SUPPORT_THRESHOLD: float = 0.30
+    # Threshold on the COMBINED score (mean of lexical + semantic, where lexical = max
+    # tf-idf cosine over the cited chunk's sentence windows and semantic = embedding
+    # cosine against the whole chunk). Calibrated 2026-10-07 on kech104.pdf with
+    # text-embedding-3-small: 35 cited/inherited answer sentences vs. the same sentences
+    # paired with a random OTHER retrieved chunk (same-domain negatives) -> supported
+    # p10 0.37 / median 0.57, negatives median 0.23 / p90 0.28; 0.33 separates 35/35
+    # positives from 34/35 negatives. Re-calibrate if the embedder model changes.
+    CITATION_SUPPORT_THRESHOLD: float = 0.33
 
     # --- Broad-query map-reduce / P1 (memory.md "P1 roadmap") ---
     # Off by default (same pattern as HIERARCHICAL_RETRIEVAL_ENABLED/RERANKER_ENABLED/

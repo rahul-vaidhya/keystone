@@ -213,10 +213,14 @@ class ClaimCheck(BaseModel):
     sentence and any cited chunk; ``semantic`` = max embedding cosine; ``score`` = mean of
     whichever of the two were computable (``None`` if neither). ``status``:
     ``supported`` (score >= CITATION_SUPPORT_THRESHOLD), ``weak`` (below it, or cited
-    markers that don't resolve / couldn't be scored), ``uncited`` (no markers at all)."""
+    markers that don't resolve / couldn't be scored), ``uncited`` (no marker anywhere in
+    its paragraph)."""
 
     sentence: str
     citations: list[int]
+    # True when the sentence carries no [n] marker itself and ``citations`` were
+    # inherited from its paragraph / list item (the LLM put one marker at the end).
+    citations_inherited: bool = False
     lexical: float | None = None
     semantic: float | None = None
     score: float | None = None

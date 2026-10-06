@@ -42,7 +42,13 @@ const STARTER_QUESTIONS = [
 // unmounts this component) so re-opening the same message's trace never re-fetches.
 const traceCache = new Map<string, MessageTrace>();
 
-function TraceDetails({ messageId }: { messageId: string }) {
+function TraceDetails({
+  messageId,
+  claimChecks,
+}: {
+  messageId: string;
+  claimChecks?: ClaimCheck[] | null;
+}) {
   const [trace, setTrace] = useState<MessageTrace | null>(traceCache.get(messageId) ?? null);
   const [error, setError] = useState<string | null>(null);
   // Golden-eval curation: fire-and-submit, no persisted/cached state needed beyond this
@@ -89,7 +95,8 @@ function TraceDetails({ messageId }: { messageId: string }) {
           {trace.hits.map((hit) =>
             "chunk_id" in hit ? (
               <li key={hit.chunk_id} className="font-mono text-muted">
-                [{hit.index}] doc {hit.document_id.slice(0, 8)}…
+                [{hit.index}] doc {hit.document_id.slice(0, 8)}… · chars {hit.char_start}–
+                {hit.char_end}
                 {hit.distance !== null && <> · distance {hit.distance.toFixed(3)}</>}
                 {hit.rerank_score != null && <> · rerank {hit.rerank_score.toFixed(3)}</>}
                 {hit.sparse_score != null && <> · sparse {hit.sparse_score.toFixed(3)}</>}
@@ -131,6 +138,38 @@ function TraceDetails({ messageId }: { messageId: string }) {
           )}
         </ul>
       </div>
+      {claimChecks && claimChecks.length > 0 && (
+        <div>
+          <p className="font-medium text-muted mb-1">Claim checks ({claimChecks.length})</p>
+          <table className="border-collapse text-[11px] w-full" aria-label="Claim checks">
+            <thead>
+              <tr className="text-left">
+                <th className="pr-3 font-medium">sentence</th>
+                <th className="pr-3 font-medium">cites</th>
+                <th className="pr-3 font-medium text-right">lexical</th>
+                <th className="pr-3 font-medium text-right">semantic</th>
+                <th className="pr-3 font-medium text-right">score</th>
+                <th className="font-medium">status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {claimChecks.map((c, i) => (
+                <tr key={i} className="align-top text-muted">
+                  <td className="pr-3 py-0.5">{c.sentence}</td>
+                  <td className="pr-3 font-mono whitespace-nowrap">
+                    {c.citations.map((n) => `[${n}]`).join("") || "—"}
+                    {c.citations_inherited && " (para)"}
+                  </td>
+                  <td className="pr-3 font-mono text-right">{fmtScore(c.lexical)}</td>
+                  <td className="pr-3 font-mono text-right">{fmtScore(c.semantic)}</td>
+                  <td className="pr-3 font-mono text-right">{fmtScore(c.score)}</td>
+                  <td className={c.status === "weak" ? "text-warning" : ""}>{c.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       <div>
         <p className="font-medium text-muted mb-1">Final prompt</p>
         <pre className="whitespace-pre-wrap font-mono text-muted max-h-40 overflow-y-auto">
@@ -164,16 +203,34 @@ function TraceDetails({ messageId }: { messageId: string }) {
 }
 
 // Splits answer text at [n] markers and renders resolved citations as clickable buttons.
-// Weak/uncited sentences from the per-sentence citation check are wrapped in an amber
-// dotted underline + ⚠ whose title tooltip shows the lexical/semantic/combined scores.
+// Every checked sentence from the per-sentence citation check carries a title tooltip
+// with its lexical/semantic/combined scores and the [n] it was checked against.
+// Supported = visually quiet (no underline); weak = amber underline + ⚠; uncited = grey
+// dotted underline.
 function fmtScore(v: number | null): string {
   return v === null ? "n/a" : v.toFixed(2);
 }
 
-function claimTooltip(check: ClaimCheck): string {
-  if (check.status === "uncited") return "Uncited claim: this sentence cites no source.";
-  return `Weak support for cited source(s) ${check.citations.map((n) => `[${n}]`).join("")} — lexical ${fmtScore(check.lexical)} · semantic ${fmtScore(check.semantic)} · combined ${fmtScore(check.score)}`;
+function markerList(check: ClaimCheck): string {
+  return check.citations.map((n) => `[${n}]`).join("");
 }
+
+function claimTooltip(check: ClaimCheck): string {
+  if (check.status === "uncited") {
+    return "Uncited: no source marker anywhere in this paragraph.";
+  }
+  const label = check.status === "supported" ? "Supported" : "Weak support";
+  const source = check.citations_inherited
+    ? `${markerList(check)} (covered by ${markerList(check)} at the end of the paragraph)`
+    : markerList(check);
+  return `${label} by ${source} — lexical ${fmtScore(check.lexical)} · semantic ${fmtScore(check.semantic)} · combined ${fmtScore(check.score)}`;
+}
+
+const CLAIM_CLASS: Record<ClaimCheck["status"], string> = {
+  supported: "cursor-help",
+  weak: "cursor-help underline decoration-warning decoration-2 underline-offset-2",
+  uncited: "cursor-help underline decoration-dotted decoration-muted underline-offset-2",
+};
 
 function AnswerText({
   content,
@@ -186,12 +243,11 @@ function AnswerText({
   onCitationClick: (c: ResolvedCitation) => void;
   claimChecks?: ClaimCheck[] | null;
 }) {
-  // Partition the answer into plain and flagged segments by locating each flagged
+  // Partition the answer into plain and checked segments by locating each checked
   // sentence (backend sentences are verbatim substrings of the answer) in order.
   const segments: { text: string; check?: ClaimCheck }[] = [];
   let cursor = 0;
   for (const check of claimChecks ?? []) {
-    if (check.status === "supported") continue;
     const at = content.indexOf(check.sentence, cursor);
     if (at === -1) continue;
     if (at > cursor) segments.push({ text: content.slice(cursor, at) });
@@ -208,16 +264,18 @@ function AnswerText({
             key={si}
             data-claim-status={seg.check.status}
             title={claimTooltip(seg.check)}
-            className="underline decoration-dotted decoration-warning underline-offset-2"
+            className={CLAIM_CLASS[seg.check.status]}
           >
             <MarkedText
               text={seg.text}
               citations={citations}
               onCitationClick={onCitationClick}
             />
-            <span className="text-warning text-xs ml-0.5" aria-hidden="true">
-              ⚠
-            </span>
+            {seg.check.status === "weak" && (
+              <span className="text-warning text-xs ml-0.5" aria-hidden="true">
+                ⚠
+              </span>
+            )}
           </span>
         ) : (
           <MarkedText
@@ -577,7 +635,7 @@ export function ChatPanel({
                       {openTraceIndex === i ? "Hide debug" : "Debug"}
                     </button>
                     {openTraceIndex === i && msg.messageId && (
-                      <TraceDetails messageId={msg.messageId} />
+                      <TraceDetails messageId={msg.messageId} claimChecks={msg.claimChecks} />
                     )}
                   </div>
                 )}
