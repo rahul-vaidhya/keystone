@@ -45,7 +45,8 @@ _CLASSIFIER_SYSTEM_PROMPT = (
     "the question asks for an aggregate, summary, or gist across an entire document or "
     'notebook (e.g. "what\'s the gist of this", "summarize everything", "what should '
     'I be concerned about across these sources"). SPECIFIC means the question asks for '
-    "a particular fact, detail, or lookup answerable from one or a few passages. "
+    "a particular fact, detail, or lookup answerable from one or a few passages, "
+    'including "what is X" / "explain X" questions about a single concept or term. '
     "Respond with exactly one word and nothing else: BROAD or SPECIFIC."
 )
 

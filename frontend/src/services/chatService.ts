@@ -53,7 +53,10 @@ export const chatApi = {
           credentials: "include",
         });
         if (!res.ok || !res.body) {
-          callbacks.onError(`Request failed (${res.status})`);
+          const body = (await res.json().catch(() => null)) as { detail?: unknown } | null;
+          callbacks.onError(
+            typeof body?.detail === "string" ? body.detail : `Request failed (${res.status})`,
+          );
           return;
         }
         const reader = res.body.getReader();

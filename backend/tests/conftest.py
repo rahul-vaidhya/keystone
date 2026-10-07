@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # Desktop / Windows. Each fixture stops its own container in a finally block instead.
 # Read by testcontainers at its (in-fixture) import, so setting it here is in time.
 os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
+# Tests assume the fake/off defaults: never read backend/.env (app/config/settings.py).
+os.environ["VERATAS_IGNORE_DOTENV"] = "1"
 
 BACKEND = Path(__file__).resolve().parents[1]
 

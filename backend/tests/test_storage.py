@@ -62,7 +62,7 @@ def test_storage_mode_defaults_to_r2() -> None:
     # The default is r2 — production/CI behaviour is unchanged by this feature; local is
     # strictly opt-in. Asserted against pure config, not by constructing a boto3 client
     # (which would be environment-fragile: an empty R2_ENDPOINT_URL raises at construction).
-    assert Settings().STORAGE_MODE == "r2"
+    assert Settings(_env_file=None).STORAGE_MODE == "r2"
 
 
 def test_factory_selects_r2_branch(monkeypatch) -> None:

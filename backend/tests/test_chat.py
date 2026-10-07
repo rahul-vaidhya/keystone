@@ -770,8 +770,8 @@ async def test_stream_failure_log_includes_error_type_even_when_str_is_empty(
 
 
 async def test_stream_missing_notebook_yields_error(client: AsyncClient) -> None:
-    """Error path: attempting to stream against a nonexistent notebook yields an
-    error event (not an unhandled exception). HTTP status is 200."""
+    """Error path: a nonexistent notebook is rejected with a real 404 before the stream
+    opens (known-issues S5: it used to be a 200 + generic "Stream failed" event)."""
     tokens = await _signup(client, "chatstream-missing@test.com", "StreamMissing")
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
     fake_notebook_id = str(uuid.uuid4())
@@ -781,14 +781,38 @@ async def test_stream_missing_notebook_yields_error(client: AsyncClient) -> None
         headers=headers,
         json={"notebook_id": fake_notebook_id, "query": "q"},
     )
-    # SSE endpoint returns 200 even on error (error event is sent instead)
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Notebook not found"
+
+
+async def test_stream_provider_failure_yields_actionable_error(client: AsyncClient) -> None:
+    """A model-provider failure mid-stream (e.g. OpenRouter 401/402) tells the user to
+    check the API key / credits instead of the bare "Stream failed"."""
+    tokens = await _signup(client, "chatstream-provider@test.com", "StreamProvider")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    notebook_id = (await client.post("/notebooks", headers=headers, json={"name": "NB"})).json()[
+        "id"
+    ]
+
+    class _ProviderError(Exception):
+        status_code = 402
+
+    class _RejectingLLM:
+        @property
+        def model(self) -> str:
+            return "rejecting"
+
+        async def stream(self, messages: list) -> AsyncIterator[str]:
+            raise _ProviderError("Insufficient credits")
+            yield ""  # pragma: no cover - unreachable
+
+    app.dependency_overrides[get_llm] = lambda: _RejectingLLM()
+    resp = await client.post(
+        "/chat/stream", headers=headers, json={"notebook_id": notebook_id, "query": "q"}
+    )
     assert resp.status_code == 200
-
-    events = _parse_sse_events(resp.text)
-    error_events = [e for e in events if e["type"] == "error"]
-
-    # Error event was sent for missing notebook
-    assert len(error_events) >= 1
+    (error,) = [e for e in _parse_sse_events(resp.text) if e["type"] == "error"]
+    assert "API key / OpenRouter credits" in error["message"]
 
 
 async def test_stream_citations_in_done_event_resolve_correctly(
@@ -831,8 +855,9 @@ async def test_stream_citations_in_done_event_resolve_correctly(
 
 
 async def test_stream_cross_org_notebook_yields_error(client: AsyncClient) -> None:
-    """Cross-org isolation: attempting to stream against another org's notebook
-    yields an error event (not an unhandled exception or 404 sent before streaming)."""
+    """Cross-org isolation: another org's notebook is rejected with a 404 before the
+    stream opens — same as ``/chat/ask`` (known-issues S5; it used to be 200 + an error
+    event)."""
     tokens_a = await _signup(client, "chatstream-isoa@test.com", "StreamIsoA")
     tokens_b = await _signup(client, "chatstream-isob@test.com", "StreamIsoB")
     headers_a = {"Authorization": f"Bearer {tokens_a['access_token']}"}
@@ -845,14 +870,7 @@ async def test_stream_cross_org_notebook_yields_error(client: AsyncClient) -> No
     resp = await client.post(
         "/chat/stream", headers=headers_b, json={"notebook_id": notebook_id, "query": "q"}
     )
-    # SSE returns 200; error is sent as an event
-    assert resp.status_code == 200
-
-    events = _parse_sse_events(resp.text)
-    error_events = [e for e in events if e["type"] == "error"]
-
-    # Error event for cross-org denial
-    assert len(error_events) >= 1
+    assert resp.status_code == 404
 
 
 # ---- F42 admin debug bundle (GET /chat/messages/{message_id}/trace) ----

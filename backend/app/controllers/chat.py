@@ -26,9 +26,33 @@ from app.models.chat import (
     MessageTraceOut,
 )
 from app.services.chat import chat_service
-from app.services.seams import LLM, Embedder, Reranker, get_embedder, get_llm, get_reranker
+from app.services.knowledge import knowledge_service
+from app.services.seams import (
+    LLM,
+    Embedder,
+    Reranker,
+    SeamNotConfigured,
+    SeamTransientError,
+    get_embedder,
+    get_llm,
+    get_reranker,
+)
 
 logger = get_logger(__name__)
+
+
+def _stream_error_message(exc: Exception) -> str:
+    """User-facing text for a mid-stream failure. Model-provider failures (missing key,
+    401/402/429/5xx from OpenRouter, timeouts) get an actionable message; anything else
+    stays generic — details are only in the ``chat.stream_failed`` log line."""
+    if isinstance(exc, SeamNotConfigured):
+        return "The AI model is not configured on the server (missing API key)."
+    if isinstance(exc, SeamTransientError) or getattr(exc, "status_code", None) is not None:
+        return (
+            "The AI model provider request failed — check the API key / OpenRouter "
+            "credits in backend/.env, then try again."
+        )
+    return "Stream failed"
 
 
 async def ask(
@@ -59,6 +83,9 @@ async def stream_ask(
     final ``done`` event with the persisted conversation/citations. Uses POST (not GET)
     so the query body is kept out of the URL; the frontend consumes via fetch+ReadableStream
     rather than ``EventSource`` (which only supports GET)."""
+    # Checked BEFORE the stream opens so a missing/private notebook gets a real 404/403
+    # (via the global exception handlers) instead of a 200 + generic "Stream failed".
+    await knowledge_service.get_notebook(ctx, req.notebook_id)
     correlation_id = str(uuid.uuid4())
     structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
 
@@ -80,7 +107,8 @@ async def stream_ask(
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
-            yield 'data: {"type":"error","message":"Stream failed"}\n\n'
+            message = _stream_error_message(exc)
+            yield f"data: {json.dumps({'type': 'error', 'message': message})}\n\n"
         finally:
             structlog.contextvars.unbind_contextvars("correlation_id")
 

@@ -6,6 +6,7 @@ Single source of truth for environment-driven config. Read it through the module
 
 from __future__ import annotations
 
+import os
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -231,4 +232,6 @@ class Settings(BaseSettings):
     TRUSTED_PROXY_IPS: str = ""
 
 
-settings = Settings()
+# The test suite sets VERATAS_IGNORE_DOTENV (tests/conftest.py) so a developer's demo
+# .env (real seams, feature flags on) never leaks into the fake-default test run.
+settings = Settings(_env_file=None if os.environ.get("VERATAS_IGNORE_DOTENV") else ".env")

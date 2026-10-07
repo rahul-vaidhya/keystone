@@ -293,6 +293,52 @@ def test_parse_markdown_outline_recovers_nested_headings() -> None:
     assert b1.char_end <= b.char_end
 
 
+def _text_pdf(pages: list[str]) -> bytes:
+    """Minimal hand-built PDF with one Helvetica text line per page (no extra deps)."""
+    n = len(pages)
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids ["
+        + b" ".join(f"{4 + 2 * i} 0 R".encode() for i in range(n))
+        + f"] /Count {n} >>".encode(),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    for i, line in enumerate(pages):
+        stream = f"BT /F1 12 Tf 72 720 Td ({line}) Tj ET".encode()
+        objs.append(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {5 + 2 * i} 0 R "
+            "/Resources << /Font << /F1 3 0 R >> >> >>".encode()
+        )
+        objs.append(f"<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"\nendstream")
+    out, offsets = b"%PDF-1.4\n", []
+    for num, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += f"{num} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode()
+    return out
+
+
+def test_extract_text_locally_keeps_all_text_with_real_page_markers() -> None:
+    """The local text layer keeps every word (cloudflare-ai dropped bold key terms such as
+    "Ekman transport") and emits one ``### Page N`` marker + outline node per page."""
+    from app.services.seams.real_parser import _extract_text_locally
+
+    text, outline, body_chars = _extract_text_locally(
+        _text_pdf(["known as the Ekman transport", "equatorial upwelling"])
+    )
+    assert "Ekman transport" in text and "equatorial upwelling" in text
+    assert text.startswith("### Page 1\n") and "### Page 2\n" in text
+    assert [(n.heading, n.page_start, n.page_end) for n in outline] == [
+        ("Page 1", 1, 1),
+        ("Page 2", 2, 2),
+    ]
+    assert text[outline[1].char_start :].startswith("### Page 2")
+    assert body_chars == len("known as the Ekman transport") + len("equatorial upwelling")
+
+
 def test_parse_markdown_outline_is_empty_when_no_headings() -> None:
     # A valid F23 finding, not a bug: flat output passes through as an empty outline,
     # exercising F21's degenerate-outline contract rather than fabricating structure.

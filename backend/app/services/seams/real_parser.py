@@ -3,8 +3,10 @@ only — DOCX is a future adapter branch. A SEPARATE adapter/vendor call from
 `RealEmbedder`/`RealLLM` (see real_llm.py), even though both happen to be
 OpenRouter-compatible endpoints.
 
-Engine routing minimizes OCR cost: try the free `cloudflare-ai` text engine first; only
-retry with billed `mistral-ocr` if its output is negligible (a scanned/image PDF). If both
+Engine routing: the PDF's own text layer via local pypdf first (lossless, free, real page
+numbers — see `_extract_text_locally`); only a PDF with no usable text layer goes to the
+remote engines: the free `cloudflare-ai` engine, then billed `mistral-ocr` if its output
+is negligible (a scanned/image PDF). If both
 engines yield negligible text, raises so the stage fails cleanly rather than persisting
 garbage. Heading structure is recovered from the provider's markdown output, never
 fabricated — see `_parse_markdown_outline`.
@@ -37,6 +39,38 @@ def _pdf_page_count(blob: bytes) -> int:
     if reader.is_encrypted:
         raise ValueError("RealParser: encrypted PDFs are not supported.")
     return len(reader.pages)
+
+
+def _extract_text_locally(blob: bytes) -> tuple[str, list[OutlineNode], int]:
+    """Local pypdf text layer, emitted in the same ``### Page N`` marker shape the remote
+    engine uses (citation page derivation keys off those markers). Tried first because
+    `cloudflare-ai` was found to silently drop bold/italic spans — in a textbook those
+    are exactly the defined key terms (e.g. "Ekman transport" vanished from the parsed
+    text, so questions about it were refused). Each page becomes one outline node with
+    its REAL page number. Returns (text, outline, body_chars) — body_chars excludes the
+    markers so the negligible-text check still detects scanned PDFs."""
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(blob))
+    text = ""
+    outline: list[OutlineNode] = []
+    body_chars = 0
+    for number, page in enumerate(reader.pages, start=1):
+        body = (page.extract_text() or "").strip()
+        body_chars += len(body)
+        start = len(text)
+        text += f"### Page {number}\n{body}\n\n"
+        outline.append(
+            OutlineNode(
+                heading=f"Page {number}",
+                level=3,
+                char_start=start,
+                char_end=len(text),
+                page_start=number,
+                page_end=number,
+            )
+        )
+    return text, outline, body_chars
 
 
 def _is_negligible_text(text: str, page_count: int) -> bool:
@@ -153,6 +187,18 @@ class RealParser:
 
         page_count = _pdf_page_count(blob)
 
+        text, outline, body_chars = _extract_text_locally(blob)
+        if not _is_negligible_text("x" * body_chars, page_count):
+            logger.info(
+                "seams.real_parser_extracted",
+                engine="pypdf",
+                page_count=page_count,
+                chars=len(text),
+                headings_recovered=False,
+            )
+            return ParsedDoc(text=text, outline=outline, language="en", page_count=page_count)
+
+        # No usable text layer (scanned/image PDF) -> remote engines, as before.
         text = await _call_openrouter_file_parser(blob, engine="cloudflare-ai")
         engine = "cloudflare-ai"
         if _is_negligible_text(text, page_count):
