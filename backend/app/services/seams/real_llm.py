@@ -50,7 +50,7 @@ def _openai_client():
         from openai import AsyncOpenAI
     except ImportError as exc:  # pragma: no cover - exercised only on the real path
         raise SeamNotConfigured(
-            "the 'openai' package is not installed; install veratas-backend[real] "
+            "the 'openai' package is not installed; install keystone-backend[real] "
             "to use SEAMS_MODE=real."
         ) from exc
     return AsyncOpenAI(api_key=settings.OPENAI_API_KEY, base_url=settings.OPENAI_BASE_URL)
@@ -89,6 +89,7 @@ class RealLLM:
             stream = await client.chat.completions.create(
                 model=settings.LLM_MODEL,
                 messages=[{"role": m.role, "content": m.content} for m in messages],
+                temperature=settings.LLM_TEMPERATURE,
                 stream=True,
             )
             async for chunk in stream:

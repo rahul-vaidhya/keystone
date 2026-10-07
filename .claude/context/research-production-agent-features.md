@@ -1,7 +1,7 @@
 # Research: production-grade retrieval, observability, evals & feedback (2026-07-27)
 
 > Six-agent research pass (WebSearch-backed, 2025-2026 sources), commissioned to answer:
-> "what would make Veratas properly production-ready and better than the competition" —
+> "what would make Keystone properly production-ready and better than the competition" —
 > covering retrieval quality/reranking, vector-store infra, LLM observability/tracing,
 > evals + feedback loops, tool-calling + model config, and a direct feature comparison
 > against Databricks Agent Bricks / Google ADK / Microsoft Copilot Studio. This is a
@@ -50,7 +50,7 @@ converges on: **reranker + hybrid search fix this**, not prompt changes.
    harness), short-circuit before the LLM call — return a distinct "weak/no evidence"
    response instead of paying for a call that will just refuse.
 3. **Hybrid search (BM25 lexical + vector, fused via RRF).** Second-highest-confidence
-   fix — Veratas' real corpus (business PDFs: product names, IDs, acronyms, exact terms)
+   fix — Keystone' real corpus (business PDFs: product names, IDs, acronyms, exact terms)
    is exactly the failure mode dense-only embeddings miss. Postgres-native, no new
    infra: `pg_search` (ParadeDB) or `pg_textsearch` (Tiger Data) extension, new
    `tsvector`+GIN migration on `chunks.content`, a new `ChunkRepository.search_chunks_lexical`
@@ -69,7 +69,7 @@ converges on: **reranker + hybrid search fix this**, not prompt changes.
    suite (`pytest -m eval`, CI-excluded like `real_parser`/`hierarchical_eval`) using
    **Ragas** metrics (faithfulness, answer relevancy, context precision/recall) against a
    golden set that's admin-curatable from real `message_traces` rows (see P1 below), not
-   a hand-written Python list. This is Veratas' actual answer to Agent Bricks' automatic
+   a hand-written Python list. This is Keystone' actual answer to Agent Bricks' automatic
    evaluation and to ADK's `EvalSet` pattern.
 
 **P1 — highest additional leverage, most of it reuses infrastructure that already exists but is dormant:**
@@ -77,7 +77,7 @@ converges on: **reranker + hybrid search fix this**, not prompt changes.
    context blurb to each chunk before embedding — NOT before showing it to the LLM as
    context, only for the embedding call). Published results: ~49% fewer retrieval
    failures alone, ~67% combined with reranking. **The standout finding of this whole
-   research pass**: Veratas already computes per-section LLM summaries
+   research pass**: Keystone already computes per-section LLM summaries
    (`ENRICHMENT_ENABLED`, `sections.summary`/`topics`) and they're dormant — this is
    "use infrastructure you already built" more than "build something new." Extend
    `app/services/ingestion/enrichment.py`; new flag `CONTEXTUAL_EMBEDDING_ENABLED`;
@@ -133,7 +133,7 @@ converges on: **reranker + hybrid search fix this**, not prompt changes.
   pattern exactly (`WEB_SEARCH_MODE`, fake+real). **Hard requirement if built**: any
   web-sourced answer must be visually/structurally distinct from document-grounded
   answers (e.g. a "🌐 Web" badge, never merged into the `[n]` citation list) — blending
-  them would quietly destroy Veratas' core "only knows what you gave it" trust
+  them would quietly destroy Keystone' core "only knows what you gave it" trust
   guarantee. NotebookLM's constrained posture is the right reference product here, not
   Perplexity's search-native model.
 - **Model-aware `LLMConfig` / per-task model routing** (cheap model for query rewriting,
@@ -156,13 +156,13 @@ converges on: **reranker + hybrid search fix this**, not prompt changes.
   require re-deriving an RLS-equivalent tenant-isolation guarantee outside Postgres — a
   real regression risk against the F60 hard rule ("RLS is the non-negotiable backstop").
 - **Structured/tabular source fusion** (Agent Bricks' Knowledge Assistant's biggest edge
-  over Veratas) — only worth building once a real customer needs numbers-plus-documents
+  over Keystone) — only worth building once a real customer needs numbers-plus-documents
   in one notebook. Sketch: a CSV/Excel-to-row-store adapter feeding `chunks`/`embeddings`
   via a new `owner_type='row'`, reusing existing retrieval — no lakehouse needed.
 
 ---
 
-## Where Veratas already matches or beats the competition (don't touch)
+## Where Keystone already matches or beats the competition (don't touch)
 
 - **Citation/grounding trust UX**: the fixed refusal string + never-blend-in-training-
   knowledge contract is *stricter* than Copilot Studio's "allow ungrounded responses"
@@ -177,7 +177,7 @@ converges on: **reranker + hybrid search fix this**, not prompt changes.
 
 ## Feature-gap snapshot vs. Databricks Agent Bricks / Google ADK / Copilot Studio
 
-| Capability | Veratas | Databricks | ADK | Copilot Studio |
+| Capability | Keystone | Databricks | ADK | Copilot Studio |
 |---|---|---|---|---|
 | Structured+unstructured hybrid retrieval | Missing (P2 above) | Has | N/A | Missing |
 | Iterative schema-guided extraction | Missing (P1 above) | Has | N/A | Missing |
@@ -194,8 +194,8 @@ converges on: **reranker + hybrid search fix this**, not prompt changes.
   retrieval — consistent with, not contradicting, the 2026-07-16 eval harness's finding
   that hierarchical retrieval measured zero improvement on the single-document test
   corpus. The interpretation across all reports: **retrieval precision, not retrieval
-  architecture depth, is the actual lever** for Veratas' corpus shape.
-- Every report was explicitly instructed to map recommendations onto Veratas' existing
+  architecture depth, is the actual lever** for Keystone' corpus shape.
+- Every report was explicitly instructed to map recommendations onto Keystone' existing
   module/seam boundaries rather than propose a generic rewrite — this is why the reranker
   and web-search proposals above are shaped as new seams (Protocol + fake + real,
   config-selected) rather than ad hoc integrations.

@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "veratas-backend"
+name = "keystone-backend"
 version = "0.0.0"
-description = "Veratas — source-grounded company knowledge base (backend)"
+description = "Keystone — source-grounded company knowledge base (backend)"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115",

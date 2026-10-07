@@ -14,7 +14,7 @@ from app.models.auth import AcceptInviteRequest, InviteRequest, SignupRequest
 from app.services.auth import AuthRepository, EmailTaken, auth_service
 from app.utils.constants import ROLE_ADMIN, ROLE_MEMBER
 
-ORG_NAME = "Veratas Demo"
+ORG_NAME = "Keystone Demo"
 PASSWORD = "hellos123"
 OWNER_EMAIL = "owner@gmail.com"
 ADMIN_EMAIL = "admin@gmail.com"

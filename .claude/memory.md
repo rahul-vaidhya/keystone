@@ -15,6 +15,7 @@
   - Demo account `demo+1791310304@example.com` / `DemoPass!2026` ("IR Demo Notebook"). Answers asked before `ed9cdc3` keep stale claim checks/page ranges — ask fresh questions when recording. Heading zone is empty on kech104 (parser "Page N" headings); use "bond" to show champion lists.
   - User decisions: security bugs S1–S4 deferred; novelty not a focus; report + demo video NOT drafted by Claude. Next migration: 0026.
   - Gotchas: subagent pip install under the long scratchpad path fails (Windows path limit) — use system Python Playwright or a short `%TEMP%` path; old persisted messages don't re-run new derivations.
+- **2026-10-07 (session 2): renamed the app Veratas → Keystone** (UI, docs, report, package names). Kept internal ids on purpose: DB user/password/name `veratas`, cookie `veratas_refresh`, localStorage keys `veratas_*`. Branch `fix/parser-streaming-report`: pypdf parser, stream errors (S5), router prompt, test .env isolation, RRF score display, textbook eval, README + report (`docs/report/`), video script `docs/video-script.md`.
 - **Open problems tracker: `.claude/known-issues.md`** (QA walkthrough findings 2026-10-07 — check/update it every session).
 - Still open: Ragas `pytest -m eval` harness blocked by upstream ragas↔langchain_community import error; orphan blob sweep unbuilt; frontend hosting undecided.
 - Full session-by-session history (2026-06-21 → 2026-07-30) lives in `.claude/memory-history.md` (not auto-loaded). Feature/DoD record: `.claude/progresstracker.md` (not auto-loaded).

@@ -1,4 +1,4 @@
-# Veratas — MVC Refactor Prompt
+# Keystone — MVC Refactor Prompt
 
 Give this entire file to a fresh Claude Code session. It is self-contained.
 
@@ -6,7 +6,7 @@ Give this entire file to a fresh Claude Code session. It is self-contained.
 
 ## 0. What you are doing and why
 
-Refactor the Veratas codebase from a **domain-driven modular monolith** (code grouped
+Refactor the Keystone codebase from a **domain-driven modular monolith** (code grouped
 by domain/feature) into a **layer-first MVC architecture** (code grouped by role:
 Model, View, Controller). The backend is FastAPI + SQLAlchemy async + arq; the
 frontend is Vite + React 18 + TypeScript.
@@ -20,7 +20,7 @@ schema, or test logic — this is a pure structural/import refactor.
 ## 1. Current structure (what exists right now)
 
 ```
-veratas_project/
+keystone_project/
   backend/
     main.py                    # FastAPI app factory; mounts 6 routers
     worker.py                  # arq worker entry; 3 job functions

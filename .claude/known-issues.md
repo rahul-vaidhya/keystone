@@ -78,6 +78,8 @@ Final QA account: `final-qa+1791317653@example.com` / `FinalQa!2026new`.
 |----|---------|--------|
 | P1 | **High.** `cloudflare-ai` parser silently dropped bold/italic spans (textbook key terms): "what is ekamn transport" was refused although the book defines Ekman transport | FIXED (uncommitted): `RealParser` reads the local pypdf text layer first (same `### Page N` markers, real per-page outline), remote engines only for scanned PDFs. Textbook eval MRR@10 up for every method (`backend/eval/results/textbook_eval_*.md`) |
 | P2 | Medium. Broad-query classifier sent "What is the Earth's energy budget?" to map-reduce (no page citations / claim checks) | FIXED (uncommitted): classifier prompt treats "what is X / explain X" as SPECIFIC; 9/9 probe queries routed correctly |
-| P3 | Low. Tests read the dev `.env` (60 failures with demo flags on) | FIXED (uncommitted): conftest sets `VERATAS_IGNORE_DOTENV=1` |
+| P3 | Low. Tests read the dev `.env` (60 failures with demo flags on) | FIXED (uncommitted): conftest sets `KEYSTONE_IGNORE_DOTENV=1` |
 | P4 | Info. Section summaries finish ~70 s after READY; broad questions asked earlier fall back to flat retrieval | OPEN (documented) |
 | P5 | Info. Sparse channel has no spelling correction ("ekamn" -> MRR 0.11 for BM25; dense covers it) | OPEN (roadmap) |
+| P6 | Medium. Real LLM ran at the provider default temperature (1.0) and the grounding prompt said refuse unless the context has "enough" information: "What is the biological pump in the ocean?" was refused 2/3 times although pp. 28-29 were retrieved | FIXED: `LLM_TEMPERATURE=0.0` setting + prompt refuses only when no block is relevant (verified: 4 in-scope answered, 5 off-topic still refused) |
+| P7 | Info. App renamed Veratas -> Keystone (UI, docs, report, package names); DB user/name `veratas`, cookie and localStorage keys kept on purpose | DONE |

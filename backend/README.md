@@ -1,4 +1,4 @@
-# Veratas — Backend
+# Keystone — Backend
 
 FastAPI + arq workers + Postgres/pgvector. Modular monolith. See `../.claude/context/`.
 

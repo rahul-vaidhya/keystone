@@ -3,7 +3,7 @@
 # The bare /embed route is the public embed-widget chat page (see public/widget.js) —
 # it MUST stay embeddable by arbitrary third-party sites, so it is deliberately never
 # mentioned below and gets no restrictive header (the correct default for it is
-# "allow"). Every other route is where a real Veratas session lives (login, signup,
+# "allow"). Every other route is where a real Keystone session lives (login, signup,
 # accept-invite, the whole authenticated /app/* admin+chat SPA, including /app/embed —
 # the ADMIN widget-management page, not to be confused with the public /embed page) and
 # must never be framable by an attacker's page, or a clickjacking attack could trick a

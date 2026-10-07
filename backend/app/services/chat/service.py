@@ -96,8 +96,9 @@ _WEAK_EVIDENCE_MESSAGE = "The available sources don't contain a strong match for
 _SYSTEM_PROMPT = (
     "You are a knowledge-base assistant. Answer ONLY using the numbered context blocks "
     "provided below the question. Cite the blocks you used by their number in square "
-    "brackets, e.g. [1]. If the context does not contain enough information to answer the "
-    "question, respond with exactly this sentence and nothing else: "
+    "brackets, e.g. [1]. If some blocks are relevant to the question, answer from what they "
+    "say, even if they only cover part of it. Only if no block is relevant to the question, "
+    "respond with exactly this sentence and nothing else: "
     '"I don\'t have that in the provided sources." Never use outside or prior knowledge.'
 )
 

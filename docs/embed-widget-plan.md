@@ -12,10 +12,10 @@
 
 ## 1. What we are building
 
-An org admin picks a notebook and creates a **widget**: Veratas generates a
+An org admin picks a notebook and creates a **widget**: Keystone generates a
 paste-able `<script>` snippet (and a raw iframe URL). On the customer's external
 website the script injects a floating chat bubble; clicking it opens an iframe of a
-minimal chat page hosted by the Veratas SPA. Visitors chat **anonymously** with that
+minimal chat page hosted by the Keystone SPA. Visitors chat **anonymously** with that
 one notebook — grounded, cited, streamed over SSE — through a new public backend
 endpoint protected by a **domain allowlist** and **per-widget / per-IP rate limits**.
 Conversations are persisted and marked as widget-originated. Admins can list,
@@ -32,7 +32,7 @@ backstops).
   allowed-origins list + an active flag. Table: `widgets`.
 - **Snippet / "the link"** — the `<script>` tag (and iframe URL) containing the
   public widget ID. **Not a secret** — it is visible in the customer's page source.
-- **Visitor** — an anonymous end user on the customer's site; never has a Veratas
+- **Visitor** — an anonymous end user on the customer's site; never has a Keystone
   account. Backend context: `TenantContext(org_id=...)` with `user_id=None`,
   `role=None` (the established worker/accept-invite pattern,
   `app/middleware/context.py`).

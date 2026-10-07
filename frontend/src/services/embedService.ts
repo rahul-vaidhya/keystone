@@ -10,7 +10,7 @@ import type {
 
 // Mirrors http.ts's own extractErrorDetail — duplicated (not imported) because the
 // two PUBLIC functions below deliberately do NOT go through apiFetch: an anonymous
-// widget visitor has no Veratas session, so these calls must never carry an
+// widget visitor has no Keystone session, so these calls must never carry an
 // Authorization header or `credentials: "include"`. The embed backend's exception
 // handlers (app/utils/http.py) always put a plain string in `detail` for
 // WidgetNotFound/OriginNotAllowed/WidgetRateLimited, but this stays defensive

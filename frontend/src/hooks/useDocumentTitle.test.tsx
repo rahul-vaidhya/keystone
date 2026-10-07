@@ -7,12 +7,12 @@ describe("useDocumentTitle", () => {
     const { rerender, unmount } = renderHook(({ t }) => useDocumentTitle(t), {
       initialProps: { t: "Repository" as string | undefined },
     });
-    expect(document.title).toBe("Repository · Veratas");
+    expect(document.title).toBe("Repository · Keystone");
     rerender({ t: undefined });
-    expect(document.title).toBe("Veratas");
+    expect(document.title).toBe("Keystone");
     rerender({ t: "IR Demo Notebook" });
-    expect(document.title).toBe("IR Demo Notebook · Veratas");
+    expect(document.title).toBe("IR Demo Notebook · Keystone");
     unmount();
-    expect(document.title).toBe("Veratas");
+    expect(document.title).toBe("Keystone");
   });
 });

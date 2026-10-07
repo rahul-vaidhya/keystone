@@ -26,7 +26,7 @@ export function AppShell() {
 
   useEffect(() => {
     const title = ROUTE_TITLES[pathname.replace(/\/+$/, "") || "/app"];
-    if (title) document.title = `${title} · Veratas`;
+    if (title) document.title = `${title} · Keystone`;
   }, [pathname]);
 
   return (
@@ -49,7 +49,7 @@ export function AppShell() {
           >
             {isSidebarOpen ? "✕" : "☰"}
           </button>
-          <span className="font-semibold tracking-tight text-lg">Veratas</span>
+          <span className="font-semibold tracking-tight text-lg">Keystone</span>
         </div>
         <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
           <Outlet />

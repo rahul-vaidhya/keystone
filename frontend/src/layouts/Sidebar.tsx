@@ -91,7 +91,7 @@ export function Sidebar({
         } lg:translate-x-0 lg:static w-60 shrink-0 bg-bg border-r border-border flex flex-col h-dvh lg:h-full`}
       >
         <div className="px-4 py-4 flex items-center justify-between">
-          <span className="font-semibold tracking-tight text-lg">Veratas</span>
+          <span className="font-semibold tracking-tight text-lg">Keystone</span>
           {/* F7: the drawer covers the top bar's toggle, so it carries its own
               close button (mobile only). */}
           <button

@@ -1,4 +1,4 @@
-# Veratas — Frontend
+# Keystone — Frontend
 
 Vite + React SPA with JWT auth and a role-aware app shell.
 

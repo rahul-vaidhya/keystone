@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: str | None = None
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     LLM_MODEL: str = "gpt-4o-mini"
+    # Sampling temperature for every real LLM call. 0 = deterministic and faithful to the
+    # context; the provider default (1.0) made grounded answers flip randomly between an
+    # answer and the refusal sentence for the same question and context.
+    LLM_TEMPERATURE: float = 0.0
     # Real Parser (F23) targets OpenRouter's file-parser plugin — a SEPARATE adapter/vendor
     # from the OpenAI-compatible Embedder/LLM above, even though both ultimately go through
     # an OpenRouter-compatible endpoint. PARSER_MODEL is incidental: the chat/completions
@@ -232,6 +236,6 @@ class Settings(BaseSettings):
     TRUSTED_PROXY_IPS: str = ""
 
 
-# The test suite sets VERATAS_IGNORE_DOTENV (tests/conftest.py) so a developer's demo
+# The test suite sets KEYSTONE_IGNORE_DOTENV (tests/conftest.py) so a developer's demo
 # .env (real seams, feature flags on) never leaks into the fake-default test run.
-settings = Settings(_env_file=None if os.environ.get("VERATAS_IGNORE_DOTENV") else ".env")
+settings = Settings(_env_file=None if os.environ.get("KEYSTONE_IGNORE_DOTENV") else ".env")

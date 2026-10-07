@@ -1,4 +1,4 @@
-# Veratas — Project Instructions
+# Keystone — Project Instructions
 
 Private, source-grounded company knowledge base (NotebookLM-style), multi-tenant.
 Stack: **FastAPI + async workers + Postgres/pgvector** backend, **Vite React** SPA.

@@ -3,7 +3,7 @@
 Admin endpoints require auth + ``require_admin`` (mirrors the access-roles/chat-trace
 precedent). Public endpoints take NO auth dependency at all (the signup/login/
 accept-invite precedent) — anonymous visitors on a customer's website never have a
-Veratas account.
+Keystone account.
 """
 
 from __future__ import annotations

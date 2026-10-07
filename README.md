@@ -1,8 +1,8 @@
-# Veratas: trustworthy RAG over your own documents
+# Keystone: trustworthy RAG over your own documents
 
 **CSD358 IR Hackathon, Track T1: Retrieval-Augmented Generation and trustworthy answers.**
 
-Veratas is a NotebookLM-style app. You upload PDFs into a notebook, ask questions, and get
+Keystone is a NotebookLM-style app. You upload PDFs into a notebook, ask questions, and get
 answers in which every sentence is linked to a ranked source chunk (with its page number) and
 checked against that chunk. The retriever is a real, inspectable IR component: a
 **from-scratch positional, zoned inverted index** (Porter stemming, SMART `lnc.ltc` tf-idf,
@@ -13,6 +13,7 @@ inspected in the UI.
 - Report: [`docs/report/report.pdf`](docs/report/report.pdf) (HTML source alongside it)
 - Team: Rahul Vaidhya (2410110259), Akshat Bansal (2410110039), Ananmay Dubey (2410110513), Yug Gupta (2410110490)
 - Demo video: _add your unlisted YouTube/Drive link here_
+- Demo video script (verified queries and expected results): [`docs/video-script.md`](docs/video-script.md)
 
 ---
 
@@ -22,6 +23,7 @@ inspected in the UI.
 |---|---|---|
 | Upload PDF → parse → section/chunk → embed → READY (background worker) | `backend/app/services/ingestion/` | "what is a document" (1 000-char chunks inside page/section boundaries), dedupe by checksum |
 | **Search page: Ranked / Boolean / Phrase** with full query-processing traces (tokens → case-folding → stop words → stems → postings, df/idf, per-term score contributions) | `backend/app/services/retrieval/sparse/`, `frontend/src/pages/SearchPage.tsx` | inverted index, positional index, postings intersection in increasing-df order, AND/OR/NOT, phrase queries, tf-idf vs BM25, zones (heading vs body), champion lists, idf-threshold index elimination, heap top-K |
+| **Search page: Semantic (hybrid)** — each result shows the fused RRF score that orders it, plus its dense rank + cosine distance and BM25 rank + score | `retrieval/fusion.py`, `SearchPage.tsx` | dense retrieval, BM25, Reciprocal Rank Fusion |
 | **Chat with cited answers** (streaming) | `backend/app/services/chat/service.py` | hybrid retrieval = dense kNN (pgvector) + from-scratch BM25, fused with RRF; top-k context blocks numbered `[n]` |
 | **Per-sentence citation checker** (supported / weak / uncited + scores) | `backend/app/services/chat/citation_check.py` | tf-idf `ltc` cosine of the sentence vs. best window of the cited chunk + embedding cosine |
 | Page-accurate citations (click a `[n]` to open the source passage) | `backend/app/services/ingestion/search.py` | per-page markers kept through chunking |
@@ -66,6 +68,7 @@ Evaluation (see `backend/eval/results/`):
 
 ```bash
 docker compose up -d postgres redis      # Postgres on host port 55432, Redis on 6379
+                                         # (the database/user are still called "veratas", the project's earlier name)
 ```
 
 ### 2. Backend
@@ -153,14 +156,14 @@ For the `dense` row, start a second API with hybrid search off:
 ## Tests
 
 ```bash
-# backend: 495 tests on a throwaway Testcontainers Postgres (Docker must be running)
+# backend: 496 tests on a throwaway Testcontainers Postgres (Docker must be running)
 cd backend && pytest -m "not real_parser and not hierarchical_eval and not eval"
-# frontend: 224 tests, plus type-check + production build
+# frontend: 225 tests, plus type-check + production build
 cd frontend && npm run test && npm run build
 ```
 
 The tests always run on fake models with every feature flag at its default:
-`tests/conftest.py` sets `VERATAS_IGNORE_DOTENV=1`, so your demo `.env` is ignored during
+`tests/conftest.py` sets `KEYSTONE_IGNORE_DOTENV=1`, so your demo `.env` is ignored during
 tests and doesn't need to be moved aside.
 
 ---

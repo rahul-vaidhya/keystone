@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Veratas IR Report</title>
+<title>Keystone IR Report</title>
 <style>
   :root { --ink:#1f1f1e; --muted:#5d5c56; --rule:#d9d8d0; --accent:#2a78d6; --bg:#ffffff; --tint:#f4f3ee; }
   @page { size: A4; margin: 15mm 15mm 16mm 15mm; }
@@ -36,7 +36,7 @@
 </head>
 <body>
 
-<h1>Veratas: an inspectable RAG system with sentence-level citation checking</h1>
+<h1>Keystone: an inspectable RAG system with sentence-level citation checking</h1>
 <div class="sub">CSD358 Information Retrieval, mid-semester hackathon. Track <b>T1: Retrieval-Augmented Generation and trustworthy answers</b></div>
 <div class="meta">
   <b>Team</b><span>Rahul Vaidhya (2410110259), Akshat Bansal (2410110039), Ananmay Dubey (2410110513), Yug Gupta (2410110490)</span>
@@ -126,17 +126,17 @@ Raghavan &amp; Schütze (IIR textbook). See References.</p>
 <tr><td>BM25 (beyond syllabus)</td><td><code>scoring.py</code> <code>search(scheme="bm25")</code>, k<sub>1</sub>=1.2, b=0.75</td><td>The production lexical channel (<code>SPARSE_RETRIEVAL_MODE=bm25</code>). It wins over tf-idf on both evaluations (Section 5).</td></tr>
 <tr><td>Efficient scoring: term-at-a-time, heap top-K, index elimination, champion lists</td><td><code>scoring.py</code> <code>search</code>, <code>_champion_candidates</code>; <code>index.py</code> champions (r=50)</td><td>Accumulators + <code>heapq.nlargest</code> (O(N log K)); an idf threshold drops near-stop-word terms; champion lists cut SciFact query time 2.4× (3.08 → 1.26 ms) with identical nDCG@10.</td></tr>
 <tr><td>Zone weighting</td><td><code>search(zone_weights=…)</code>, <code>SPARSE_HEADING_ZONE_WEIGHT=2.0</code></td><td>Score = Σ<sub>z</sub> w<sub>z</sub>·score<sub>z</sub>. Measured honestly: the heading boost <i>hurt</i> SciFact (nDCG 0.686 → 0.655) and over-weights short headings for tf-idf (Section 5.2).</td></tr>
-<tr><td>Dense retrieval + rank fusion (beyond syllabus)</td><td><code>retrieval/service.py</code>; <code>retrieval/fusion.py</code> <code>fuse_rrf</code></td><td>pgvector cosine kNN and BM25 each return 25 candidates; Reciprocal Rank Fusion (k=60) merges them and the top 8 become numbered context blocks.</td></tr>
+<tr><td>Dense retrieval + rank fusion (beyond syllabus)</td><td><code>retrieval/service.py</code>; <code>retrieval/fusion.py</code> <code>fuse_rrf</code></td><td>pgvector cosine kNN and BM25 each return 25 candidates; Reciprocal Rank Fusion (k=60) merges them and the top 8 become numbered context blocks. Every Search result shows its fused score and its rank in each list, so the order is explainable.</td></tr>
 <tr><td>Cosine similarity for verification</td><td><code>chat/citation_check.py</code> <code>score_claims</code>, <code>chunk_windows</code>; <code>scoring.py</code> <code>tfidf_cosine</code></td><td>Each answer sentence is an ltc vector; lexical = max cosine against 1–2-sentence windows of each cited chunk (idf from the notebook index); semantic = embedding cosine; combined = mean, with threshold 0.33.</td></tr>
 <tr><td>Precision / recall / P@k, MRR, nDCG</td><td><code>eval/metrics.py</code>, <code>eval/run_ablation.py</code>, <code>eval/textbook_eval.py</code></td><td>Retriever evaluated separately from the generator, on a public benchmark and on our own judged queries.</td></tr>
 </table>
 
 <h2>3. Beyond IR</h2>
 <ul>
-  <li><b>LLM generation with a grounding contract</b> (gpt-4o-mini via OpenRouter): answer only from the numbered blocks, cite as <code>[n]</code>, otherwise reply with a fixed refusal sentence. <code>[n]</code> markers are mapped back to chunks by a fresh database read, so a citation can never point at text that was not retrieved.</li>
+  <li><b>LLM generation with a grounding contract</b> (gpt-4o-mini via OpenRouter): answer only from the numbered blocks, cite as <code>[n]</code>, and reply with a fixed refusal sentence only when no block is relevant. Temperature 0 keeps answers deterministic; at the provider default, the same question flipped between an answer and a refusal. <code>[n]</code> markers are mapped back to chunks by a fresh database read, so a citation can never point at text that was not retrieved.</li>
   <li><b>Query routing</b>: one cheap LLM call classifies the question as BROAD or SPECIFIC. Broad questions ("summarize these chapters") cannot be answered from top-8 chunks, so they go to a map-reduce over LLM-written <b>section summaries</b> produced at ingestion (enrichment). We tightened the classifier prompt after finding "What is X?" misrouted as broad; 9/9 test questions now route correctly.</li>
   <li><b>Semantic outline</b>: an LLM recovers real headings (e.g. "1.3.2 Oceanic circulation") from the page text, which populates the heading zone.</li>
-  <li><b>Systems</b>: FastAPI, Postgres + pgvector, Redis/arq background ingestion, React UI with streaming (SSE), multi-tenant orgs, notebook sharing and folder-level access roles. 495 backend and 224 frontend automated tests.</li>
+  <li><b>Systems</b>: FastAPI, Postgres + pgvector, Redis/arq background ingestion, React UI with streaming (SSE), multi-tenant orgs, notebook sharing and folder-level access roles. 496 backend and 225 frontend automated tests.</li>
 </ul>
 
 <h2>4. Novelty and creativity</h2>

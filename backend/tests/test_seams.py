@@ -86,18 +86,18 @@ async def test_fake_parser_returns_parseddoc_with_valid_offsets() -> None:
 async def test_fake_llm_streams_grounded_cited_answer() -> None:
     """A prompt carrying a numbered context block (``[1]``) gets a citing answer — F40's
     grounding contract, exercised against the fake."""
-    prompt = "[1] Veratas is a knowledge base.\n\nQuestion: What is Veratas?"
+    prompt = "[1] Keystone is a knowledge base.\n\nQuestion: What is Keystone?"
     chunks = [c async for c in FakeLLM().stream([Message(role="user", content=prompt)])]
     text = "".join(chunks)
     assert text.strip()
     assert "[1]" in text  # cites the provided context
-    assert "What is Veratas?" in text
+    assert "What is Keystone?" in text
 
 
 async def test_fake_llm_refuses_when_no_context_present() -> None:
     """No numbered context block in the prompt -> the fixed refusal string, deterministic
     — lets F40's tests assert refusal-SHAPED output, not just that plumbing ran."""
-    prompt = "(no context was retrieved for this notebook)\n\nQuestion: What is Veratas?"
+    prompt = "(no context was retrieved for this notebook)\n\nQuestion: What is Keystone?"
     chunks = [c async for c in FakeLLM().stream([Message(role="user", content=prompt)])]
     text = "".join(chunks).strip()
     assert text == FakeLLM.REFUSAL

@@ -24,7 +24,7 @@ from app.utils.http import register_exception_handlers
 
 configure_logging()
 
-app = FastAPI(title="Veratas", version="0.1.0")
+app = FastAPI(title="Keystone", version="0.1.0")
 
 origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 app.add_middleware(

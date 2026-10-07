@@ -36,7 +36,7 @@ export function HomePage() {
         >
           <span className="text-xl text-muted">+</span>
           <span className="flex-1 text-left text-sm text-muted">
-            Ask Veratas about your documents…
+            Ask Keystone about your documents…
           </span>
           <span className="text-xs text-accent border border-border rounded-md px-2 py-1">
             Open a notebook

@@ -1,4 +1,4 @@
-# Local infra for Veratas: Postgres+pgvector and Redis (arq queue).
+# Local infra for Keystone: Postgres+pgvector and Redis (arq queue).
 # Usage: docker compose up -d   (from repo root)
 
 services:

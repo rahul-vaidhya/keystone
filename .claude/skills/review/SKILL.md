@@ -51,7 +51,7 @@ Check:
 
 - **Architecture boundaries** — does code in the right place own the right responsibilities? No UI logic in routes. No DB calls in components. Whatever the project's boundaries are — are they respected?
 
-  **For this project (Veratas — single-MVC backend + React SPA frontend):**
+  **For this project (Keystone — single-MVC backend + React SPA frontend):**
   - Backend: no SQL outside repository classes (`# ---- repository ----` sections in `services/<domain>.py`, `services/documents/{documents,folders,tags}.py`, `services/ingestion/repository.py`)
   - Backend: no business logic in `routes/` (routes wire paths) or `controllers/` (controllers are thin handlers)
   - Backend: cross-domain calls only through `services/<domain>.py` entry points
