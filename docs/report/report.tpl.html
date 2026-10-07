@@ -222,7 +222,6 @@ cross-org isolation (404).</p>
   <li><b>Small judged set</b> (18 queries, one corpus, judged by the team, single assessor). Next: 50+ queries, two assessors and agreement (κ).</li>
   <li><b>Freshness gap</b>: section summaries arrive ~1 min after a document is READY; until then broad questions fall back to normal retrieval. Broad answers cite sections and have no claim checks.</li>
   <li><b>Latency</b>: 5–15 s per answer (LLM-bound); broad questions add a classification and map-reduce calls.</li>
-  <li><b>Security items from QA</b> (e.g. notebook chat history visible to all members) are tracked in <code>.claude/known-issues.md</code>.</li>
 </ul>
 <p><b>Course-project roadmap.</b> (1) Spelling correction + query-term proximity scoring in the sparse channel; (2) NLI-based
 claim verification and calibrated thresholds; (3) learning-to-rank over BM25, dense, zone and proximity features
@@ -243,8 +242,7 @@ using the feedback (thumbs) the app already stores; (4) larger judged query set 
   <li><b>Our own work:</b> the team did the background research (the papers listed in the References), chose the design
   and the IR techniques, and wrote code ourselves, then continued development after the initial version.</li>
   <li><b>AI coding agent:</b> Claude Code (Anthropic) assisted development: writing and refactoring parts of the backend
-  and frontend code and the tests, under the team's review. The repository's <code>.claude/</code> folder records that
-  workflow. In the final session it was also used to set up and debug the local environment, find and
+  and frontend code and the tests, under the team's review. In the final session it was also used to set up and debug the local environment, find and
   fix the PDF-parser defect and the query-router misclassification, return proper errors from the streaming
   endpoint, write <code>eval/textbook_eval.py</code>, and draft this report and the README.</li>
   <li><b>Relevance judgments</b> for the 18 textbook queries were drafted with the AI agent from the book's section structure

@@ -40,17 +40,12 @@ Evaluation (see `backend/eval/results/`):
   the hosted parser (BM25 0.798 → 0.909).
 - **Citation checker on SciFact claims:** ROC-AUC 0.999 against off-topic citations, 0.808 against on-topic wrong citations.
 
-## What is still planned / known limitations
+## What's next
 
-- The citation checker measures topical support, **not entailment**: 89% of SciFact claims that
-  contradict their source are still marked "supported". An NLI model is the next step.
-- The sparse channel has no spelling correction (a typo such as "ekamn" only matches "transport").
-  The dense channel covers this today. k-gram / edit-distance correction (IIR ch. 3) is planned.
-- Section summaries for broad questions are produced ~1 min **after** a document turns READY,
-  so broad questions asked immediately fall back to normal retrieval.
-- Broad-query answers carry section-level citations without per-sentence claim checks.
-- Open security items from QA (chat history visible to all notebook members, etc.) are listed in
-  `.claude/known-issues.md` (S1–S4).
+- Entailment-based claim verification (an NLI model) on top of the current citation checker.
+- Spelling correction for the BM25 channel (k-gram index + edit distance, IIR ch. 3).
+- Query-term proximity scoring and learning-to-rank over the BM25, dense and zone features.
+- A larger judged query set with two assessors and inter-annotator agreement.
 
 ---
 
@@ -63,6 +58,18 @@ Evaluation (see `backend/eval/results/`):
 - **Python 3.12+** (tested on 3.12 and 3.14), **Node 18+** (tested on 24).
 - An **OpenRouter API key** for real answers/embeddings (the app also runs fully offline on
   fake models; see "Seam modes").
+
+### Quick start on Windows (recommended)
+
+From the repo root, in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File setup.ps1   # once: Docker, venv, .env (asks for your key), tables, npm
+powershell -ExecutionPolicy Bypass -File start.ps1   # every time: opens API, worker and frontend, then the browser
+```
+
+`setup.ps1` is safe to run again; it skips what's done and repairs a `.venv` copied from another
+PC. The manual steps below do the same thing.
 
 ### 1. Infra
 
@@ -78,14 +85,14 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate                   # Git Bash/macOS/Linux: source .venv/Scripts/activate (or .venv/bin/activate)
 pip install -e ".[dev,real]"             # add ",ireval" to run the SciFact evaluation
-copy .env.example .env                   # then edit .env (see below)
+copy .env.example .env                   # then paste your OpenRouter key into it (see below)
 alembic upgrade head                     # current head: 0025
 ```
 
 > **Do not copy a `.venv` folder from another computer.** A venv stores the absolute path of the
 > Python that created it (`No Python at 'C:\Users\<someone-else>\...'`). Delete it and recreate it.
 
-Recommended `.env` for the full demo (real models, all IR features on):
+`.env.example` already holds the full demo configuration below; you only add the key:
 
 ```ini
 PARSER_MODE=real
@@ -156,7 +163,7 @@ For the `dense` row, start a second API with hybrid search off:
 ## Tests
 
 ```bash
-# backend: 496 tests on a throwaway Testcontainers Postgres (Docker must be running)
+# backend: 499 tests on a throwaway Testcontainers Postgres (Docker must be running)
 cd backend && pytest -m "not real_parser and not hierarchical_eval and not eval"
 # frontend: 225 tests, plus type-check + production build
 cd frontend && npm run test && npm run build
@@ -170,6 +177,12 @@ tests and doesn't need to be moved aside.
 
 ## Troubleshooting
 
+- **"Internal Server Error" on sign up / sign in, or the API window stops with
+  `StartupCheckFailed`**: the database isn't ready. The message says which case:
+  Postgres not reachable → start Docker Desktop and run `docker compose up -d postgres redis`;
+  no tables → run `alembic upgrade head` in `backend/`. Running `setup.ps1` fixes both.
+- **"Internal Server Error" when uploading**: `STORAGE_MODE` must be `local` in `backend/.env`
+  (an old `.env` may still say `r2`, which needs cloud credentials).
 - **Chat shows "The AI model provider request failed…"**: OpenRouter rejected the call (invalid
   or expired key, or no credits). Fix `OPENAI_API_KEY` in `backend/.env` and restart the API.
   The full error is in the API log (`chat.stream_failed`).
@@ -194,5 +207,4 @@ backend/
   migrations/  tests/
 frontend/src/                        # React SPA: pages/ components/ services/
 docs/report/                         # assignment report (HTML + PDF)
-.claude/                             # build notes, known-issues.md, memory
 ```

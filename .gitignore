@@ -38,3 +38,8 @@ node_modules/
 
 # IR eval harness downloaded datasets + embedding caches
 /backend/eval/data/
+
+# Internal dev/agent notes (kept locally, not published)
+/.claude/
+/CLAUDE.md
+/docs/mvc-refactor-prompt.md

@@ -1,6 +1,6 @@
 # Keystone — Backend
 
-FastAPI + arq workers + Postgres/pgvector. Modular monolith. See `../.claude/context/`.
+FastAPI + arq workers + Postgres/pgvector. Modular monolith.
 
 > For the full "clone to running" setup (infra, worker, frontend, seam modes,
 > troubleshooting), see the [root README](../README.md). This file covers backend-only
@@ -65,6 +65,6 @@ Without this running, uploaded documents never advance past `UPLOADED`.
 
 ## Status
 
-See `../.claude/progresstracker.md` for the current, authoritative status — the
+See the root README for the current status — the
 buildplan (all phases 0–6) is complete; this file is kept only for backend-specific
 setup notes.
