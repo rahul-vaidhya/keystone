@@ -485,4 +485,31 @@ describe("SearchPage", () => {
     expect(card).toHaveTextContent("A covalent bond shares electrons.");
     expect(card).not.toHaveTextContent("### Page 32");
   });
+
+  it("hybrid cards show the fused RRF score that orders them plus each channel's rank", async () => {
+    vi.mocked(notebooksApi.list).mockResolvedValue([makeNotebook()]);
+    vi.mocked(documentsApi.listDocuments).mockResolvedValue([makeDoc({ title: "kech104.pdf" })]);
+    vi.mocked(retrievalApi.search).mockResolvedValue({
+      query: "covalent bond",
+      results: [
+        makeHit({ distance: 0.5915, fused_score: 0.03252, vector_rank: 2, lexical_rank: 1, sparse_score: 4.1234 }),
+        makeHit({ index: 2, chunk_id: "chunk-2", distance: 0.5857, fused_score: 0.01639, vector_rank: 1, lexical_rank: null }),
+      ],
+    });
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: "Chemistry" })).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByLabelText("Notebook"), { target: { value: "nb-1" } });
+    fireEvent.change(screen.getByLabelText("Query"), { target: { value: "covalent bond" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    const first = await screen.findByRole("button", { name: "Open source #1" });
+    expect(screen.getByText(/ordered by fused RRF score/)).toBeInTheDocument();
+    expect(first).toHaveTextContent("RRF 0.0325");
+    expect(first).toHaveTextContent("dense #2 · cos dist 0.5915");
+    expect(first).toHaveTextContent("BM25 #1 · score 4.123");
+    const second = screen.getByRole("button", { name: "Open source #2" });
+    expect(second).toHaveTextContent("not in BM25 list");
+  });
 });

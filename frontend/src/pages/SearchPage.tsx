@@ -300,7 +300,12 @@ export function SearchPage() {
                     Results
                     <span className="normal-case font-normal tracking-normal">
                       {" "}
-                      · top {results.length}, best match first
+                      · top {results.length}, ordered by{" "}
+                      {results[0].rerank_score != null
+                        ? "reranker score"
+                        : results[0].fused_score != null
+                          ? "fused RRF score (dense + BM25)"
+                          : "cosine distance"}
                     </span>
                   </SectionHeading>
                   {results.map((hit) => {
@@ -329,6 +334,13 @@ export function SearchPage() {
                                 {hit.rerank_score.toFixed(4)}
                               </span>
                             </span>
+                          ) : hit.fused_score != null ? (
+                            <span className="shrink-0 text-muted">
+                              <Tip tip={TIPS.fused}>RRF</Tip>{" "}
+                              <span className="font-mono text-accent">
+                                {hit.fused_score.toFixed(4)}
+                              </span>
+                            </span>
                           ) : hit.distance !== null ? (
                             <span className="shrink-0 text-muted">
                               <Tip tip={TIPS.distance}>cos distance</Tip>{" "}
@@ -340,6 +352,32 @@ export function SearchPage() {
                             <span className="shrink-0 text-muted">lexical match</span>
                           )}
                         </div>
+                        {hit.fused_score != null && (
+                          <div className="flex flex-wrap gap-x-4 text-xs text-muted">
+                            <span>
+                              <Tip tip={TIPS.dense}>dense</Tip>{" "}
+                              {hit.vector_rank != null ? (
+                                <span className="font-mono">
+                                  #{hit.vector_rank}
+                                  {hit.distance !== null && ` · cos dist ${hit.distance.toFixed(4)}`}
+                                </span>
+                              ) : (
+                                "not in dense list"
+                              )}
+                            </span>
+                            <span>
+                              <Tip tip={TIPS.lexical}>BM25</Tip>{" "}
+                              {hit.lexical_rank != null ? (
+                                <span className="font-mono">
+                                  #{hit.lexical_rank}
+                                  {hit.sparse_score != null && ` · score ${hit.sparse_score.toFixed(3)}`}
+                                </span>
+                              ) : (
+                                "not in BM25 list"
+                              )}
+                            </span>
+                          </div>
+                        )}
                         <p className="text-sm text-muted line-clamp-3 whitespace-pre-wrap">
                           {cleanParserMarkdown(hit.content)}
                         </p>

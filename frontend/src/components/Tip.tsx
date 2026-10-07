@@ -31,4 +31,7 @@ export const TIPS = {
   position: "Token positions in the chunk body; a phrase matches where the terms sit at consecutive positions.",
   distance: "Cosine distance between query and chunk embeddings — lower means closer in meaning.",
   rerank: "Cross-encoder reranker relevance score — higher is more relevant.",
+  fused: "Reciprocal Rank Fusion: Σ 1/(60 + rank) over the dense and BM25 candidate lists. Results are ordered by this score — higher is better.",
+  dense: "Rank in the dense (embedding kNN) candidate list, with its cosine distance (lower = closer).",
+  lexical: "Rank in the lexical candidate list, with its BM25 score (higher = better match).",
 } as const;

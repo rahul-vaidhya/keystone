@@ -879,6 +879,22 @@ def test_fuse_rrf_both_empty_returns_empty_list() -> None:
     assert fuse_rrf([], []) == []
 
 
+def test_fuse_rrf_exposes_fused_score_and_per_list_ranks() -> None:
+    """The fused order is explained on each hit: RRF score = sum of 1/(60 + rank) over the
+    lists the chunk is in, plus its rank in each list (None when absent)."""
+    a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    vector_hits = [_rrf_hit(b, distance=0.1), _rrf_hit(a, distance=0.2)]
+    lexical_hits = [_rrf_hit(a), _rrf_hit(c)]
+    by_id = {h.chunk_id: h for h in fuse_rrf(vector_hits, lexical_hits)}
+    assert (by_id[a].vector_rank, by_id[a].lexical_rank) == (2, 1)
+    assert by_id[a].fused_score == pytest.approx(1 / 62 + 1 / 61)
+    assert (by_id[b].vector_rank, by_id[b].lexical_rank) == (1, None)
+    assert by_id[b].fused_score == pytest.approx(1 / 61)
+    assert (by_id[c].vector_rank, by_id[c].lexical_rank) == (None, 2)
+    scores = [h.fused_score for h in fuse_rrf(vector_hits, lexical_hits)]
+    assert scores == sorted(scores, reverse=True)
+
+
 def test_fuse_rrf_double_top_rank_outranks_single_top_rank() -> None:
     """A chunk ranked #1 in BOTH lists outranks a chunk ranked #1 in only one list."""
     a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()

@@ -192,6 +192,12 @@ class ChunkHit(BaseModel):
     # ``[{"term", "zone", "tf", "idf", "weight"}]``.
     sparse_score: float | None = None
     sparse_explanation: list[dict] | None = None
+    # Hybrid search only (set by ``fuse_rrf``, ``None`` otherwise): the RRF score that
+    # decides the fused order, and this chunk's 1-indexed rank in each candidate list
+    # (``None`` = not in that list's top-K).
+    fused_score: float | None = None
+    vector_rank: int | None = None
+    lexical_rank: int | None = None
 
     model_config = {"from_attributes": True}
 

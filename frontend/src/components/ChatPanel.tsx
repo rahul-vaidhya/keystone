@@ -101,6 +101,13 @@ function TraceDetails({
                 {hit.distance !== null && <> · distance {hit.distance.toFixed(3)}</>}
                 {hit.rerank_score != null && <> · rerank {hit.rerank_score.toFixed(3)}</>}
                 {hit.sparse_score != null && <> · sparse {hit.sparse_score.toFixed(3)}</>}
+                {hit.fused_score != null && (
+                  <>
+                    {" "}
+                    · RRF {hit.fused_score.toFixed(4)} (dense #{hit.vector_rank ?? "–"}, BM25 #
+                    {hit.lexical_rank ?? "–"})
+                  </>
+                )}
                 {hit.sparse_explanation && hit.sparse_explanation.length > 0 && (
                   <table
                     className="mt-1 mb-2 border-collapse text-[11px]"

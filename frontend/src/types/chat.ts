@@ -111,6 +111,10 @@ export type ChunkTraceHit = {
   // score and its per-term contributions (weights sum to sparse_score).
   sparse_score?: number | null;
   sparse_explanation?: SparseTermContribution[] | null;
+  // Hybrid search only: RRF score that ordered the hits + rank in each candidate list.
+  fused_score?: number | null;
+  vector_rank?: number | null;
+  lexical_rank?: number | null;
 };
 
 export type SparseTermContribution = {

@@ -30,6 +30,9 @@ def assemble_context(query: str, hits: list[ChunkHit]) -> RetrievalSearchRespons
             rerank_score=hit.rerank_score,
             sparse_score=hit.sparse_score,
             sparse_explanation=hit.sparse_explanation,
+            fused_score=hit.fused_score,
+            vector_rank=hit.vector_rank,
+            lexical_rank=hit.lexical_rank,
         )
         for position, hit in enumerate(hits, start=1)
     ]
@@ -83,4 +86,16 @@ def fuse_rrf(
                 }
             )
 
-    return sorted(hit_by_id.values(), key=lambda hit: scores[hit.chunk_id], reverse=True)
+    vector_rank = {hit.chunk_id: rank for rank, hit in enumerate(vector_hits, start=1)}
+    lexical_rank = {hit.chunk_id: rank for rank, hit in enumerate(lexical_hits, start=1)}
+    fused = [
+        hit.model_copy(
+            update={
+                "fused_score": scores[hit.chunk_id],
+                "vector_rank": vector_rank.get(hit.chunk_id),
+                "lexical_rank": lexical_rank.get(hit.chunk_id),
+            }
+        )
+        for hit in hit_by_id.values()
+    ]
+    return sorted(fused, key=lambda hit: hit.fused_score, reverse=True)

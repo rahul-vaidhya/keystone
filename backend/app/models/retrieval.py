@@ -42,6 +42,11 @@ class ContextBlock(BaseModel):
     # Persisted into ``message_traces.hits`` with the rest of the block.
     sparse_score: float | None = None
     sparse_explanation: list[dict] | None = None
+    # Hybrid search only — surfaced from ``ChunkHit`` (set by ``fuse_rrf``): the RRF
+    # score that orders the results and the rank in each candidate list.
+    fused_score: float | None = None
+    vector_rank: int | None = None
+    lexical_rank: int | None = None
 
 
 class RetrievalSearchResponse(BaseModel):

@@ -17,6 +17,12 @@ export type ContextBlock = {
   // null for a lexical-only hybrid hit (no cosine distance).
   distance: number | null;
   rerank_score?: number | null;
+  // Hybrid search only: in-house BM25/tf-idf score (null if not in the lexical top-K),
+  // the RRF score that orders the results, and the rank in each candidate list.
+  sparse_score?: number | null;
+  fused_score?: number | null;
+  vector_rank?: number | null;
+  lexical_rank?: number | null;
   // Search-page only (app.models.retrieval.SearchResultBlock): the chat-citation page
   // derivation, null when unknown.
   page_start?: number | null;
