@@ -1,0 +1,23 @@
+{
+  "_about": "Hand-judged queries over Goosse et al., 'Introduction to climate dynamics and climate modelling' (climate.be/textbook), Chapter 1 (24 pages) and Chapter 2 (33 pages). Relevance unit = one PDF page; a page is relevant when it substantively discusses the query topic (judged from the section structure + reading the passage, not by keyword match alone). 'kind' marks query types: keyword = uses the book's own term; paraphrase = describes the concept without its key term; misspelled = typo of a key term.",
+  "queries": [
+    {"id": "q01", "kind": "keyword", "query": "What is Ekman transport?", "relevant": {"1": [9, 10]}},
+    {"id": "q02", "kind": "misspelled", "query": "what is ekamn transport", "relevant": {"1": [9, 10]}},
+    {"id": "q03", "kind": "paraphrase", "query": "Why does cold deep water rise to the surface along the equator?", "relevant": {"1": [9, 10]}},
+    {"id": "q04", "kind": "keyword", "query": "What drives the thermohaline circulation?", "relevant": {"1": [10, 11]}},
+    {"id": "q05", "kind": "paraphrase", "query": "How does air temperature change as you go higher in the lower atmosphere?", "relevant": {"1": [2, 3]}},
+    {"id": "q06", "kind": "keyword", "query": "Explain the greenhouse effect", "relevant": {"2": [3, 4, 5]}},
+    {"id": "q07", "kind": "paraphrase", "query": "How is heat carried from the tropics towards the poles?", "relevant": {"2": [16, 17, 18]}},
+    {"id": "q08", "kind": "keyword", "query": "How much solar radiation arrives at the top of the atmosphere?", "relevant": {"2": [1, 7, 10, 11, 12]}},
+    {"id": "q09", "kind": "keyword", "query": "What is the biological pump in the ocean carbon cycle?", "relevant": {"2": [28, 29]}},
+    {"id": "q10", "kind": "keyword", "query": "How does dissolved inorganic carbon chemistry let the ocean absorb CO2?", "relevant": {"2": [26, 27, 28]}},
+    {"id": "q11", "kind": "keyword", "query": "What are the components of the cryosphere?", "relevant": {"1": [15, 16, 17, 18, 19]}},
+    {"id": "q12", "kind": "keyword", "query": "Why do snow and ice have a high albedo?", "relevant": {"1": [20, 21, 22]}},
+    {"id": "q13", "kind": "paraphrase", "query": "What happens to the salt in seawater when sea ice freezes?", "relevant": {"1": [20]}},
+    {"id": "q14", "kind": "keyword", "query": "Describe the general circulation of the atmosphere and the Hadley cells", "relevant": {"1": [5, 6]}},
+    {"id": "q15", "kind": "keyword", "query": "How does the hydrological cycle move water between reservoirs?", "relevant": {"2": [21, 22, 23]}},
+    {"id": "q16", "kind": "paraphrase", "query": "How do rocks slowly remove carbon from the atmosphere over millions of years?", "relevant": {"2": [31]}},
+    {"id": "q17", "kind": "keyword", "query": "How is the salinity of sea water defined?", "relevant": {"1": [8]}},
+    {"id": "q18", "kind": "keyword", "query": "What causes monsoons?", "relevant": {"1": [6, 7]}}
+  ]
+}
