@@ -6,9 +6,13 @@ in this file.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.config import startup_check
 from app.config.logging import configure_logging
 from app.config.settings import settings
 from app.routes.access_roles import router as access_roles_router
@@ -24,7 +28,17 @@ from app.utils.http import register_exception_handlers
 
 configure_logging()
 
-app = FastAPI(title="Keystone", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    # Refuse to start (with the fix in the message) when Postgres is down or not migrated,
+    # instead of answering every request with a bare 500.
+    if startup_check.enabled():
+        await startup_check.check_database()
+    yield
+
+
+app = FastAPI(title="Keystone", version="0.1.0", lifespan=lifespan)
 
 origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 app.add_middleware(

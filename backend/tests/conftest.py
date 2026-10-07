@@ -23,6 +23,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 # Tests assume the fake/off defaults: never read backend/.env (app/config/settings.py).
 os.environ["KEYSTONE_IGNORE_DOTENV"] = "1"
+# Tests build their own Testcontainers DB per fixture; the API startup DB check is for
+# real runs only (app/config/startup_check.py).
+os.environ["STARTUP_DB_CHECK"] = "false"
 
 BACKEND = Path(__file__).resolve().parents[1]
 

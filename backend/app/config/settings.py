@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # MIGRATIONS_DATABASE_URL when set and falls back to DATABASE_URL (dev/test use one
     # superuser URL for both; superusers bypass RLS even under FORCE).
     DATABASE_URL: str = "postgresql+asyncpg://veratas:veratas@localhost:5432/veratas"
+    # API startup refuses to run when Postgres is unreachable or not migrated to head
+    # (app/config/startup_check.py). The test suite turns it off (tests/conftest.py).
+    STARTUP_DB_CHECK: bool = True
     MIGRATIONS_DATABASE_URL: str | None = None
 
     # --- Redis (arq queue) ---
