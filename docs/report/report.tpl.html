@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Veratas IR Report</title>
+<style>
+  :root { --ink:#1f1f1e; --muted:#5d5c56; --rule:#d9d8d0; --accent:#2a78d6; --bg:#ffffff; --tint:#f4f3ee; }
+  @page { size: A4; margin: 15mm 15mm 16mm 15mm; }
+  html { background: var(--bg); }
+  body { font-family: "Segoe UI", Inter, system-ui, sans-serif; color: var(--ink); background: var(--bg);
+         font-size: 10pt; line-height: 1.42; max-width: 180mm; margin: 0 auto; padding: 0 16px; }
+  h1 { font-size: 19pt; margin: 0 0 2px; letter-spacing: -0.01em; }
+  h2 { font-size: 12.5pt; margin: 16px 0 6px; padding-bottom: 3px; border-bottom: 1.5px solid var(--ink); break-after: avoid; }
+  h3 { font-size: 10.5pt; margin: 10px 0 4px; break-after: avoid; }
+  p { margin: 0 0 6px; }
+  ul, ol { margin: 0 0 6px; padding-left: 18px; }
+  li { margin: 0 0 2px; }
+  code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 8.6pt; background: var(--tint); padding: 0 3px; border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; margin: 4px 0 8px; font-size: 8.8pt; break-inside: avoid; }
+  th, td { border-bottom: 1px solid var(--rule); padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: var(--tint); font-weight: 600; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.best td { font-weight: 600; }
+  .sub { color: var(--muted); font-size: 9.5pt; margin-bottom: 10px; }
+  .meta { display: grid; grid-template-columns: 110px 1fr; gap: 1px 10px; font-size: 9pt; margin: 8px 0 4px; }
+  .meta b { color: var(--muted); font-weight: 600; }
+  figure { margin: 6px 0 10px; break-inside: avoid; }
+  figcaption { font-size: 8.6pt; color: var(--muted); margin-top: 2px; }
+  .box { background: var(--tint); border-left: 3px solid var(--accent); padding: 6px 9px; margin: 6px 0 8px; font-size: 9.3pt; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .todo { background: #fff4d6; padding: 0 3px; }
+  .refs li { font-size: 8.8pt; }
+  @media (max-width: 640px) { .two { grid-template-columns: 1fr; } body { font-size: 11pt; } table { font-size: 9pt; display: block; overflow-x: auto; } }
+</style>
+</head>
+<body>
+
+<h1>Veratas: an inspectable RAG system with sentence-level citation checking</h1>
+<div class="sub">CSD358 Information Retrieval, mid-semester hackathon. Track <b>T1: Retrieval-Augmented Generation and trustworthy answers</b></div>
+<div class="meta">
+  <b>Team</b><span>Rahul Vaidhya (2410110259), Akshat Bansal (2410110039), Ananmay Dubey (2410110513), Yug Gupta (2410110490)</span>
+  <b>Code</b><span>https://github.com/nwopes/notebook_lm_clone (README: setup, run, data, status)</span>
+  <b>Demo video</b><span class="todo">[unlisted YouTube / Drive link]</span>
+</div>
+
+<h2>1. Problem and track relevance</h2>
+<p><b>User need.</b> Students and teams increasingly ask LLM chat tools about their own documents (lecture notes,
+textbooks, reports). A plain LLM answers fluently, but the reader cannot tell which parts come from the
+sources and which are invented. Our users need (a) answers grounded only in the documents they uploaded, (b) a
+pointer from every claim to the exact passage and page, (c) a signal when a claim is <i>not</i> supported, and
+(d) a refusal when the sources don't contain the answer.</p>
+<p><b>Why it is a T1 problem.</b> The track's thesis is that "an LLM is only as good as what gets retrieved for
+it". Retrieval-augmented generation (Lewis et al., 2020) moved the quality problem from the generator to the
+retriever, and recent work studies whether generated citations actually support the generated text
+(Gao et al., 2023, ALCE; Liu et al., 2023, verifiability of generative search engines: only about half of
+sentences in commercial answers were fully supported by their citations). We therefore built the retriever
+as a component the user can open up and inspect: postings, df/idf, per-term score contributions, fusion
+ranks. We added a <b>citation checker</b> that re-scores every generated sentence against the chunk it cites.
+That is the second sample idea for this track, extended with inherited citations, sentence windows and a
+measured evaluation.</p>
+<p><b>Papers referred:</b> Lewis et al. (RAG); Robertson &amp; Zaragoza (BM25); Cormack et al. (RRF, SIGIR'09);
+Thakur et al. (BEIR); Wadden et al. (SciFact); Gao et al. (ALCE); Liu et al. (verifiability); Manning,
+Raghavan &amp; Schütze (IIR textbook). See References.</p>
+
+<h2>2. How we used IR</h2>
+<figure>
+<svg viewBox="0 0 700 300" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Inter, sans-serif" font-size="9.5" role="img" aria-label="System pipeline">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5d5c56"/></marker></defs>
+  <g fill="#f4f3ee" stroke="#5d5c56" stroke-width="1">
+    <rect x="6" y="10" width="92" height="52" rx="6"/>
+    <rect x="118" y="10" width="140" height="52" rx="6"/>
+    <rect x="278" y="10" width="140" height="52" rx="6"/>
+    <rect x="440" y="4" width="252" height="30" rx="6"/>
+    <rect x="440" y="40" width="252" height="40" rx="6"/>
+    <rect x="6" y="122" width="92" height="44" rx="6"/>
+    <rect x="118" y="116" width="150" height="56" rx="6"/>
+    <rect x="290" y="104" width="128" height="36" rx="6"/>
+    <rect x="290" y="148" width="128" height="36" rx="6"/>
+    <rect x="440" y="122" width="110" height="44" rx="6"/>
+    <rect x="570" y="122" width="122" height="44" rx="6"/>
+    <rect x="118" y="214" width="150" height="44" rx="6"/>
+    <rect x="290" y="214" width="128" height="56" rx="6"/>
+    <rect x="440" y="214" width="252" height="56" rx="6"/>
+  </g>
+  <g fill="#1f1f1e" text-anchor="middle">
+    <text x="52" y="32" font-weight="600">PDF upload</text><text x="52" y="47">checksum dedupe</text>
+    <text x="188" y="30" font-weight="600">Parse</text><text x="188" y="44">pypdf text layer + "Page N"</text><text x="188" y="56">markers (OCR fallback)</text>
+    <text x="348" y="30" font-weight="600">Structure = "document"</text><text x="348" y="44">sections; ~1 000-char chunks</text><text x="348" y="56">never crossing a section</text>
+    <text x="566" y="23"><tspan font-weight="600">Dense index</tspan>: text-embedding-3-small → pgvector</text>
+    <text x="566" y="56"><tspan font-weight="600">Sparse index</tspan>: case-fold, stop words, Porter;</text>
+    <text x="566" y="70">positional zoned postings, idf, champion lists</text>
+    <text x="52" y="141" font-weight="600">Question</text><text x="52" y="155">(chat / search)</text>
+    <text x="193" y="136" font-weight="600">Query router</text><text x="193" y="150">LLM: BROAD vs SPECIFIC</text><text x="193" y="163">(+ same analysis pipeline)</text>
+    <text x="354" y="120" font-weight="600">Dense kNN top-25</text><text x="354" y="133">cosine distance</text>
+    <text x="354" y="164" font-weight="600">BM25 top-25</text><text x="354" y="177">heap top-K</text>
+    <text x="495" y="141" font-weight="600">RRF fusion</text><text x="495" y="155">Σ 1/(60+rank) → top-8</text>
+    <text x="631" y="141" font-weight="600">LLM answer</text><text x="631" y="155">gpt-4o-mini, cites [n]</text>
+    <text x="193" y="233" font-weight="600">Broad path</text><text x="193" y="246">map-reduce over</text><text x="193" y="257">section summaries</text>
+    <text x="354" y="234" font-weight="600">Citation resolution</text><text x="354" y="248">[n] → chunk → page</text><text x="354" y="261">(fresh DB read)</text>
+    <text x="566" y="234" font-weight="600">Claim checker (per sentence)</text><text x="566" y="248">tf-idf cosine vs best window + embedding cosine</text><text x="566" y="261">→ supported / weak / uncited, shown in UI</text>
+  </g>
+  <g stroke="#5d5c56" stroke-width="1.2" fill="none" marker-end="url(#a)">
+    <path d="M98,36 H116"/><path d="M258,36 H276"/><path d="M418,30 H438 V22"/><path d="M418,42 H438 V58"/>
+    <path d="M98,144 H116"/><path d="M268,138 H288 V124"/><path d="M268,150 H288 V166"/>
+    <path d="M418,122 H438 V136"/><path d="M418,166 H438 V152"/><path d="M550,144 H568"/>
+    <path d="M193,172 V212"/><path d="M631,166 V196 H354 V212"/><path d="M418,242 H438"/>
+    <path d="M566,80 V104 H354 V102" stroke-dasharray="3 3"/>
+  </g>
+  <text x="590" y="97" font-size="8.5" fill="#5d5c56">indexes serve both channels</text>
+</svg>
+<figcaption>Figure 1. Pipeline. Top row: ingestion (background worker). Middle: specific-question path. Bottom: broad-question path and answer verification. The Search page exposes the sparse index directly (ranked, Boolean, phrase) with full traces.</figcaption>
+</figure>
+
+<table>
+<tr><th style="width:23%">IR principle (lecture topic)</th><th style="width:33%">Where in the code</th><th>Why / how it is used</th></tr>
+<tr><td>Deciding what a document is</td><td><code>services/ingestion/structuring.py</code> <code>_build_sections_and_chunks</code></td><td>The retrieval unit is a ~1 000-char chunk inside one leaf section (one page or one recovered heading). Small enough to cite precisely, large enough to hold a definition. Every chunk keeps char offsets and a page.</td></tr>
+<tr><td>Tokenization, normalization, case folding, stop words, Porter stemming</td><td><code>retrieval/sparse/text.py</code> <code>tokenize</code>, <code>analyze_with_positions</code></td><td>NFKC + <code>casefold</code>, a short function-word stop list (positions are kept so phrase distance stays correct), NLTK Porter (original algorithm). The same pipeline runs on documents and queries; the Search page shows every stage.</td></tr>
+<tr><td>Inverted index: dictionary + positional postings; zone index</td><td><code>retrieval/sparse/index.py</code> <code>InvertedIndex.build</code></td><td>Postings per <code>(zone, term)</code> sorted by doc id with positions; zones = heading / body. df counts a document once across zones. Built per notebook and cached (<code>sparse_channel.py</code>).</td></tr>
+<tr><td>Boolean retrieval, postings intersection, query optimization</td><td><code>sparse/scoring.py</code> <code>intersect</code>, <code>union</code>, <code>and_not</code>, <code>_intersect_many</code>; parser + traces in <code>sparse/trace.py</code></td><td>Linear merge of sorted postings; AND terms processed in increasing-df order (shown to the user as the merge order). Malformed queries get a 422 with a reason.</td></tr>
+<tr><td>Positional index and phrase queries</td><td><code>scoring.py</code> <code>phrase_search</code></td><td>Exact phrases such as "Ekman transport": intersect, then check consecutive positions. Snippets are centred on the real occurrence.</td></tr>
+<tr><td>tf-idf, VSM, cosine, SMART <code>lnc.ltc</code></td><td><code>scoring.py</code> <code>search(scheme="tfidf")</code>; norms precomputed in <code>index.py</code> <code>doc_norm</code></td><td>Log-tf documents with cosine normalization, ltc queries; the score is the dot product. Each hit lists every term's tf, idf and weight ("Why this score?").</td></tr>
+<tr><td>BM25 (beyond syllabus)</td><td><code>scoring.py</code> <code>search(scheme="bm25")</code>, k<sub>1</sub>=1.2, b=0.75</td><td>The production lexical channel (<code>SPARSE_RETRIEVAL_MODE=bm25</code>). It wins over tf-idf on both evaluations (Section 5).</td></tr>
+<tr><td>Efficient scoring: term-at-a-time, heap top-K, index elimination, champion lists</td><td><code>scoring.py</code> <code>search</code>, <code>_champion_candidates</code>; <code>index.py</code> champions (r=50)</td><td>Accumulators + <code>heapq.nlargest</code> (O(N log K)); an idf threshold drops near-stop-word terms; champion lists cut SciFact query time 2.4× (3.08 → 1.26 ms) with identical nDCG@10.</td></tr>
+<tr><td>Zone weighting</td><td><code>search(zone_weights=…)</code>, <code>SPARSE_HEADING_ZONE_WEIGHT=2.0</code></td><td>Score = Σ<sub>z</sub> w<sub>z</sub>·score<sub>z</sub>. Measured honestly: the heading boost <i>hurt</i> SciFact (nDCG 0.686 → 0.655) and over-weights short headings for tf-idf (Section 5.2).</td></tr>
+<tr><td>Dense retrieval + rank fusion (beyond syllabus)</td><td><code>retrieval/service.py</code>; <code>retrieval/fusion.py</code> <code>fuse_rrf</code></td><td>pgvector cosine kNN and BM25 each return 25 candidates; Reciprocal Rank Fusion (k=60) merges them and the top 8 become numbered context blocks.</td></tr>
+<tr><td>Cosine similarity for verification</td><td><code>chat/citation_check.py</code> <code>score_claims</code>, <code>chunk_windows</code>; <code>scoring.py</code> <code>tfidf_cosine</code></td><td>Each answer sentence is an ltc vector; lexical = max cosine against 1–2-sentence windows of each cited chunk (idf from the notebook index); semantic = embedding cosine; combined = mean, with threshold 0.33.</td></tr>
+<tr><td>Precision / recall / P@k, MRR, nDCG</td><td><code>eval/metrics.py</code>, <code>eval/run_ablation.py</code>, <code>eval/textbook_eval.py</code></td><td>Retriever evaluated separately from the generator, on a public benchmark and on our own judged queries.</td></tr>
+</table>
+
+<h2>3. Beyond IR</h2>
+<ul>
+  <li><b>LLM generation with a grounding contract</b> (gpt-4o-mini via OpenRouter): answer only from the numbered blocks, cite as <code>[n]</code>, otherwise reply with a fixed refusal sentence. <code>[n]</code> markers are mapped back to chunks by a fresh database read, so a citation can never point at text that was not retrieved.</li>
+  <li><b>Query routing</b>: one cheap LLM call classifies the question as BROAD or SPECIFIC. Broad questions ("summarize these chapters") cannot be answered from top-8 chunks, so they go to a map-reduce over LLM-written <b>section summaries</b> produced at ingestion (enrichment). We tightened the classifier prompt after finding "What is X?" misrouted as broad; 9/9 test questions now route correctly.</li>
+  <li><b>Semantic outline</b>: an LLM recovers real headings (e.g. "1.3.2 Oceanic circulation") from the page text, which populates the heading zone.</li>
+  <li><b>Systems</b>: FastAPI, Postgres + pgvector, Redis/arq background ingestion, React UI with streaming (SSE), multi-tenant orgs, notebook sharing and folder-level access roles. 495 backend and 224 frontend automated tests.</li>
+</ul>
+
+<h2>4. Novelty and creativity</h2>
+<ol>
+  <li><b>A glass-box retriever inside a production-style RAG app.</b> NotebookLM-like tools hide retrieval. Our Search page and debug panel show the analyzer stages, postings merge order, df/idf, per-term/per-zone contributions and fusion ranks for the exact chunks the LLM saw. The same from-scratch index is the live lexical channel of the hybrid retriever, not a separate toy.</li>
+  <li><b>Sentence-level citation checking with inherited citations.</b> LLMs often put one <code>[n]</code> at the end of a paragraph. We propagate the marker to the paragraph's earlier sentences, score each sentence against its <i>best-matching window</i> of the cited chunk (not the whole chunk), and fuse lexical and semantic evidence. The UI labels each sentence supported / weak / uncited with its scores.</li>
+  <li><b>We measured what the checker cannot do.</b> On SciFact we separate easy negatives (random abstract), hard negatives (on-topic, BM25-mined) and contradictions. The checker almost never accepts an off-topic citation, but it cannot detect contradiction. We report this rather than hide it (Section 5.3).</li>
+  <li><b>Parser fidelity as a retrieval problem.</b> While testing we found that the hosted PDF parser silently <i>dropped bold and italic spans</i>. In a textbook those are the defined terms, so "what is Ekman transport" was refused even though the book defines it. Switching to the PDF's own text layer (keeping per-page markers and real page numbers) raised MRR@10 for <b>every</b> retrieval method (Fig. 2). Most RAG evaluations assume parsing is lossless; we measured that it was not.</li>
+</ol>
+
+<h2>5. Evaluation</h2>
+<h3>5.1 Retriever ablation on BEIR SciFact (public judgments, 5 183 abstracts, 300 test queries)</h3>
+<table>
+<tr><th>method</th><th class="n">P@1</th><th class="n">P@5</th><th class="n">R@10</th><th class="n">MRR@10</th><th class="n">nDCG@10</th><th class="n">ms/q</th></tr>
+<tr><td>tf-idf lnc.ltc (baseline)</td><td class="n">.483</td><td class="n">.147</td><td class="n">.759</td><td class="n">.579</td><td class="n">.619</td><td class="n">3.10</td></tr>
+<tr><td>BM25</td><td class="n">.550</td><td class="n">.166</td><td class="n">.832</td><td class="n">.647</td><td class="n">.686</td><td class="n">3.08</td></tr>
+<tr><td>BM25 + title zone ×2</td><td class="n">.520</td><td class="n">.159</td><td class="n">.796</td><td class="n">.617</td><td class="n">.655</td><td class="n">2.94</td></tr>
+<tr><td>BM25 + champion lists</td><td class="n">.550</td><td class="n">.166</td><td class="n">.832</td><td class="n">.647</td><td class="n">.686</td><td class="n">1.26</td></tr>
+<tr><td>dense (text-embedding-3-small)</td><td class="n">.593</td><td class="n">.178</td><td class="n">.854</td><td class="n">.680</td><td class="n">.717</td><td class="n">1.22</td></tr>
+<tr class="best"><td>hybrid: BM25 + dense, RRF</td><td class="n">.610</td><td class="n">.178</td><td class="n">.866</td><td class="n">.700</td><td class="n">.735</td><td class="n">4.42</td></tr>
+</table>
+<figure>{{CHART_SCIFACT}}<figcaption>Figure 3. SciFact nDCG@10 (y-axis 0–0.8). Rerun on 2026-10-07; sparse rows reproduce the committed results exactly, dense differs in the 4th decimal.</figcaption></figure>
+<p>BM25 beats the tf-idf baseline on every metric (+0.067 nDCG@10). Dense beats BM25, and RRF fusion is best:
+per query, BM25 wins 52 and dense wins 66 of 300 (margin &gt; 0.1), so the two channels fail on different
+queries, which is why fusion helps. BM25 wins on queries with rare exact terms (gene names such as "CTCF");
+dense wins on paraphrased claims. Champion lists give the same quality 2.4× faster.</p>
+
+<h3>5.2 Our own judged queries on the demo corpus (climate textbook, 2 chapters, 57 pages)</h3>
+<p>We wrote 18 questions (12 using the book's key term, 5 paraphrased without it, 1 misspelled) and judged
+relevance at the <b>page</b> level by reading the relevant sections, then re-checked every query against all 57 pages (six judgments corrected, e.g. a reference-list page removed) (<code>eval/textbook_qrels.json</code>). A retrieved
+chunk is relevant if its page span covers a judged page. Everything runs against the live app
+(<code>eval/textbook_eval.py</code>), so parsing, chunking and ranking are all measured together.</p>
+<div class="two">
+<table>
+<tr><th>method (after parser fix)</th><th class="n">P@5</th><th class="n">P@10</th><th class="n">R@10</th><th class="n">Hit@5</th><th class="n">MRR@10</th></tr>
+<tr><td>tf-idf lnc.ltc (baseline)</td><td class="n">.578</td><td class="n">.439</td><td class="n">.961</td><td class="n">.833</td><td class="n">.854</td></tr>
+<tr><td>BM25</td><td class="n">.578</td><td class="n">.400</td><td class="n">.950</td><td class="n">.944</td><td class="n">.909</td></tr>
+<tr class="best"><td>hybrid RRF (production)</td><td class="n">.633</td><td class="n">.450</td><td class="n">.961</td><td class="n">1.00</td><td class="n">.935</td></tr>
+<tr><td>dense only</td><td class="n">.600</td><td class="n">.450</td><td class="n">.970</td><td class="n">1.00</td><td class="n">.935</td></tr>
+</table>
+<table>
+<tr><th>MRR@10 by query kind</th><th class="n">n</th><th class="n">tf-idf</th><th class="n">BM25</th><th class="n">hybrid</th><th class="n">dense</th></tr>
+<tr><td>keyword</td><td class="n">12</td><td class="n">.927</td><td class="n">1.00</td><td class="n">1.00</td><td class="n">.903</td></tr>
+<tr><td>paraphrase</td><td class="n">5</td><td class="n">.829</td><td class="n">.850</td><td class="n">.900</td><td class="n">1.00</td></tr>
+<tr><td>misspelled ("ekamn")</td><td class="n">1</td><td class="n">.111</td><td class="n">.111</td><td class="n">.333</td><td class="n">1.00</td></tr>
+</table>
+</div>
+<figure>{{CHART_PARSER}}<figcaption>Figure 2. Same 18 queries, same retrieval code, two parsers. The hosted parser lost emphasized terms (e.g. the 3 occurrences of "Ekman" in Ch. 1 became 1, and the sentence defining it lost the term), which hurt every method; the local text layer fixes it.</figcaption></figure>
+<p><b>Reading the results.</b> Hybrid is the best production choice: it has the highest P@5 and P@10, ties dense on MRR@10, and
+finds a relevant page in the top 5 for <i>every</i> query. On keyword queries BM25 ranks a relevant page first every time
+(MRR 1.00) while dense is worse (0.903, e.g. q04 "thermohaline circulation": dense ranks it 3rd, BM25 1st). On paraphrases and the typo dense is clearly
+better, and fusion partly recovers it. tf-idf lnc.ltc loses to BM25 for a concrete reason we could trace with the
+contribution view: in "What is Ekman transport?", the heading-zone match on "transport" in short headings such as
+"2.1.5.2 Heat transport" outweighs the rare body term "ekman" after cosine normalization (MRR 0.12 vs 1.00).
+BM25 avoids it: it normalizes each zone by its length relative to the average zone length and saturates tf, whereas cosine normalization inflates every term of a two-word heading. Caveat: with only 18 queries and 1–5 relevant pages each,
+R@10 saturates; differences of a few hundredths are not significant.</p>
+
+<h3>5.3 Citation checker on SciFact claims (does a "supported" label mean anything?)</h3>
+<table>
+<tr><th>pair kind (dev)</th><th class="n">n</th><th class="n">lexical</th><th class="n">semantic</th><th class="n">combined</th><th class="n">% "supported" @0.33</th></tr>
+<tr><td>claim + its SUPPORT abstract</td><td class="n">138</td><td class="n">.497</td><td class="n">.651</td><td class="n">.574</td><td class="n">97.8%</td></tr>
+<tr><td>claim + CONTRADICT abstract</td><td class="n">71</td><td class="n">.412</td><td class="n">.618</td><td class="n">.515</td><td class="n">88.7%</td></tr>
+<tr><td>claim + on-topic wrong abstract (BM25 hard negative)</td><td class="n">300</td><td class="n">.359</td><td class="n">.494</td><td class="n">.426</td><td class="n">80.7%</td></tr>
+<tr><td>claim + random abstract</td><td class="n">300</td><td class="n">.019</td><td class="n">.209</td><td class="n">.114</td><td class="n">1.0%</td></tr>
+</table>
+<p>Against off-topic citations the checker is near perfect (ROC-AUC 0.999, P = R = 0.978 at 0.33). Against on-topic
+wrong citations it still ranks well (AUC 0.808) but the threshold is too lenient: tuning on the train split gives 0.49
+(dev F1 0.524 → 0.609). The best-matching window points at a gold rationale sentence 55% of the time (random
+window: 27%, lead sentence: 6.5%). It is <b>not</b> an entailment test: SUPPORT vs CONTRADICT AUC is 0.61.</p>
+
+<h3>5.4 Working-system sanity check</h3>
+<p>A scripted end-to-end run against the live stack (fresh account, 3 PDFs, real models) passes 29 of 30 scripted checks; the one miss is our own over-strict check that tf-idf's top hit for "Ekman transport" mentions Ekman, which is exactly the zone-normalization effect analysed in 5.2. Verified:
+sign-up/login, upload and checksum dedupe, non-PDF rejection (415), READY in ~25 s, ranked/Boolean/phrase search
+(|ekman| = |ekman AND upwelling| + |ekman AND NOT upwelling|: 3 = 2 + 1), malformed Boolean → 422, cited streaming
+answers with page numbers and claim checks (e.g. "what is ekamn transport" → pages 9–10, 3/3 claims supported), refusal
+for an off-corpus question ("Who won the 2022 FIFA World Cup?"), broad summary, history, trace, feedback, overview, and
+cross-org isolation (404).</p>
+
+<h2>6. Limitations and next steps</h2>
+<ul>
+  <li><b>No entailment.</b> "Supported" means on-topic lexical/semantic support. 89% of contradicting claims pass. Next: an NLI cross-encoder on (sentence, best window), and moving the threshold to the tuned 0.49.</li>
+  <li><b>Sparse channel has no spelling tolerance</b> ("ekamn" matches only "transport", MRR 0.11). Next: k-gram index + edit distance spelling correction (IIR ch. 3), shown in the trace.</li>
+  <li><b>Small judged set</b> (18 queries, one corpus, judged by the team, single assessor). Next: 50+ queries, two assessors and agreement (κ).</li>
+  <li><b>Freshness gap</b>: section summaries arrive ~1 min after a document is READY; until then broad questions fall back to normal retrieval. Broad answers cite sections and have no claim checks.</li>
+  <li><b>Latency</b>: 5–15 s per answer (LLM-bound); broad questions add a classification and map-reduce calls.</li>
+  <li><b>Security items from QA</b> (e.g. notebook chat history visible to all members) are tracked in <code>.claude/known-issues.md</code>.</li>
+</ul>
+<p><b>Course-project roadmap.</b> (1) Spelling correction + query-term proximity scoring in the sparse channel; (2) NLI-based
+claim verification and calibrated thresholds; (3) learning-to-rank over BM25, dense, zone and proximity features
+using the feedback (thumbs) the app already stores; (4) larger judged query set with inter-assessor agreement.</p>
+
+<h2>7. Work division</h2>
+<table>
+<tr><th style="width:26%">Member</th><th>Components owned</th></tr>
+<tr><td>Akshat Bansal</td><td>Core system: ingestion pipeline, from-scratch sparse IR core (analyzer, positional/zone index, tf-idf/BM25, Boolean/phrase), hybrid RRF retrieval, RAG chat and citation resolution</td></tr>
+<tr><td>Rahul Vaidhya</td><td>Local deployment and end-to-end testing, parser-fidelity fix (pypdf text layer), query-router fix, streaming error handling, judged textbook evaluation, report and README</td></tr>
+<tr><td>Ananmay Dubey</td><td>Citation checker and its SciFact evaluation (hard negatives, contradiction analysis, threshold tuning)</td></tr>
+<tr><td>Yug Gupta</td><td>SciFact retrieval ablation (BEIR harness, sparse vs dense analysis), Search page traces, demo video</td></tr>
+</table>
+
+<h2>8. AI-use declaration</h2>
+<ul>
+  <li><b>AI coding agent:</b> Claude Code (Anthropic) was used throughout development to write and refactor most of
+  the backend and frontend code and the tests, under the team's review. The repository's <code>.claude/</code> folder
+  records that workflow. In the final session it was also used to set up and debug the local environment, find and
+  fix the PDF-parser defect and the query-router misclassification, return proper errors from the streaming
+  endpoint, write <code>eval/textbook_eval.py</code>, and draft this report and the README.</li>
+  <li><b>Relevance judgments</b> for the 18 textbook queries were drafted with the AI agent from the book's section structure
+  and passages, then re-checked against all 57 pages with the same agent (six judgments corrected, e.g. a bibliography page removed).</li>
+  <li><b>LLMs and models inside the system</b> (via OpenRouter): <code>gpt-4o-mini</code> for answers, query routing, section
+  summaries, overview and heading recovery; <code>text-embedding-3-small</code> for dense retrieval and the semantic half of the
+  checker. Ranking, the inverted index, Boolean/phrase processing and evaluation metrics are our own code. Libraries: NLTK
+  (Porter stemmer only), pypdf (PDF text layer), pgvector (vector kNN), numpy (evaluation).</li>
+</ul>
+
+<h2>References</h2>
+<ol class="refs">
+  <li>P. Lewis et al. Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks. NeurIPS 2020.</li>
+  <li>S. Robertson, H. Zaragoza. The Probabilistic Relevance Framework: BM25 and Beyond. Foundations and Trends in IR, 2009.</li>
+  <li>G. V. Cormack, C. L. A. Clarke, S. Büttcher. Reciprocal Rank Fusion outperforms Condorcet and individual rank learning methods. SIGIR 2009.</li>
+  <li>N. Thakur et al. BEIR: A Heterogeneous Benchmark for Zero-shot Evaluation of Information Retrieval Models. NeurIPS Datasets &amp; Benchmarks 2021.</li>
+  <li>D. Wadden et al. Fact or Fiction: Verifying Scientific Claims (SciFact). EMNLP 2020.</li>
+  <li>T. Gao, H. Yen, J. Yu, D. Chen. Enabling Large Language Models to Generate Text with Citations (ALCE). EMNLP 2023.</li>
+  <li>N. F. Liu, T. Zhang, P. Liang. Evaluating Verifiability in Generative Search Engines. Findings of EMNLP 2023.</li>
+  <li>C. D. Manning, P. Raghavan, H. Schütze. Introduction to Information Retrieval. Cambridge University Press, 2008.</li>
+  <li>M. F. Porter. An algorithm for suffix stripping. Program 14(3), 1980.</li>
+  <li>Data: H. Goosse et al., Introduction to climate dynamics and climate modelling, climate.be/textbook (Ch. 1–2); SciFact via BEIR.</li>
+</ol>
+</body>
+</html>

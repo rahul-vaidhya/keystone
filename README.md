@@ -1,230 +1,195 @@
-# Veratas
+# Veratas: trustworthy RAG over your own documents
 
-Private, source-grounded company knowledge base (NotebookLM-style), multi-tenant.
+**CSD358 IR Hackathon, Track T1: Retrieval-Augmented Generation and trustworthy answers.**
 
-- **Backend:** FastAPI + async SQLAlchemy + Postgres/pgvector + arq (Redis job queue)
-- **Frontend:** Vite + React SPA
-- **Architecture:** Express-style MVC backend (`backend/app/{models,routes,controllers,
-  services,middleware,config,utils}/`, JSON-only, no view layer) + conventional React
-  SPA frontend (`frontend/src/{pages,components,layouts,services,context,hooks,types,
-  styles}/`). Full detail in `.claude/context/architecture.md`.
+Veratas is a NotebookLM-style app. You upload PDFs into a notebook, ask questions, and get
+answers in which every sentence is linked to a ranked source chunk (with its page number) and
+checked against that chunk. The retriever is a real, inspectable IR component: a
+**from-scratch positional, zoned inverted index** (Porter stemming, SMART `lnc.ltc` tf-idf,
+Okapi BM25, champion lists, index elimination, heap top-K, Boolean and phrase queries). It is
+fused with dense embedding search through Reciprocal Rank Fusion, and every step can be
+inspected in the UI.
 
-This file gets a fresh clone running end-to-end. For how the project is *built*
-(workflows, standards, buildplan), see `.claude/orchestrator.md`.
-
----
-
-## Prerequisites
-
-- Docker Desktop (Postgres+pgvector and Redis run in containers)
-- Python 3.12+
-- Node 18+
-- (Windows) Git Bash or PowerShell
+- Report: [`docs/report/report.pdf`](docs/report/report.pdf) (HTML source alongside it)
+- Team: Rahul Vaidhya (2410110259), Akshat Bansal (2410110039), Ananmay Dubey (2410110513), Yug Gupta (2410110490)
+- Demo video: _add your unlisted YouTube/Drive link here_
 
 ---
 
-## 1. Start infra (Postgres + Redis)
+## What works (verified end to end on 2026-10-07)
 
-From the repo root:
+| Feature | Where | IR concepts |
+|---|---|---|
+| Upload PDF → parse → section/chunk → embed → READY (background worker) | `backend/app/services/ingestion/` | "what is a document" (1 000-char chunks inside page/section boundaries), dedupe by checksum |
+| **Search page: Ranked / Boolean / Phrase** with full query-processing traces (tokens → case-folding → stop words → stems → postings, df/idf, per-term score contributions) | `backend/app/services/retrieval/sparse/`, `frontend/src/pages/SearchPage.tsx` | inverted index, positional index, postings intersection in increasing-df order, AND/OR/NOT, phrase queries, tf-idf vs BM25, zones (heading vs body), champion lists, idf-threshold index elimination, heap top-K |
+| **Chat with cited answers** (streaming) | `backend/app/services/chat/service.py` | hybrid retrieval = dense kNN (pgvector) + from-scratch BM25, fused with RRF; top-k context blocks numbered `[n]` |
+| **Per-sentence citation checker** (supported / weak / uncited + scores) | `backend/app/services/chat/citation_check.py` | tf-idf `ltc` cosine of the sentence vs. best window of the cited chunk + embedding cosine |
+| Page-accurate citations (click a `[n]` to open the source passage) | `backend/app/services/ingestion/search.py` | per-page markers kept through chunking |
+| Broad questions ("summarize these chapters") → map-reduce over section summaries | `backend/app/services/chat/broad_query.py`, `retrieval/mapreduce.py` | query classification + per-section retrieval |
+| Refuses when the sources don't contain the answer | `chat/service.py` (`_SYSTEM_PROMPT`) | grounding |
+| Notebook overview, chat history, admin debug trace (exact hits + prompt), thumbs feedback | `chat/`, `knowledge/` | |
+| Multi-tenant orgs, roles, notebook sharing, folder access roles, embeddable chat widget | `auth`, `access_roles`, `embed` | |
+
+Evaluation (see `backend/eval/results/`):
+
+- **SciFact (BEIR), 300 queries:** nDCG@10 tf-idf 0.619 → BM25 0.686 → dense 0.717 → hybrid RRF **0.735**.
+- **Hand-judged textbook queries (18):** hybrid MRR@10 **0.935**, P@5 0.633, a relevant page in the
+  top 5 for every query. The local text-layer parser raised MRR@10 for every method compared with
+  the hosted parser (BM25 0.798 → 0.909).
+- **Citation checker on SciFact claims:** ROC-AUC 0.999 against off-topic citations, 0.808 against on-topic wrong citations.
+
+## What is still planned / known limitations
+
+- The citation checker measures topical support, **not entailment**: 89% of SciFact claims that
+  contradict their source are still marked "supported". An NLI model is the next step.
+- The sparse channel has no spelling correction (a typo such as "ekamn" only matches "transport").
+  The dense channel covers this today. k-gram / edit-distance correction (IIR ch. 3) is planned.
+- Section summaries for broad questions are produced ~1 min **after** a document turns READY,
+  so broad questions asked immediately fall back to normal retrieval.
+- Broad-query answers carry section-level citations without per-sentence claim checks.
+- Open security items from QA (chat history visible to all notebook members, etc.) are listed in
+  `.claude/known-issues.md` (S1–S4).
+
+---
+
+## Setup (Windows, tested; macOS/Linux use the commented commands)
+
+### Prerequisites
+
+- **Docker Desktop**, running (Postgres + pgvector and Redis run in containers). If `docker ps`
+  says it cannot find `dockerDesktopLinuxEngine`, Docker Desktop isn't started.
+- **Python 3.12+** (tested on 3.12 and 3.14), **Node 18+** (tested on 24).
+- An **OpenRouter API key** for real answers/embeddings (the app also runs fully offline on
+  fake models; see "Seam modes").
+
+### 1. Infra
 
 ```bash
-docker compose up -d
+docker compose up -d postgres redis      # Postgres on host port 55432, Redis on 6379
 ```
 
-This starts:
-- **Postgres (pgvector)** on host port **`55432`** (not 5432 — avoids colliding with a
-  native Windows Postgres install), user/pass/db all `veratas`
-- **Redis** on `6379`
-
-Check both are healthy: `docker compose ps`.
-
----
-
-## 2. Backend setup
+### 2. Backend
 
 ```bash
 cd backend
 python -m venv .venv
-.venv\Scripts\activate          # Windows
-# source .venv/Scripts/activate  # Git Bash / macOS / Linux
-
-pip install -e ".[dev]"          # add ",real" too if you want live parser/embedder/LLM calls:
-                                  # pip install -e ".[dev,real]"
-
-copy .env.example .env           # Windows: copy ; else: cp .env.example .env
+.venv\Scripts\activate                   # Git Bash/macOS/Linux: source .venv/Scripts/activate (or .venv/bin/activate)
+pip install -e ".[dev,real]"             # add ",ireval" to run the SciFact evaluation
+copy .env.example .env                   # then edit .env (see below)
+alembic upgrade head                     # current head: 0025
 ```
 
-`.env` defaults to **fake seams** (`PARSER_MODE=EMBEDDER_MODE=LLM_MODE=fake`) and
-**`STORAGE_MODE=r2`** with no credentials — see [Seam modes](#seam-modes--fake-vs-real)
-below before running a real end-to-end ingestion.
+> **Do not copy a `.venv` folder from another computer.** A venv stores the absolute path of the
+> Python that created it (`No Python at 'C:\Users\<someone-else>\...'`). Delete it and recreate it.
 
-### Migrate
+Recommended `.env` for the full demo (real models, all IR features on):
 
-```bash
-alembic upgrade head
-```
-
-Current head: **`0018`** (`backend/migrations/versions/`). Re-run this any time you pull
-new migration files.
-
-### Run the API
-
-```bash
-uvicorn main:app --host 127.0.0.1 --port 8010
-```
-
-Real entrypoint is **`backend/main.py`** — run `uvicorn main:app`, not `app.main:app`.
-Use port **`8010`**, not 8000: `frontend/vite.config.ts`'s dev proxy targets 8010 (port
-8000 is occasionally already bound by an unrelated process on some dev machines).
-
-### Run the worker (required for documents to actually finish processing)
-
-Uploads are auto-dispatched through a background pipeline (parse → structure → embed →
-optionally enrich) via arq. **Without a worker running, an uploaded document sits at
-`UPLOADED`/`PARSING`/etc. forever** — the API alone will not advance it.
-
-In a second terminal, from `backend/` (same venv):
-
-```bash
-arq worker.WorkerSettings
-```
-
-Real entrypoint is **`backend/worker.py`** — run `arq worker.WorkerSettings` from
-inside `backend/`, not `app.worker:WorkerSettings`.
-
-### Run the tests
-
-```bash
-pytest
-```
-
-Uses Testcontainers to spin up a disposable Postgres — Docker must be running. Fully
-offline otherwise (seams are faked). A couple of tests are opt-in / excluded from CI
-(`real_parser`, `hierarchical_eval` markers) — they need a live `OPENROUTER_API_KEY`/
-`OPENAI_API_KEY` and are not part of the normal run.
-
----
-
-## 3. Frontend setup
-
-In a third terminal:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Open **http://localhost:5173** — sign up to create an organization (you become
-**owner**), or sign in. The Vite dev server proxies `/auth`, `/documents`, `/chat`,
-etc. to the backend at `127.0.0.1:8010` (see `frontend/vite.config.ts`).
-
-### Frontend tests / build
-
-```bash
-npm run test    # vitest
-npm run build   # tsc -b && vite build
-```
-
----
-
-## Running everything (summary)
-
-Four things need to be running at once for a fully working local dev setup:
-
-| # | What | Command | Where |
-|---|------|---------|-------|
-| 1 | Postgres + Redis | `docker compose up -d` | repo root |
-| 2 | Backend API | `uvicorn main:app --host 127.0.0.1 --port 8010` | `backend/` (venv active) |
-| 3 | Background worker | `arq worker.WorkerSettings` | `backend/` (venv active) |
-| 4 | Frontend dev server | `npm run dev` | `frontend/` |
-
-Skipping #3 is the single most common "why isn't my document processing" gotcha in
-this project.
-
----
-
-## Seam modes — fake vs. real
-
-Three external calls (document parsing, embeddings, LLM chat) go through swappable
-"seam" interfaces, each independently switched in `.env`:
-
-```
-PARSER_MODE=fake|real
-EMBEDDER_MODE=fake|real
-LLM_MODE=fake|real
-```
-
-`fake` (the default) needs no API keys and is what the automated test suite always
-uses — good enough to exercise the whole app (upload → ingest → chat) without any
-credentials, but answers/embeddings are not semantically meaningful.
-
-To get **real** parsing/embeddings/chat answers in local dev, set in `.env`:
-
-```
+```ini
 PARSER_MODE=real
 EMBEDDER_MODE=real
 LLM_MODE=real
-
-OPENROUTER_API_KEY=<your key>          # powers the real parser
-OPENAI_API_KEY=<same OpenRouter key>   # powers embedder + LLM (OpenAI-compatible route)
+OPENAI_API_KEY=<your OpenRouter key>       # embeddings + chat go through OpenRouter
 OPENAI_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_API_KEY=<same key>              # only used for scanned PDFs (OCR fallback)
+STORAGE_MODE=local
+HYBRID_SEARCH_ENABLED=true
+SPARSE_RETRIEVAL_MODE=bm25
+CITATION_CHECK_ENABLED=true
+ENRICHMENT_ENABLED=true
+BROAD_QUERY_ENABLED=true
+NOTEBOOK_OVERVIEW_ENABLED=true
+SEMANTIC_OUTLINE_ENABLED=true
 ```
 
-One OpenRouter key feeds all three real seams (parser via `OPENROUTER_API_KEY`,
-embedder/LLM via `OPENAI_API_KEY`/`OPENAI_BASE_URL` pointed at OpenRouter). You'll also
-need `pip install -e ".[dev,real]"` (installs `openai` + `pypdf`) if you didn't already.
+### 3. Run (three terminals, all from `backend/` with the venv active, except the frontend)
 
-### Object storage
+| # | What | Command |
+|---|---|---|
+| 1 | API | `uvicorn main:app --host 127.0.0.1 --port 8010` |
+| 2 | Background worker (**required**, otherwise documents never leave `UPLOADED`) | `arq worker.WorkerSettings` |
+| 3 | Frontend | `cd frontend && npm install && npm run dev` → open http://localhost:5173 |
 
-```
-STORAGE_MODE=r2|local
-```
+Sign up (this creates an organization; you are its owner), create a notebook, upload PDFs,
+wait for **READY**, then use **Chat** and **Search**. Restart the API and the worker after any
+backend code or `.env` change (no hot reload).
 
-Defaults to `r2` (Cloudflare R2 / S3-compatible), which needs `R2_*` credentials in
-`.env`. For a fully offline local run with no cloud account, set `STORAGE_MODE=local`
-— documents are stored under `backend/.localstorage/` instead. Both the API process and
-the worker must agree on this setting (it's read from `.env`, not overridable per
-request), since they share the same blobs.
+### Seam modes: fake vs. real
+
+`PARSER_MODE` / `EMBEDDER_MODE` / `LLM_MODE` = `fake | real`. `fake` needs no keys (the test
+suite always uses it): the whole app works, but answers are templated and embeddings are
+hash-based. With `PARSER_MODE=real` the PDF's own text layer is read locally with `pypdf`; only
+PDFs with no text layer (scans) are sent to OpenRouter's parser/OCR.
 
 ---
 
-## Project layout
+## Data
 
+- **Demo corpus:** H. Goosse et al., *Introduction to climate dynamics and climate modelling*
+  (online textbook, climate.be/textbook), Chapter 1 (24 pages) and Chapter 2 (33 pages), plus one
+  course question paper. Put the chapter PDFs in `backend/eval/data/textbook/` (gitignored,
+  not redistributed) to reproduce the textbook evaluation.
+- **SciFact** (Wadden et al., 2020) via BEIR (Thakur et al., 2021): 5 183 abstracts and 300 test
+  queries with relevance judgments. Downloaded automatically by `eval/scifact.py`.
+- No personal data is collected. No crawling is involved.
+
+## Reproducing the evaluation
+
+From `backend/` with the venv active:
+
+```bash
+# SciFact ablation: tf-idf / BM25 / zones / champions / dense / hybrid (one-time ~2M embedding tokens)
+python -m eval.run_ablation --k 10 --methods tfidf bm25 bm25_zones bm25_champions dense hybrid_rrf
+# Citation-checker accuracy on SciFact claims
+python -m eval.citation_check_eval
+# Hand-judged textbook queries against the live app (API + worker running)
+python -m eval.textbook_eval --setup --pdf-dir eval/data/textbook      # prints --email/--password/--notebook
+python -m eval.textbook_eval --email ... --password ... --notebook ...  [--dense-api http://127.0.0.1:8011]
 ```
-veratas_project/
-  docker-compose.yml       # Postgres+pgvector, Redis
-  backend/
-    main.py                # FastAPI entrypoint    → uvicorn main:app
-    worker.py               # arq entrypoint         → arq worker.WorkerSettings
-    app/
-      models/ routes/ controllers/ services/ middleware/ config/ utils/
-    migrations/             # Alembic (head: 0018)
-    tests/
-  frontend/
-    src/
-      pages/ components/ layouts/ services/ context/ hooks/ types/ styles/
-  .claude/
-    orchestrator.md          # how this project is built — read this if contributing
-    context/                 # architecture, code standards, buildplan context
-    memory.md                # session history / decisions
-    progresstracker.md        # what's done, what's next
+
+For the `dense` row, start a second API with hybrid search off:
+`HYBRID_SEARCH_ENABLED=false uvicorn main:app --port 8011` (Git Bash; in PowerShell set
+`$env:HYBRID_SEARCH_ENABLED="false"` first). Results are written to `backend/eval/results/`.
+
+## Tests
+
+```bash
+# backend: 495 tests on a throwaway Testcontainers Postgres (Docker must be running)
+cd backend && pytest -m "not real_parser and not hierarchical_eval and not eval"
+# frontend: 224 tests, plus type-check + production build
+cd frontend && npm run test && npm run build
 ```
+
+The tests always run on fake models with every feature flag at its default:
+`tests/conftest.py` sets `VERATAS_IGNORE_DOTENV=1`, so your demo `.env` is ignored during
+tests and doesn't need to be moved aside.
 
 ---
 
 ## Troubleshooting
 
-- **Document stuck at `UPLOADED`/`PARSING`/etc.** — the arq worker isn't running (or
-  died). Start it: `arq worker.WorkerSettings` from `backend/`.
-- **Upload/parse fails with `STORAGE_MODE`/R2 errors** — no R2 credentials in dev. Set
-  `STORAGE_MODE=local` in `.env` and restart both the API and the worker.
-- **Port 8000 already in use / frontend can't reach the API** — this project runs the
-  backend on **8010**, not 8000. Confirm `frontend/vite.config.ts`'s proxy target
-  matches whatever port you actually started uvicorn on.
-- **Backend code edited but behavior didn't change** — `uvicorn`/`arq` don't hot-reload
-  by default here; restart both processes after backend changes.
-- **Migrations out of date** — re-run `alembic upgrade head` any time you pull; check
-  current state with `alembic current`.
-- **Chat/parsing "works" but answers are meaningless** — you're on `PARSER_MODE=
-  EMBEDDER_MODE=LLM_MODE=fake` (the default). See [Seam modes](#seam-modes--fake-vs-real).
+- **Chat shows "The AI model provider request failed…"**: OpenRouter rejected the call (invalid
+  or expired key, or no credits). Fix `OPENAI_API_KEY` in `backend/.env` and restart the API.
+  The full error is in the API log (`chat.stream_failed`).
+- **Chat shows "Notebook not found"**: the notebook was deleted or belongs to another org/user.
+- **"I don't have that in the provided sources."** is the intended refusal when retrieval finds no
+  support. Check that the documents are READY and use the **Search** page to see what the
+  index actually contains for your terms.
+- **Document stuck at `UPLOADED`/`PARSING`**: the worker isn't running.
+- **Frontend can't reach the API**: the backend must be on port **8010** (`frontend/vite.config.ts`).
+
+## Project layout
+
+```
+backend/
+  main.py  worker.py                 # uvicorn main:app / arq worker.WorkerSettings
+  app/services/retrieval/sparse/     # from-scratch IR core: text.py index.py scoring.py trace.py
+  app/services/retrieval/            # service.py (hybrid), fusion.py (RRF), mapreduce.py
+  app/services/chat/                 # service.py (RAG), citation_check.py, broad_query.py
+  app/services/ingestion/            # parsing, structuring (chunking), embedding, enrichment
+  app/services/seams/                # parser / embedder / LLM adapters (fake + real)
+  eval/                              # SciFact ablation, citation-checker eval, textbook eval
+  migrations/  tests/
+frontend/src/                        # React SPA: pages/ components/ services/
+docs/report/                         # assignment report (HTML + PDF)
+.claude/                             # build notes, known-issues.md, memory
+```

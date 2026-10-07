@@ -24,7 +24,7 @@
 | S2 | **Critical.** Any member can `DELETE /documents/{id}` for a document inside an Access-Role-restricted folder (rename/move correctly 403). Also UI shows delete/move controls on that row | OPEN |
 | S3 | **Critical.** Admins bypass notebook privacy via `GET /chat/messages/{id}/trace` and `POST /evals/golden-questions` (no notebook-access check) | OPEN |
 | S4 | High. Members can `POST /documents/upload` with `folder_id` of a restricted folder (moving a doc in is correctly 403) | OPEN |
-| S5 | Low. `/chat/stream` on a no-access notebook returns 200 + SSE "Stream failed" instead of 403 | OPEN |
+| S5 | Low. `/chat/stream` on a no-access notebook returns 200 + SSE "Stream failed" instead of 403 | FIXED (2026-10-07, uncommitted: notebook checked before the stream opens -> 404/403; provider failures now say "check the API key / OpenRouter credits") |
 | S6 | Low. Any member can list all org users (`/auth/users`) — possibly by design (share dialog) | OPEN |
 
 ## Usability
@@ -71,3 +71,13 @@
 | F10 | Info. Citation checker measured on SciFact (`backend/eval/results/citation_check_eval.md`): app threshold 0.33 kept for demo; eval recommends 0.49 for precision (F1 vs hard negatives 0.52→0.61) — decision pending | OPEN (decision) |
 
 Final QA account: `final-qa+1791317653@example.com` / `FinalQa!2026new`.
+
+## 2026-10-07 session 2 (local re-setup + full verification)
+
+| ID | Problem | Status |
+|----|---------|--------|
+| P1 | **High.** `cloudflare-ai` parser silently dropped bold/italic spans (textbook key terms): "what is ekamn transport" was refused although the book defines Ekman transport | FIXED (uncommitted): `RealParser` reads the local pypdf text layer first (same `### Page N` markers, real per-page outline), remote engines only for scanned PDFs. Textbook eval MRR@10 up for every method (`backend/eval/results/textbook_eval_*.md`) |
+| P2 | Medium. Broad-query classifier sent "What is the Earth's energy budget?" to map-reduce (no page citations / claim checks) | FIXED (uncommitted): classifier prompt treats "what is X / explain X" as SPECIFIC; 9/9 probe queries routed correctly |
+| P3 | Low. Tests read the dev `.env` (60 failures with demo flags on) | FIXED (uncommitted): conftest sets `VERATAS_IGNORE_DOTENV=1` |
+| P4 | Info. Section summaries finish ~70 s after READY; broad questions asked earlier fall back to flat retrieval | OPEN (documented) |
+| P5 | Info. Sparse channel has no spelling correction ("ekamn" -> MRR 0.11 for BM25; dense covers it) | OPEN (roadmap) |
