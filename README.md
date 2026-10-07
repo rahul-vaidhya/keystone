@@ -12,7 +12,7 @@ inspected in the UI.
 
 - Report: [`docs/report/report.pdf`](docs/report/report.pdf) (HTML source alongside it)
 - Team: Rahul Vaidhya (2410110259), Akshat Bansal (2410110039), Ananmay Dubey (2410110513), Yug Gupta (2410110490)
-- Demo video: _add your unlisted YouTube/Drive link here_
+- Demo video: https://drive.google.com/file/d/17m5Zi24Y1KLWOT-p3040eP4VR3LZZ7uK/view
 - Demo video script (verified queries and expected results): [`docs/video-script.md`](docs/video-script.md)
 
 ---
