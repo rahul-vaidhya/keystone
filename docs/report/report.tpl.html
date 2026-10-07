@@ -59,8 +59,11 @@ as a component the user can open up and inspect: postings, df/idf, per-term scor
 ranks. We added a <b>citation checker</b> that re-scores every generated sentence against the chunk it cites.
 That is the second sample idea for this track, extended with inherited citations, sentence windows and a
 measured evaluation.</p>
-<p><b>Papers referred:</b> Lewis et al. (RAG); Robertson &amp; Zaragoza (BM25); Cormack et al. (RRF, SIGIR'09);
-Thakur et al. (BEIR); Wadden et al. (SciFact); Gao et al. (ALCE); Liu et al. (verifiability); Manning,
+<p><b>Papers referred:</b> Lewis et al. (RAG); Gao et al. (RAG survey); Robertson &amp; Zaragoza (BM25); Karpukhin et al.
+(DPR); Cormack et al. (RRF, SIGIR'09); Nogueira &amp; Cho and Xiao et al. (reranking, BGE); Malkov &amp; Yashunin (HNSW);
+Sarthi et al. (RAPTOR) and Edge et al. (GraphRAG) for section-summary map-reduce; Anthropic (contextual retrieval);
+Liu et al. (lost in the middle); Thakur et al. (BEIR); Wadden et al. (SciFact); Gao et al. (ALCE); Liu et al.
+(verifiability); Rashkin et al. (AIS attribution); Ji et al. (hallucination survey); Es et al. (RAGAS); Manning,
 Raghavan &amp; Schütze (IIR textbook). See References.</p>
 
 <h2>2. How we used IR</h2>
@@ -233,12 +236,15 @@ using the feedback (thumbs) the app already stores; (4) larger judged query set 
 <tr><td>Ananmay Dubey</td><td>Citation checker and its SciFact evaluation (hard negatives, contradiction analysis, threshold tuning)</td></tr>
 <tr><td>Yug Gupta</td><td>SciFact retrieval ablation (BEIR harness, sparse vs dense analysis), Search page traces, demo video</td></tr>
 </table>
+<p>All four members took part in the initial literature review and the system design before implementation.</p>
 
 <h2>8. AI-use declaration</h2>
 <ul>
-  <li><b>AI coding agent:</b> Claude Code (Anthropic) was used throughout development to write and refactor most of
-  the backend and frontend code and the tests, under the team's review. The repository's <code>.claude/</code> folder
-  records that workflow. In the final session it was also used to set up and debug the local environment, find and
+  <li><b>Our own work:</b> the team did the background research (the papers listed in the References), chose the design
+  and the IR techniques, and wrote code ourselves, then continued development after the initial version.</li>
+  <li><b>AI coding agent:</b> Claude Code (Anthropic) assisted development: writing and refactoring parts of the backend
+  and frontend code and the tests, under the team's review. The repository's <code>.claude/</code> folder records that
+  workflow. In the final session it was also used to set up and debug the local environment, find and
   fix the PDF-parser defect and the query-router misclassification, return proper errors from the streaming
   endpoint, write <code>eval/textbook_eval.py</code>, and draft this report and the README.</li>
   <li><b>Relevance judgments</b> for the 18 textbook queries were drafted with the AI agent from the book's section structure
@@ -260,6 +266,20 @@ using the feedback (thumbs) the app already stores; (4) larger judged query set 
   <li>N. F. Liu, T. Zhang, P. Liang. Evaluating Verifiability in Generative Search Engines. Findings of EMNLP 2023.</li>
   <li>C. D. Manning, P. Raghavan, H. Schütze. Introduction to Information Retrieval. Cambridge University Press, 2008.</li>
   <li>M. F. Porter. An algorithm for suffix stripping. Program 14(3), 1980.</li>
+  <li>Y. Gao et al. Retrieval-Augmented Generation for Large Language Models: A Survey. arXiv:2312.10997, 2023.</li>
+  <li>V. Karpukhin et al. Dense Passage Retrieval for Open-Domain Question Answering. EMNLP 2020.</li>
+  <li>R. Nogueira, K. Cho. Passage Re-ranking with BERT. arXiv:1901.04085, 2019.</li>
+  <li>S. Xiao et al. C-Pack: Packed Resources For General Chinese Embeddings (BGE). SIGIR 2024.</li>
+  <li>Y. A. Malkov, D. A. Yashunin. Efficient and Robust Approximate Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs. IEEE TPAMI 42(4), 2020.</li>
+  <li>P. Sarthi et al. RAPTOR: Recursive Abstractive Processing for Tree-Organized Retrieval. ICLR 2024.</li>
+  <li>D. Edge et al. From Local to Global: A Graph RAG Approach to Query-Focused Summarization. arXiv:2404.16130, 2024.</li>
+  <li>Anthropic. Introducing Contextual Retrieval. Engineering blog, September 2024.</li>
+  <li>N. F. Liu et al. Lost in the Middle: How Language Models Use Long Contexts. TACL 12, 2024.</li>
+  <li>H. Rashkin et al. Measuring Attribution in Natural Language Generation Models. Computational Linguistics 49(4), 2023.</li>
+  <li>Z. Ji et al. Survey of Hallucination in Natural Language Generation. ACM Computing Surveys 55(12), 2023.</li>
+  <li>S. Es, J. James, L. Espinosa-Anke, S. Schockaert. RAGAS: Automated Evaluation of Retrieval Augmented Generation. EACL 2024 (demos).</li>
+  <li>A. Williams, N. Nangia, S. R. Bowman. A Broad-Coverage Challenge Corpus for Sentence Understanding through Inference (MultiNLI). NAACL 2018.</li>
+  <li>K. Järvelin, J. Kekäläinen. Cumulated Gain-Based Evaluation of IR Techniques. ACM TOIS 20(4), 2002.</li>
   <li>Data: H. Goosse et al., Introduction to climate dynamics and climate modelling, climate.be/textbook (Ch. 1–2); SciFact via BEIR.</li>
 </ol>
 </body>
